@@ -4,12 +4,12 @@ from typing import List
 import streamlit as st
 import pandas as pd
 import broadcast_recommender as br
-import openai
 import json
 import os
+from openai import OpenAI
 
 # OpenAI API 키는 환경변수 OPENAI_API_KEY 로 설정
-openai.api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 st.set_page_config(page_title="Home Shopping Broadcast Recommender", page_icon="📺", layout="wide")
 
@@ -32,8 +32,8 @@ def extract_params(user_msg: str) -> dict | None:
     )
 
     try:
-        resp = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo-0125",
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_msg},
