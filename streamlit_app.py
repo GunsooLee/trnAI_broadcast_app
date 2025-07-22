@@ -24,20 +24,35 @@ if "messages" not in st.session_state:
 def extract_params(user_msg: str) -> dict | None:
     """LLM을 호출해 파라미터(dict) 추출. 실패 시 None 반환"""
 
+    today = dt.date.today()
+    today_str = today.isoformat()
+    today_weekday_kr = ["월","화","수","목","금","토","일"][today.weekday()]
+
     system_prompt = (
-        "너는 홈쇼핑 방송 추천 시스템의 파라미터 추출기다.\n"
-        "사용자 입력을 읽고 JSON 으로만 답해야 한다.\n"
-        "필드는 date(YYYY-MM-DD), time_slots(list[str]), weather(str), temperature(float), precipitation(float), day_type(str: '평일'|'주말'|'공휴일'), keywords(list[str]), mode(str: '카테고리'|'상품코드'), categories(list[str]), products(list[str]).\n"
-        "없는 값은 null 혹은 빈 리스트로 채워라."
+        "You are a machine that only returns JSON. Do not add any text before or after the JSON object. Your entire response must be only the JSON object itself.\n\n"
+        "## Current Time Information\n"
+        f"- Today's Date: {today_str} ({today_weekday_kr})\n\n"
+        "## Instructions\n"
+        "Extract the parameters from the user query and respond with a single JSON object that follows the schema below. If the user did not specify a value, use null (or an empty list for array types). Do not add any additional keys.\n\n"
+        "{\n"
+        "  \"date\": string | null,               # 방송 추천 대상 날짜 (YYYY-MM-DD)\n"
+        "  \"time_slots\": string[] | null,       # 원하는 방송 시간대 배열 (예: [\"오전\", \"저녁\"])\n"
+        "  \"weather\": string | null,            # 예상 날씨 (맑음/흐림 등)\n"
+        "  \"temperature\": number | null,        # 평균 기온 (℃)\n"
+        "  \"precipitation\": number | null,      # 예상 강수량 (mm)\n"
+        "  \"day_type\": string | null,           # 평일/주말/공휴일\n"
+        "  \"keywords\": string[] | null,         # 상품 키워드 배열\n"
+        "  \"mode\": string | null,              # '카테고리' | '상품코드'\n"
+        "  \"categories\": string[] | null,       # 카테고리 식별자 목록\n"
+        "  \"products\": string[] | null          # 상품코드 목록\n"
+        "}\n"
     )
 
-    today_str = dt.date.today().isoformat()
     try:
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "system", "content": f"오늘 날짜는 {today_str} 입니다."},
                 {"role": "user", "content": user_msg},
             ],
             temperature=0,
