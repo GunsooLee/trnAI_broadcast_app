@@ -3,75 +3,113 @@ from typing import List
 
 import streamlit as st
 import pandas as pd
-
 import broadcast_recommender as br
+import openai
+import json
+import os
+
+# OpenAI API 키는 환경변수 OPENAI_API_KEY 로 설정
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 st.set_page_config(page_title="Home Shopping Broadcast Recommender", page_icon="📺", layout="wide")
 
-st.title("📺 홈쇼핑 방송편성 추천 시스템")
+st.title("📺 홈쇼핑 방송편성 추천 챗봇")
 
-# Sidebar inputs
-with st.sidebar:
-    st.header("🔧 입력 파라미터")
+# 초기 세션 상태
+if "messages" not in st.session_state:
+    st.session_state.messages = []  # (role, content)
 
-    target_date = st.date_input("방송 일자", value=dt.date.today() + dt.timedelta(days=1))
+# 함수: OpenAI 로부터 파라미터 추출
 
-    slot_choices = ["아침", "오전", "점심", "오후", "저녁", "야간"]
-    default_slots = ["아침", "점심", "저녁"]
-    time_slots: List[str] = st.multiselect("편성 시간대", slot_choices, default_slots)
+def extract_params(user_msg: str) -> dict | None:
+    """LLM을 호출해 파라미터(dict) 추출. 실패 시 None 반환"""
 
-    st.subheader("🌦️ 날씨 정보")
-    weather = st.selectbox("날씨", ["맑음", "흐림", "비", "눈"])
-    temp = st.number_input("평균 기온(°C)", value=25.0)
-    precip = st.number_input("강수량(mm)", value=0.0)
-
-    mode = st.radio("추천 모드", ["카테고리", "상품코드"], horizontal=True)
-
-    categories_input = st.text_input(
-        "카테고리 목록 (콤마 구분)",
-        help="대/중/소/세/product_type 형식, 예: 패션/의류/셔츠/반팔/일반상품"
+    system_prompt = (
+        "너는 홈쇼핑 방송 추천 시스템의 파라미터 추출기다.\n"
+        "사용자 입력을 읽고 JSON 으로만 답해야 한다.\n"
+        "필드는 date(YYYY-MM-DD), time_slots(list[str]), weather(str), temperature(float), precipitation(float), day_type(str: '평일'|'주말'|'공휴일'), keywords(list[str]), mode(str: '카테고리'|'상품코드'), categories(list[str]), products(list[str]).\n"
+        "없는 값은 null 혹은 빈 리스트로 채워라."
     )
-    products_input = st.text_input("상품코드 목록 (콤마 구분)")
-
-    run_btn = st.button("🚀 추천 실행")
-
-if run_btn:
-    if not time_slots:
-        st.error("최소 1개 이상의 시간대를 선택하세요.")
-        st.stop()
-
-    weather_info = {
-        "weather": weather,
-        "temperature": temp,
-        "precipitation": precip,
-    }
 
     try:
-        if mode == "카테고리":
-            categories = [c.strip() for c in categories_input.split(",") if c.strip()] if categories_input else None
-            rec_df = br.recommend(
-                target_date,
-                time_slots,
-                product_codes=[],
-                weather_info=weather_info,
-                category_mode=True,
-                categories=categories,
-            )
-        else:
-            products = [p.strip() for p in products_input.split(",") if p.strip()]
-            if not products:
-                st.error("상품코드를 입력하세요.")
-                st.stop()
-            rec_df = br.recommend(
-                target_date,
-                time_slots,
-                product_codes=products,
-                weather_info=weather_info,
-                category_mode=False,
-            )
-
-        st.success("✅ 추천 완료")
-        st.dataframe(rec_df, hide_index=True)
-
+        resp = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo-0125",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0,
+        )
+        content = resp.choices[0].message.content
+        return json.loads(content)
     except Exception as e:
-        st.exception(e)
+        st.error(f"파라미터 추출 실패: {e}")
+        return None
+
+# 채팅 렌더링
+for role, msg in st.session_state.messages:
+    st.chat_message(role).write(msg)
+
+# 입력창
+if prompt := st.chat_input("편성 질문을 입력하세요…"):
+    # 사용자 메시지 저장 및 표시
+    st.session_state.messages.append(("user", prompt))
+    st.chat_message("user").write(prompt)
+
+    # 파라미터 추출
+    params = extract_params(prompt)
+    assistant_msg = ""
+
+    if params is None:
+        assistant_msg = "죄송합니다. 파라미터를 이해하지 못했습니다. 다시 시도해 주세요."
+        st.session_state.messages.append(("assistant", assistant_msg))
+        st.chat_message("assistant").write(assistant_msg)
+    else:
+        assistant_msg += "추출된 파라미터:\n" + json.dumps(params, ensure_ascii=False, indent=2)
+
+        # 필수 파라미터 확인
+        try:
+            target_date = dt.date.fromisoformat(params["date"])
+            time_slots = params["time_slots"]
+            weather_info = {
+                "weather": params.get("weather", "맑음"),
+                "temperature": params.get("temperature", 20.0),
+                "precipitation": params.get("precipitation", 0.0),
+            }
+
+            # day_type, keywords 현재 모델에서 미사용이지만 화면에 표시를 위해 포함
+            day_type = params.get("day_type")
+            keywords = params.get("keywords")
+
+            if params["mode"] == "카테고리":
+                rec_df = br.recommend(
+                    target_date,
+                    time_slots,
+                    product_codes=[],
+                    weather_info=weather_info,
+                    category_mode=True,
+                    categories=params.get("categories"),
+                )
+            else:
+                rec_df = br.recommend(
+                    target_date,
+                    time_slots,
+                    product_codes=params.get("products", []),
+                    weather_info=weather_info,
+                    category_mode=False,
+                )
+
+            assistant_msg += "\n\n추천 결과:"  # 표시 후 아래 데이터프레임 렌더링
+            st.session_state.messages.append(("assistant", assistant_msg))
+            st.chat_message("assistant").write(assistant_msg)
+            st.dataframe(rec_df, hide_index=True)
+
+            # 추가 정보 표시
+            if day_type or keywords:
+                st.markdown("### 추가 파라미터")
+                st.json({"day_type": day_type, "keywords": keywords}, expanded=False)
+
+        except Exception as e:
+            assistant_msg = f"추천 실행 중 오류: {e}"
+            st.session_state.messages.append(("assistant", assistant_msg))
+            st.chat_message("assistant").write(assistant_msg)

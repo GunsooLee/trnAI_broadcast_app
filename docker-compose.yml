@@ -5,6 +5,7 @@ services:
     container_name: streamlit_recommender
     ports:
       - "8501:8501"
+    env_file: .env
     environment:
       - DB_URI=postgresql://TIKITAKA:TIKITAKA@TIKITAKA_postgres:5432/TIKITAKA_DB
     networks:
