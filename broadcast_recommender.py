@@ -255,9 +255,10 @@ def recommend(
 
         # 사용자가 특정 카테고리만 입력한 경우 필터링
         if categories:
-            items_df = items_df[items_df[label_col].isin(categories)]
-        if items_df.empty:
-            raise ValueError("입력한 categories 에 해당하는 후보가 없습니다.")
+            filtered = items_df[items_df[label_col].isin(categories)]
+            # 지정 카테고리에 후보가 없으면 전체 풀로 되돌아가 추천 이어서 수행
+            if not filtered.empty:
+                items_df = filtered
     else:
         if not product_codes:
             raise ValueError("product_codes가 비어 있습니다. --category 플래그를 사용하거나 상품코드를 입력하세요.")
