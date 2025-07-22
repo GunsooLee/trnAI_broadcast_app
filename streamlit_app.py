@@ -193,9 +193,11 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
             # ----- 결과 포맷팅 및 한글 컬럼명 ------------------------------
             display_df = rec_df.copy()
 
-            # 숫자 반올림만 수행 (콤마 서식은 st.column_config 에 맡김)
+            # 숫자 -> 천단위 콤마 문자열 변환 (NumberColumn 포맷 오류 대응)
             if "predicted_sales" in display_df.columns:
-                display_df["predicted_sales"] = display_df["predicted_sales"].round()
+                display_df["predicted_sales"] = (
+                    display_df["predicted_sales"].round().astype(int).map("{:,}".format)
+                )
 
             # 컬럼명 매핑
             col_name_map = {
@@ -210,13 +212,7 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
             # 제목과 표를 하나의 컨테이너로 묶어 표시
             with result_placeholder.container():
                 st.markdown("### 📊 매출 예측 결과")
-                st.dataframe(
-                    display_df,
-                    hide_index=True,
-                    column_config={
-                        "예상 매출(원)": st.column_config.NumberColumn(format="{:,.0f}"),
-                    },
-                )
+                st.dataframe(display_df, hide_index=True)
 
         except Exception as e:
             assistant_msg = f"추천 실행 중 오류: {e}"
