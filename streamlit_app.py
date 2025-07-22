@@ -82,61 +82,71 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
         st.session_state.messages.append(("assistant", assistant_msg))
         st.chat_message("assistant").write(assistant_msg)
     else:
-        # 필수 파라미터 확인
+        # 파라미터 JSON 먼저 사용자에게 즉시 보여주기 -----------------------------
         try:
             target_date = dt.date.fromisoformat(params["date"])
             time_slots = params["time_slots"]
+
+            # 날씨 기본 값 준비 (recommend 내부에서 보강될 수 있음)
             weather_info = {
                 "weather": params.get("weather"),
                 "temperature": params.get("temperature"),
                 "precipitation": params.get("precipitation"),
             }
 
-            # 상품코드를 주지 않았거나 모드가 "카테고리"이면 카테고리 추천으로 간주
-            use_category = (
-                params.get("mode") == "카테고리" or not params.get("products")
-            )
+            # ---- 세부 단계 1: 날씨 정보 확인 -------------------------------
+            with st.status("날씨 정보 확인 중...", state="running") as w_status:  # type: ignore
+                if not weather_info["weather"]:
+                    fetched = br.get_weather_by_date(target_date)  # type: ignore
+                    weather_info.update(fetched)
+                w_status.update(label="날씨 정보 확인 완료", state="complete")  # type: ignore
 
-            # None 값이면 recommender 내부에서 DB 조회
-            if use_category:
-                rec_df = br.recommend(
-                    target_date,
-                    time_slots,
-                    product_codes=[],
-                    weather_info=weather_info,
-                    category_mode=True,
-                    categories=params.get("categories"),
-                )
-            else:
-                rec_df = br.recommend(
-                    target_date,
-                    time_slots,
-                    product_codes=params.get("products", []),
-                    weather_info=weather_info,
-                    category_mode=False,
-                )
+            # 디스플레이용 파라미터 가공(날씨 갱신 포함)
+            disp_params = params.copy()
+            disp_params["weather"] = weather_info["weather"]
+            disp_params["temperature"] = weather_info["temperature"]
+            disp_params["precipitation"] = weather_info["precipitation"]
 
-            if not weather_info["weather"]:
-                # broadcast_recommender가 날씨 채움, 우리는 화면 표시용으로도 사용
-                fetched = br.get_weather_by_date(target_date)  # type: ignore
-                weather_info.update(fetched)
-
-            # 디스플레이용 파라미터 보강
-            params["weather"] = weather_info["weather"]
-            params["temperature"] = weather_info["temperature"]
-            params["precipitation"] = weather_info["precipitation"]
-
-            # 다시 렌더링 파라미터 JSON 블록
             assistant_msg += (
-                "### 최종 파라미터\n````json\n"
-                + json.dumps(params, ensure_ascii=False, indent=2)
-                + "\n````"
+                "### 추출된 파라미터\n````json\n"
+                + json.dumps(disp_params, ensure_ascii=False, indent=2)
+                + "\n````\n"
             )
 
-            assistant_msg += "\n\n추천 결과:"  # 표시 후 아래 데이터프레임 렌더링
+            # 파라미터만 먼저 채팅에 표시
             st.session_state.messages.append(("assistant", assistant_msg))
             st.chat_message("assistant").write(assistant_msg)
-            st.dataframe(rec_df, hide_index=True)
+
+            # 추천 결과는 placeholder에 나중에 채우기 -----------------------------
+            result_placeholder = st.empty()
+
+            with st.spinner("모델 예측 중..."):
+                # 상품코드를 주지 않았거나 모드가 "카테고리"이면 카테고리 추천으로 간주
+                use_category = (
+                    params.get("mode") == "카테고리" or not params.get("products")
+                )
+
+                if use_category:
+                    rec_df = br.recommend(
+                        target_date,
+                        time_slots,
+                        product_codes=[],
+                        weather_info=weather_info,
+                        category_mode=True,
+                        categories=params.get("categories"),
+                    )
+                else:
+                    rec_df = br.recommend(
+                        target_date,
+                        time_slots,
+                        product_codes=params.get("products", []),
+                        weather_info=weather_info,
+                        category_mode=False,
+                    )
+
+            # 스피너 종료 후 결과 표시
+            result_placeholder.subheader("추천 결과")
+            result_placeholder.dataframe(rec_df, hide_index=True)
 
         except Exception as e:
             assistant_msg = f"추천 실행 중 오류: {e}"
