@@ -193,16 +193,14 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
             # ----- 결과 포맷팅 및 한글 컬럼명 ------------------------------
             display_df = rec_df.copy()
 
-            # 숫자 3자리 콤마 포맷
+            # 숫자 반올림만 수행 (콤마 서식은 st.column_config 에 맡김)
             if "predicted_sales" in display_df.columns:
-                display_df["predicted_sales"] = (
-                    display_df["predicted_sales"].round().astype(int).map("{:,.0f}".format)
-                )
+                display_df["predicted_sales"] = display_df["predicted_sales"].round()
 
             # 컬럼명 매핑
             col_name_map = {
                 "time_slot": "시간대",
-                "predicted_sales": "예측매출(원)",
+                "predicted_sales": "예상 매출(원)",
                 "product_code": "상품코드",
                 "category": "카테고리",
             }
@@ -216,7 +214,7 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
                     display_df,
                     hide_index=True,
                     column_config={
-                        "예측매출(원)": st.column_config.NumberColumn(format="%,d"),
+                        "예상 매출(원)": st.column_config.NumberColumn(format="{:,.0f}"),
                     },
                 )
 
