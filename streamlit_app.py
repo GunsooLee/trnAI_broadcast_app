@@ -31,11 +31,13 @@ def extract_params(user_msg: str) -> dict | None:
         "없는 값은 null 혹은 빈 리스트로 채워라."
     )
 
+    today_str = dt.date.today().isoformat()
     try:
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
+                {"role": "system", "content": f"오늘 날짜는 {today_str} 입니다."},
                 {"role": "user", "content": user_msg},
             ],
             temperature=0,
