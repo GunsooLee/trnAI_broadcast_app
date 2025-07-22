@@ -69,7 +69,28 @@ def extract_params(user_msg: str) -> dict | None:
 # 캐시 유틸 ---------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=600, show_spinner=False)
+# --------------------------------- 헬퍼 ----------------------------------
+
+TIME_SLOT_KEYWORDS = {
+    "심야": ["심야", "새벽", "야간"],
+    "아침": ["아침", "조식"],
+    "오전": ["오전"],
+    "점심": ["점심", "정오"],
+    "오후": ["오후"],
+    "저녁": ["저녁", "밤"],
+}
+
+def infer_time_slots(text: str) -> list[str] | None:
+    """사용자 입력에서 대표 키워드를 찾아 time_slots 리스트 추정."""
+
+    lowered = text.lower()
+    hits: list[str] = []
+    for slot, words in TIME_SLOT_KEYWORDS.items():
+        if any(w in lowered for w in words):
+            hits.append(slot)
+    return hits or None
+
+@st.cache_data(ttl=120, show_spinner=False)
 def cached_recommend(
     target_date: dt.date,
     time_slots: list[str],
@@ -108,6 +129,12 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
         st.session_state.messages.append(("assistant", assistant_msg))
         st.chat_message("assistant").write(assistant_msg)
     else:
+        # LLM이 time_slots 추출에 실패하면 휴리스틱으로 보정
+        if params and not params.get("time_slots"):
+            guess = infer_time_slots(prompt)
+            if guess:
+                params["time_slots"] = guess
+
         # 파라미터 JSON 먼저 사용자에게 즉시 보여주기 -----------------------------
         try:
             # ---------------- 날짜 파싱 ------------------------------------
@@ -248,3 +275,42 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
             assistant_msg = f"추천 실행 중 오류: {e}"
             st.session_state.messages.append(("assistant", assistant_msg))
             st.chat_message("assistant").write(assistant_msg)
+
+# ---------------------------------------------------------------------------
+# 사이드바 디버그 패널: 모델 피처 중요도 & 데이터 분포
+# ---------------------------------------------------------------------------
+
+with st.sidebar.expander("🛠️ 모델·데이터 통계", expanded=False):
+    if st.button("Feature Importance / 분포 보기"):
+        with st.spinner("모델 및 데이터 로딩 중..."):
+            try:
+                # 모델 로드 및 피처 중요도 계산
+                pipe = br._load_model()  # type: ignore
+                model = pipe.named_steps["model"]  # type: ignore
+                importances = getattr(model, "feature_importances_", None)
+                if importances is not None:
+                    try:
+                        feat_names = pipe.named_steps["pre"].get_feature_names_out()  # type: ignore
+                    except Exception:
+                        feat_names = [f"f{i}" for i in range(len(importances))]
+
+                    imp_df = (
+                        pd.DataFrame({"feature": feat_names, "importance": importances})
+                        .sort_values("importance", ascending=False)
+                        .head(40)
+                    )
+                    st.subheader("🔎 상위 Feature Importance (Top 40)")
+                    st.bar_chart(imp_df.set_index("feature"))
+
+                # 학습 데이터 분포 확인
+                data_df = br.load_data()  # type: ignore
+                if "time_slot_int" in data_df.columns:
+                    st.subheader("📊 학습 데이터 시간대 분포 (time_slot_int)")
+                    st.bar_chart(data_df["time_slot_int"].value_counts().sort_index())
+
+                if "weekday" in data_df.columns:
+                    st.subheader("📊 요일별 분포 (weekday)")
+                    st.bar_chart(data_df["weekday"].value_counts())
+
+            except Exception as ex:
+                st.error(f"디버그 정보 생성 실패: {ex}")
