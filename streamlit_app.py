@@ -85,7 +85,21 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
         # 파라미터 JSON 먼저 사용자에게 즉시 보여주기 -----------------------------
         try:
             target_date = dt.date.fromisoformat(params["date"])
-            time_slots = params["time_slots"]
+
+            # ----- 파라미터 보정: time_slots, day_type ------------------------
+            # time_slots가 없으면 전체 기본 슬롯 사용
+            time_slots = params.get("time_slots") or [
+                "아침",
+                "오전",
+                "점심",
+                "오후",
+                "저녁",
+                "야간",
+            ]
+
+            # day_type이 없으면 평일/주말 계산
+            if not params.get("day_type"):
+                params["day_type"] = "주말" if target_date.weekday() >= 5 else "평일"
 
             # 날씨 기본 값 준비 (recommend 내부에서 보강될 수 있음)
             weather_info = {
