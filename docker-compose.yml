@@ -8,9 +8,9 @@ services:
     environment:
       - DB_URI=postgresql://TIKITAKA:TIKITAKA@TIKITAKA_postgres:5432/TIKITAKA_DB
     networks:
-      - my_pg_net
+      - shopping-network
     restart: unless-stopped
 
 networks:
-  my_pg_net:
+  shopping-network:
     external: true
