@@ -237,14 +237,24 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
                         categories=params.get("categories"),
                     )
                 else:
-                    rec_df = cached_recommend(
+                    # 다양성 샘플링 및 상위 후보 표기를 위해 캐시를 사용하지 않고 직접 호출
+                    rec_result = br.recommend(
                         target_date,
                         time_slots,
                         product_codes=params.get("products", []),
                         weather_info=weather_info,
                         category_mode=False,
                         categories=None,
+                        top_k_sample=3,
+                        temp=0.5,
+                        top_n=3,
                     )
+
+                    if isinstance(rec_result, tuple):
+                        rec_df, top_df = rec_result
+                    else:
+                        rec_df = rec_result
+                        top_df = None
 
             # 스피너 종료 후 결과 표시
             # ----- 결과 포맷팅 및 한글 컬럼명 ------------------------------
@@ -268,8 +278,19 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
             # 스피너 종료 후 결과 표시
             # 제목과 표를 하나의 컨테이너로 묶어 표시
             with result_placeholder.container():
-                st.markdown("### 📊 매출 예측 결과")
+                st.markdown("### 📊 카테고리별 매출 예측 결과")
                 st.dataframe(display_df, hide_index=True)
+
+                # 상위 후보 표 추가 표시
+                if top_df is not None:
+                    st.markdown("#### 상위 3개 후보")
+                    top_disp = top_df.copy()
+                    if "predicted_sales" in top_disp.columns:
+                        top_disp["predicted_sales"] = (
+                            top_disp["predicted_sales"].round().astype(int).map("{:,}".format)
+                        )
+                    top_disp = top_disp.rename(columns={k: v for k, v in col_name_map.items() if k in top_disp.columns})
+                    st.dataframe(top_disp, hide_index=True)
 
         except Exception as e:
             assistant_msg = f"추천 실행 중 오류: {e}"

@@ -40,7 +40,8 @@ from functools import lru_cache
 # ---------------------------------------------------------------------------
 # DB 설정 -----------------------------------------------------
 # ---------------------------------------------------------------------------
-DB_URI = "postgresql://TIKITAKA:TIKITAKA@TIKITAKA_postgres:5432/TIKITAKA_DB"  # WSL2 Docker 컨테이너(Postgres 16) 접속 정보
+DB_URI = "postgresql://TIKITAKA:TIKITAKA@TIKITAKA_postgres:5432/TIKITAKA_DB" # 서버
+#DB_URI = "postgresql://TIKITAKA:TIKITAKA@175.106.97.27:5432/TIKITAKA_DB" # 로컬
 TABLE_NAME = "broadcast_training_dataset"
 MODEL_FILE = "xgb_broadcast_sales.joblib"
 
@@ -256,7 +257,11 @@ def recommend(
     weather_info: Dict[str, float] | None = None,
     category_mode: bool = False,
     categories: List[str] | None = None,
-) -> pd.DataFrame:
+    *,
+    top_k_sample: int = 3,
+    temp: float = 0.5,
+    top_n: int | None = None,
+) -> "pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]":
     """시간대별 최적 상품(또는 카테고리)을 추천한다.
 
     category_mode=True 이면 product_codes를 무시하고 카테고리 단위로 추천한다.
@@ -315,6 +320,7 @@ def recommend(
     # 슬롯별로 예측 매출이 높은 후보를 선택하되, 전체 편성표에서 중복된 카테고리/상품이 나오지 않도록 한다.
     chosen_rows = []
     used_labels: set = set()
+    top_n_rows: list[pd.DataFrame] = []
 
     for slot in time_slots:
         slot_df = cand_df[cand_df["time_slot"] == slot]
@@ -324,21 +330,38 @@ def recommend(
         # 예측 매출 내림차순 정렬
         slot_df = slot_df.sort_values("predicted_sales", ascending=False)
 
+        # 다양성: 상위 top_k_sample 중 softmax 샘플링
+        top_slice = slot_df.head(top_k_sample)
+        scores = top_slice["predicted_sales"].to_numpy()
+        scaled = scores / scores.max() / temp
+        probs = np.exp(scaled)
+        probs = probs / probs.sum()
+
+        # 중복 방지를 위해 최대 10회 시도
         pick_row = None
-        for _, row in slot_df.iterrows():
-            label = row[label_col]
-            if label not in used_labels:
-                pick_row = row
+        for _ in range(10):
+            idx = np.random.choice(len(top_slice), p=probs)
+            candidate = top_slice.iloc[idx]
+            if candidate[label_col] not in used_labels:
+                pick_row = candidate
                 break
 
-        # 모든 후보가 이미 사용됐다면 최고 매출 항목 선택
+        # 모두 중복이면 최고 매출 항목 사용
         if pick_row is None:
             pick_row = slot_df.iloc[0]
+
+        # 상위 N 후보 저장(요청 시)
+        if top_n:
+            top_n_rows.append(slot_df.head(top_n).assign(slot=slot))
 
         chosen_rows.append(pick_row)
         used_labels.add(pick_row[label_col])
 
     best = pd.DataFrame(chosen_rows).reset_index(drop=True)
+
+    if top_n:
+        top_df = pd.concat(top_n_rows).reset_index(drop=True)
+        return best, top_df
     return best
 
 # ---------------------------------------------------------------------------
@@ -380,6 +403,9 @@ def main() -> None:
         "--categories",
         help="콤마로 구분된 카테고리 식별자 목록 (대/중/소/세/product_type). --category 플래그와 함께 사용",
     )
+    rec_parser.add_argument("--top_k_sample", type=int, default=3, help="다양성 샘플링 크기")
+    rec_parser.add_argument("--diversity_temp", type=float, default=0.5, help="다양성 샘플링 온도 (0=탐욕, ↑=랜덤)")
+    rec_parser.add_argument("--top_n", type=int, help="상위 N개 후보 반환")
 
     args = parser.parse_args()
 
@@ -404,9 +430,18 @@ def main() -> None:
             weather_info,
             category_mode=args.category or bool(categories),
             categories=categories,
+            top_k_sample=args.top_k_sample,
+            temp=args.diversity_temp,
+            top_n=args.top_n,
         )
-        print("\n=== 추천 편성표 ===")
-        print(rec_df.to_string(index=False))
+        if isinstance(rec_df, tuple):
+            print("\n=== 추천 편성표 ===")
+            print(rec_df[0].to_string(index=False))
+            print("\n=== 상위 N개 후보 ===")
+            print(rec_df[1].to_string(index=False))
+        else:
+            print("\n=== 추천 편성표 ===")
+            print(rec_df.to_string(index=False))
         return
 
     parser.print_help()
