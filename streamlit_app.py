@@ -237,6 +237,9 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
                         categories=params.get("categories"),
                     )
                 else:
+                    # 결과 변수 초기화 (상위 후보 표가 없을 수도 있으므로)
+                    top_df: pd.DataFrame | None = None
+
                     # 다양성 샘플링 및 상위 후보 표기를 위해 캐시를 사용하지 않고 직접 호출
                     rec_result = br.recommend(
                         target_date,
@@ -254,7 +257,6 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
                         rec_df, top_df = rec_result
                     else:
                         rec_df = rec_result
-                        top_df = None
 
             # 스피너 종료 후 결과 표시
             # ----- 결과 포맷팅 및 한글 컬럼명 ------------------------------
