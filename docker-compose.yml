@@ -1,0 +1,11 @@
+version: "3.8"
+
+services:
+  recommender:
+    build: .
+    container_name: streamlit_recommender
+    ports:
+      - "8501:8501"
+    environment:
+      - DB_URI=postgresql://TRN_AI:TRN_AI@host.docker.internal:5432/TRNAI_DB
+    restart: unless-stopped
