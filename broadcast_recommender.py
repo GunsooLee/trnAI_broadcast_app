@@ -27,7 +27,8 @@ from typing import List, Dict
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
@@ -220,12 +221,38 @@ def prepare_candidate_row(
     }
 
 
+def get_weather_by_date(date: dt.date) -> Dict[str, float]:
+    """weather_daily 테이블에서 주어진 날짜의 날씨 정보를 반환한다.
+
+    반환 형식: {"weather": "맑음", "temperature": 23.4, "precipitation": 0.0}
+    값이 없으면 기본값을 반환한다.
+    """
+    engine = create_engine(DB_URI)
+    query = text(
+        """
+        SELECT weather, temperature, precipitation
+        FROM weather_daily
+        WHERE weather_date = :d
+        LIMIT 1
+        """
+    )
+
+    df = pd.read_sql(query, engine, params={"d": date})
+    if df.empty:
+        return {"weather": "맑음", "temperature": 20.0, "precipitation": 0.0}
+    row = df.iloc[0]
+    return {
+        "weather": row["weather"],
+        "temperature": float(row["temperature"] or 20.0),
+        "precipitation": float(row["precipitation"] or 0.0),
+    }
+
+
 def recommend(
     target_date: dt.date,
     time_slots: List[str],
-    product_codes: List[str],
-    weather_info: Dict[str, float],
-    *,
+    product_codes: List[str] | None = None,
+    weather_info: Dict[str, float] | None = None,
     category_mode: bool = False,
     categories: List[str] | None = None,
 ) -> pd.DataFrame:
@@ -266,6 +293,9 @@ def recommend(
         if items_df.empty:
             raise ValueError("입력한 product_codes에 해당하는 상품이 없습니다.")
         label_col = "product_code"
+
+    if weather_info is None or not weather_info.get("weather"):
+        weather_info = get_weather_by_date(target_date)
 
     candidates: List[Dict] = []
     for slot in time_slots:

@@ -65,22 +65,17 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
         st.session_state.messages.append(("assistant", assistant_msg))
         st.chat_message("assistant").write(assistant_msg)
     else:
-        assistant_msg += "추출된 파라미터:\n" + json.dumps(params, ensure_ascii=False, indent=2)
-
         # 필수 파라미터 확인
         try:
             target_date = dt.date.fromisoformat(params["date"])
             time_slots = params["time_slots"]
             weather_info = {
-                "weather": params.get("weather", "맑음"),
-                "temperature": params.get("temperature", 20.0),
-                "precipitation": params.get("precipitation", 0.0),
+                "weather": params.get("weather"),
+                "temperature": params.get("temperature"),
+                "precipitation": params.get("precipitation"),
             }
 
-            # day_type, keywords 현재 모델에서 미사용이지만 화면에 표시를 위해 포함
-            day_type = params.get("day_type")
-            keywords = params.get("keywords")
-
+            # None 값이면 recommender 내부에서 DB 조회
             if params["mode"] == "카테고리":
                 rec_df = br.recommend(
                     target_date,
@@ -99,15 +94,27 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
                     category_mode=False,
                 )
 
+            if not weather_info["weather"]:
+                # broadcast_recommender가 날씨 채움, 우리는 화면 표시용으로도 사용
+                fetched = br.get_weather_by_date(target_date)  # type: ignore
+                weather_info.update(fetched)
+
+            # 디스플레이용 파라미터 보강
+            params["weather"] = weather_info["weather"]
+            params["temperature"] = weather_info["temperature"]
+            params["precipitation"] = weather_info["precipitation"]
+
+            # 다시 렌더링 파라미터 JSON 블록
+            assistant_msg += (
+                "### 최종 파라미터\n````json\n"
+                + json.dumps(params, ensure_ascii=False, indent=2)
+                + "\n````"
+            )
+
             assistant_msg += "\n\n추천 결과:"  # 표시 후 아래 데이터프레임 렌더링
             st.session_state.messages.append(("assistant", assistant_msg))
             st.chat_message("assistant").write(assistant_msg)
             st.dataframe(rec_df, hide_index=True)
-
-            # 추가 정보 표시
-            if day_type or keywords:
-                st.markdown("### 추가 파라미터")
-                st.json({"day_type": day_type, "keywords": keywords}, expanded=False)
 
         except Exception as e:
             assistant_msg = f"추천 실행 중 오류: {e}"
