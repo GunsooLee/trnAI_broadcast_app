@@ -92,8 +92,13 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
                 "precipitation": params.get("precipitation"),
             }
 
+            # 상품코드를 주지 않았거나 모드가 "카테고리"이면 카테고리 추천으로 간주
+            use_category = (
+                params.get("mode") == "카테고리" or not params.get("products")
+            )
+
             # None 값이면 recommender 내부에서 DB 조회
-            if params["mode"] == "카테고리":
+            if use_category:
                 rec_df = br.recommend(
                     target_date,
                     time_slots,
