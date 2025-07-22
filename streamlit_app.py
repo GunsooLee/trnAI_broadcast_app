@@ -7,6 +7,7 @@ import broadcast_recommender as br
 import json
 import os
 from openai import OpenAI
+from functools import lru_cache
 
 # OpenAI API 키는 환경변수 OPENAI_API_KEY 로 설정
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -44,7 +45,9 @@ def extract_params(user_msg: str) -> dict | None:
         "  \"keywords\": string[] | null,         # 상품 키워드 배열\n"
         "  \"mode\": string | null,              # '카테고리' | '상품코드'\n"
         "  \"categories\": string[] | null,       # 카테고리 식별자 목록\n"
-        "  \"products\": string[] | null          # 상품코드 목록\n"
+        "  \"products\": string[] | null,         # 상품코드 목록\n"
+        "  \"gender\": string | null,             # 성별 (남성/여성)\n"
+        "  \"age_group\": string | null           # 연령대 (예: '20대','30대','40대')\n"
         "}\n"
     )
 
@@ -62,6 +65,29 @@ def extract_params(user_msg: str) -> dict | None:
     except Exception as e:
         st.error(f"파라미터 추출 실패: {e}")
         return None
+
+# 캐시 유틸 ---------------------------------------------------------------
+# ---------------------------------------------------------------------------
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_recommend(
+    target_date: dt.date,
+    time_slots: list[str],
+    product_codes: list[str],
+    weather_info: dict,
+    category_mode: bool,
+    categories: list[str] | None,
+):
+    """브로드캐스트 추천을 캐싱해 동일 요청 재호출 시 속도를 향상."""
+
+    return br.recommend(
+        target_date,
+        time_slots,
+        product_codes=product_codes,
+        weather_info=weather_info,
+        category_mode=category_mode,
+        categories=categories,
+    )
 
 # 채팅 렌더링
 for role, msg in st.session_state.messages:
@@ -109,11 +135,15 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
             }
 
             # ---- 세부 단계 1: 날씨 정보 확인 -------------------------------
-            with st.status("날씨 정보 확인 중...", state="running") as w_status:  # type: ignore
+            with st.status("1/3 파라미터 추출 중...", state="running") as w_status:  # type: ignore
+                pass
+            w_status.update(label="1/3 파라미터 추출 완료", state="complete")  # type: ignore
+
+            with st.status("2/3 날짜, 날씨 등 기타 정보 확인 중...", state="running") as w_status:  # type: ignore
                 if not weather_info["weather"]:
                     fetched = br.get_weather_by_date(target_date)  # type: ignore
                     weather_info.update(fetched)
-                w_status.update(label="날씨 정보 확인 완료", state="complete")  # type: ignore
+                w_status.update(label="2/3 날짜, 날씨 등 기타 정보 확인 완료", state="complete")  # type: ignore
 
             # 디스플레이용 파라미터 가공(날씨 갱신 포함)
             disp_params = params.copy()
@@ -122,7 +152,7 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
             disp_params["precipitation"] = weather_info["precipitation"]
 
             assistant_msg += (
-                "### 추출된 파라미터\n````json\n"
+                "### 1/3 추출된 파라미터\n````json\n"
                 + json.dumps(disp_params, ensure_ascii=False, indent=2)
                 + "\n````\n"
             )
@@ -134,14 +164,14 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
             # 추천 결과는 placeholder에 나중에 채우기 -----------------------------
             result_placeholder = st.empty()
 
-            with st.spinner("모델 예측 중..."):
+            with st.spinner("3/3 모델 예측 중..."):
                 # 상품코드를 주지 않았거나 모드가 "카테고리"이면 카테고리 추천으로 간주
                 use_category = (
                     params.get("mode") == "카테고리" or not params.get("products")
                 )
 
                 if use_category:
-                    rec_df = br.recommend(
+                    rec_df = cached_recommend(
                         target_date,
                         time_slots,
                         product_codes=[],
@@ -150,17 +180,45 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
                         categories=params.get("categories"),
                     )
                 else:
-                    rec_df = br.recommend(
+                    rec_df = cached_recommend(
                         target_date,
                         time_slots,
                         product_codes=params.get("products", []),
                         weather_info=weather_info,
                         category_mode=False,
+                        categories=None,
                     )
 
             # 스피너 종료 후 결과 표시
-            result_placeholder.subheader("추천 결과")
-            result_placeholder.dataframe(rec_df, hide_index=True)
+            # ----- 결과 포맷팅 및 한글 컬럼명 ------------------------------
+            display_df = rec_df.copy()
+
+            # 숫자 3자리 콤마 포맷
+            if "predicted_sales" in display_df.columns:
+                display_df["predicted_sales"] = (
+                    display_df["predicted_sales"].round().astype(int).map("{:,.0f}".format)
+                )
+
+            # 컬럼명 매핑
+            col_name_map = {
+                "time_slot": "시간대",
+                "predicted_sales": "예측매출(원)",
+                "product_code": "상품코드",
+                "category": "카테고리",
+            }
+            display_df = display_df.rename(columns={k: v for k, v in col_name_map.items() if k in display_df.columns})
+
+            # 스피너 종료 후 결과 표시
+            # 제목과 표를 하나의 컨테이너로 묶어 표시
+            with result_placeholder.container():
+                st.markdown("### 📊 매출 예측 결과")
+                st.dataframe(
+                    display_df,
+                    hide_index=True,
+                    column_config={
+                        "예측매출(원)": st.column_config.NumberColumn(format="%,d"),
+                    },
+                )
 
         except Exception as e:
             assistant_msg = f"추천 실행 중 오류: {e}"

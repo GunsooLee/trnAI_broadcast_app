@@ -35,6 +35,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from xgboost import XGBRegressor
+from functools import lru_cache
 
 # ---------------------------------------------------------------------------
 # DB 설정 -----------------------------------------------------
@@ -261,7 +262,8 @@ def recommend(
     category_mode=True 이면 product_codes를 무시하고 카테고리 단위로 추천한다.
     """
 
-    pipe: Pipeline = joblib.load(MODEL_FILE)
+    # 모델은 메모리에 1회만 로드해 재사용 -----------------------------
+    pipe: Pipeline = _load_model()
 
     if category_mode:
         items_df = fetch_category_info()
@@ -338,6 +340,15 @@ def recommend(
 
     best = pd.DataFrame(chosen_rows).reset_index(drop=True)
     return best
+
+# ---------------------------------------------------------------------------
+# 모델 로딩 캐시 -------------------------------------------------------------
+# ---------------------------------------------------------------------------
+
+@lru_cache(maxsize=1)
+def _load_model() -> Pipeline:
+    """디스크에서 학습된 파이프라인을 1회만 로드해 캐시한다."""
+    return joblib.load(MODEL_FILE)
 
 # ---------------------------------------------------------------------------
 # CLI 인터페이스 -------------------------------------------------------------
