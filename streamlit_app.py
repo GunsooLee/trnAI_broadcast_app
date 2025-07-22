@@ -110,7 +110,37 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
     else:
         # 파라미터 JSON 먼저 사용자에게 즉시 보여주기 -----------------------------
         try:
-            target_date = dt.date.fromisoformat(params["date"])
+            # ---------------- 날짜 파싱 ------------------------------------
+            if params.get("date"):
+                target_date = dt.date.fromisoformat(params["date"])
+            else:
+                # 날짜가 없고 요일/주말 언급만 있을 때 다음 해당 요일을 찾는다
+                weekday_map = {
+                    "월요일": 0,
+                    "화요일": 1,
+                    "수요일": 2,
+                    "목요일": 3,
+                    "금요일": 4,
+                    "토요일": 5,
+                    "일요일": 6,
+                }
+
+                today = dt.date.today()
+                widx = weekday_map.get(params.get("day_type"))
+                if widx is not None:
+                    days_ahead = (widx - today.weekday() + 7) % 7
+                    days_ahead = 7 if days_ahead == 0 else days_ahead  # 다음 주 같은 요일
+                    target_date = today + dt.timedelta(days=days_ahead)
+                else:
+                    # day_type이 "주말"/"평일"인 경우: 주말이면 다음 토요일, 평일이면 내일
+                    if params.get("day_type") == "주말":
+                        days_ahead = (5 - today.weekday()) % 7  # 토요일까지
+                        days_ahead = 7 if days_ahead == 0 else days_ahead
+                        target_date = today + dt.timedelta(days=days_ahead)
+                    else:
+                        target_date = today + dt.timedelta(days=1)  # 기본 내일
+                # 추정한 날짜를 파라미터에도 반영
+                params["date"] = target_date.isoformat()
 
             # ----- 파라미터 보정: time_slots, day_type ------------------------
             # time_slots가 없으면 전체 기본 슬롯 사용
@@ -152,7 +182,7 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
             disp_params["precipitation"] = weather_info["precipitation"]
 
             assistant_msg += (
-                "### 1/3 추출된 파라미터\n````json\n"
+                "### 추출된 파라미터\n````json\n"
                 + json.dumps(disp_params, ensure_ascii=False, indent=2)
                 + "\n````\n"
             )
