@@ -1,5 +1,4 @@
 version: "3.8"
-
 services:
   recommender:
     build: .
@@ -7,5 +6,11 @@ services:
     ports:
       - "8501:8501"
     environment:
-      - DB_URI=postgresql://TRN_AI:TRN_AI@host.docker.internal:5432/TRNAI_DB
+      - DB_URI=postgresql://TIKITAKA:TIKITAKA@TIKITAKA_postgres:5432/TIKITAKA_DB
+    networks:
+      - my_pg_net
     restart: unless-stopped
+
+networks:
+  my_pg_net:
+    external: true
