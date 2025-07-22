@@ -38,7 +38,7 @@ from xgboost import XGBRegressor
 # ---------------------------------------------------------------------------
 # DB 설정 -----------------------------------------------------
 # ---------------------------------------------------------------------------
-DB_URI = "postgresql://TRN_AI:TRN_AI@localhost:5432/TRNAI_DB"  # WSL2 Docker 컨테이너(Postgres 16) 접속 정보
+DB_URI = "postgresql://TIKITAKA:TIKITAKA@TIKITAKA_postgres:5432/TIKITAKA_DB"  # WSL2 Docker 컨테이너(Postgres 16) 접속 정보
 TABLE_NAME = "broadcast_training_dataset"
 MODEL_FILE = "xgb_broadcast_sales.joblib"
 
