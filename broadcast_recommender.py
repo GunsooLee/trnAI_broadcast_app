@@ -34,45 +34,9 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from xgboost import XGBRegressor
-from functools import lru_cache
 from sklearn.feature_extraction.text import TfidfVectorizer
-
-# --------------------------- Mecab tokenizer utils ---------------------------
-try:
-    import MeCab  # mecab-python3
-except ImportError:  # Library not installed
-    MeCab = None
-
-@lru_cache(maxsize=1)
-def _get_mecab() -> "MeCab.Tagger | None":
-    """Return a cached MeCab Tagger instance (mecab-python3), or None if unavailable."""
-    try:
-        if MeCab is None:
-            return None
-        return MeCab.Tagger("-Owakati")
-    except Exception:
-        return None
-
-def mecab_tokenizer(text):
-    """Tokenize Korean text with mecab-python3.
-    Accepts None/NaN/float inputs and returns an empty list in such cases
-    to prevent AttributeError during vectorization.
-    """
-    # Handle non-string values safely
-    if text is None or (isinstance(text, float) and pd.isna(text)):
-        return []
-    # Ensure we have a string
-    text = str(text)
-
-    tagger = _get_mecab()
-    if tagger is None or not text:
-        return text.split()
-
-    parsed = tagger.parse(text)
-    # Tagger with -Owakati already returns space-separated tokens
-    if parsed:
-        return parsed.strip().split()
-    return text.split()
+from tokenizer_utils import mecab_tokenizer
+from functools import lru_cache
 
 # ---------------------------------------------------------------------------
 # DB 설정 -----------------------------------------------------

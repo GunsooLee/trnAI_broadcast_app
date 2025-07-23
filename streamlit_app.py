@@ -325,6 +325,17 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
 # 사이드바 디버그 패널: 모델 피처 중요도 & 데이터 분포
 # ---------------------------------------------------------------------------
 
+import sys
+from tokenizer_utils import mecab_tokenizer  # ensure module import for new models
+
+# Compatibility shim for models pickled before tokenizer_utils module existed.
+# They reference `mecab_tokenizer` inside the __main__ module that performed
+# training (e.g., broadcast_recommender.py).  We expose the same symbol in the
+# current top-level module so that joblib can resolve it during unpickling.
+sys.modules[__name__].mecab_tokenizer = mecab_tokenizer
+
+import joblib
+
 with st.sidebar.expander("🛠️ 모델·데이터 통계", expanded=False):
     if st.button("Feature Importance / 분포 보기"):
         with st.spinner("모델 및 데이터 로딩 중..."):
