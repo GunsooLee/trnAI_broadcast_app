@@ -1,5 +1,8 @@
 # 🛍️ Home Shopping Broadcast Sales Prediction & Recommender
 
+
+👉 데모 서버: [http://175.106.97.27:8501/](http://175.106.97.27:8501/)
+
 한국어 홈쇼핑 방송의 편성·매출 예측 파이프라인입니다. 숫자·범주형 피처뿐 아니라 **상품명(`product_name`) / 키워드(`keyword`)** 텍스트를 Mecab + TF-IDF 로 벡터화하여 XGBoost 모델이 예측 정확도를 높입니다.
 
 ## 주요 기능
@@ -59,7 +62,7 @@ print(result)
 streamlit run streamlit_app.py
 ```
 환경변수 `OPENAI_API_KEY` 가 필요합니다.
-👉 데모 서버가 구동 중이라면 브라우저에서 [http://175.106.97.27:8501/](http://175.106.97.27:8501/) 로 바로 접속해 체험할 수 있습니다.
+
 
 ## Docker 실행 (학습은 로컬, 추천만 컨테이너로)
 ```bash
