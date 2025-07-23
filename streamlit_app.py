@@ -222,6 +222,9 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
             result_placeholder = st.empty()
 
             with st.spinner("3/3 모델 예측 중..."):
+                # 결과 테이블 초기화 (top_df가 정의되지 않을 경우 대비)
+                top_df: pd.DataFrame | None = None
+
                 # 상품코드를 주지 않았거나 모드가 "카테고리"이면 카테고리 추천으로 간주
                 use_category = (
                     params.get("mode") == "카테고리" or not params.get("products")
@@ -238,7 +241,7 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
                     )
                 else:
                     # 결과 변수 초기화 (상위 후보 표가 없을 수도 있으므로)
-                    top_df: pd.DataFrame | None = None
+                    # top_df: pd.DataFrame | None = None
 
                     # 다양성 샘플링 및 상위 후보 표기를 위해 캐시를 사용하지 않고 직접 호출
                     rec_result = br.recommend(
