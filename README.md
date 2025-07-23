@@ -100,4 +100,35 @@ docker compose logs -f app
 
 </details>
 
+## 🔍 어떻게 질문을 이해하나요?
+사용자가 입력한 문장은 OpenAI GPT로 전송되어 **날짜, 시간대, 키워드, 상품코드, 카테고리 등**을 추출한 JSON 형태의 파라미터로 변환됩니다.
+
+예시 입력 → 추출 JSON
+
+```text
+"내일 저녁에 루테인 제품 방송하면 얼마나 팔릴까?"
+```
+
+```json
+{
+  "date": "2025-07-24",
+  "time_slots": ["저녁"],
+  "keywords": ["루테인"],
+  "mode": null,
+  "products": null,
+  "categories": null
+}
+```
+
+이 JSON 이 `recommend()` 함수로 전달되어 모델 예측에 활용됩니다.
+
+---
+
+## 🚧 향후 개선 로드맵
+- 🔬 **모델 고도화**: 하이퍼파라미터 튜닝, LightGBM/TabNet 앙상블 실험
+- 🗣️ **질문 이해 향상**: 키워드, 상품명 외에 프로모션·할인 조건 등 추가 파싱
+- 📈 **모니터링**: 실시간 예측 정확도·매출 대비 그래프 대시보드(Grafana)
+- 🌐 **REST API**: FastAPI 기반 추천/학습 엔드포인트 분리 제공
+- ☁️ **배포 자동화**: GitHub Actions + Docker Hub, Kubernetes Helm 차트
+
 ---
