@@ -8,13 +8,12 @@
   # 2) 내일 방송편성 추천
   python broadcast_recommender.py recommend \
       --date 2025-07-18 \
-      --time_slots "08,12,19,21" \
-      --products "P1001,P2002,P3003,P4004"
+      --time_slots "오전,오후,저녁" \
 
   # 3) 내일 방송편성 추천 (카테고리 단위)
   python broadcast_recommender.py recommend \
       --date 2025-07-18 \
-      --time_slots "08,12,19,21" \
+      --time_slots "아침,오후,저녁" \
       --category
 
 """
@@ -40,8 +39,8 @@ from functools import lru_cache
 # ---------------------------------------------------------------------------
 # DB 설정 -----------------------------------------------------
 # ---------------------------------------------------------------------------
-DB_URI = "postgresql://TIKITAKA:TIKITAKA@TIKITAKA_postgres:5432/TIKITAKA_DB" # 서버
-#DB_URI = "postgresql://TIKITAKA:TIKITAKA@175.106.97.27:5432/TIKITAKA_DB" # 로컬
+#DB_URI = "postgresql://TIKITAKA:TIKITAKA@TIKITAKA_postgres:5432/TIKITAKA_DB" # 서버
+DB_URI = "postgresql://TIKITAKA:TIKITAKA@175.106.97.27:5432/TIKITAKA_DB" # 로컬
 TABLE_NAME = "broadcast_training_dataset"
 MODEL_FILE = "xgb_broadcast_sales.joblib"
 
@@ -69,12 +68,12 @@ def load_data() -> pd.DataFrame:
                 ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
             ) AS product_avg_sales,
             
-            -- 카테고리(중분류)별 과거 평균 매출 (현재 행 제외)
+            -- 카테고리(중분류)별 시간대별 과거 평균 매출 (현재 행 제외)
             AVG(sales_amount) OVER (
-                PARTITION BY product_mgroup 
+                PARTITION BY product_mgroup, time_slot
                 ORDER BY broadcast_datetime 
                 ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-            ) AS category_avg_sales,
+            ) AS category_timeslot_avg_sales,
 
             -- 상품별 과거 방송 횟수
             COUNT(*) OVER (
@@ -95,7 +94,7 @@ def load_data() -> pd.DataFrame:
 
     # NULL 값을 0으로 채우기
     df['product_avg_sales'] = df['product_avg_sales'].fillna(0)
-    df['category_avg_sales'] = df['category_avg_sales'].fillna(0)
+    df['category_timeslot_avg_sales'] = df['category_timeslot_avg_sales'].fillna(0)
     df['product_broadcast_count'] = df['product_broadcast_count'].fillna(0)
     
     return df
@@ -110,7 +109,7 @@ def build_pipeline() -> Pipeline:
         "product_price",
         "time_slot_int",
         "product_avg_sales",   # <<< 추가: 상품 과거 평균 매출
-        "category_avg_sales",  # <<< 추가: 카테고리 과거 평균 매출
+        "category_timeslot_avg_sales",  # <<< 추가: 카테고리 과거 평균 매출
         "product_broadcast_count", # <<< 추가: 상품 과거 방송 횟수
     ]
 
@@ -235,11 +234,12 @@ def fetch_category_info() -> pd.DataFrame:
             product_sgroup,
             product_dgroup,
             product_type,
+            time_slot,
             COALESCE(AVG(product_price), 0) AS product_price,
-            COALESCE(AVG(sales_amount), 0) AS category_avg_sales
+            COALESCE(AVG(sales_amount), 0) AS category_timeslot_avg_sales
             -- 필요시 카테고리별 방송 횟수 등도 추가 가능
         FROM {TABLE_NAME}
-        GROUP BY product_lgroup, product_mgroup, product_sgroup, product_dgroup, product_type
+        GROUP BY product_lgroup, product_mgroup, product_sgroup, product_dgroup, product_type, time_slot 
     """
     return pd.read_sql(query, engine)
 
@@ -290,11 +290,10 @@ def prepare_candidate_row(
         row_data["product_avg_sales"] = product["product_avg_sales"]
         row_data["product_broadcast_count"] = product["product_broadcast_count"]
         product_mgroup = product.get("product_mgroup")
-        row_data["category_avg_sales"] = category_sales_map.get(product_mgroup, 0)
-
+        row_data["category_timeslot_avg_sales"] = category_sales_map.get((product_mgroup, time_slot), 0)
     
-    if "category_avg_sales" in product:
-        row_data["category_avg_sales"] = product["category_avg_sales"]
+    if "category_timeslot_avg_sales" in product:
+        row_data["category_timeslot_avg_sales"] = product["category_timeslot_avg_sales"]
         row_data["product_avg_sales"] = 0
         row_data["product_broadcast_count"] = 0
         
@@ -335,7 +334,7 @@ def recommend(
     category_mode: bool = False,
     categories: List[str] | None = None,
     *,
-    top_k_sample: int = 3,
+    top_k_sample: int = 5,
     temp: float = 0.5,
     top_n: int | None = None,
 ) -> "pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]":
@@ -348,7 +347,7 @@ def recommend(
     pipe: Pipeline = _load_model()
 
     all_categories_info = fetch_category_info()
-    category_sales_map = all_categories_info.set_index('product_mgroup')['category_avg_sales'].to_dict()
+    category_sales_map = all_categories_info.set_index(['product_mgroup', 'time_slot'])['category_timeslot_avg_sales'].to_dict()
     
 
     if category_mode:
