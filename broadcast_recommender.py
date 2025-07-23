@@ -50,10 +50,55 @@ MODEL_FILE = "xgb_broadcast_sales.joblib"
 # ---------------------------------------------------------------------------
 
 def load_data() -> pd.DataFrame:
-    """전체 학습 데이터를 DataFrame으로 가져온다."""
+    """
+    단순 SELECT가 아닌, 윈도우 함수를 이용해 Feature Engineering이 적용된
+    학습 데이터를 DataFrame으로 가져온다.
+    """
     engine = create_engine(DB_URI)
-    query = f"SELECT * FROM {TABLE_NAME} WHERE sales_amount IS NOT NULL"
-    return pd.read_sql(query, engine)
+    
+    # 윈도우 함수를 사용한 SQL 쿼리
+    # 각 행(방송)에 대해, 그 방송이 있기 전까지의 과거 데이터를 기반으로 평균값을 계산
+    query = f"""
+    WITH data AS (
+        SELECT 
+            *,
+            -- 상품별 과거 평균 매출 (현재 행 제외)
+            AVG(sales_amount) OVER (
+                PARTITION BY product_code 
+                ORDER BY broadcast_datetime 
+                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+            ) AS product_avg_sales,
+            
+            -- 카테고리(중분류)별 과거 평균 매출 (현재 행 제외)
+            AVG(sales_amount) OVER (
+                PARTITION BY product_mgroup 
+                ORDER BY broadcast_datetime 
+                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+            ) AS category_avg_sales,
+
+            -- 상품별 과거 방송 횟수
+            COUNT(*) OVER (
+                PARTITION BY product_code 
+                ORDER BY broadcast_datetime 
+                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+            ) AS product_broadcast_count
+
+        FROM {TABLE_NAME}
+        WHERE sales_amount IS NOT NULL
+    )
+    SELECT * FROM data 
+    -- 과거 기록이 없는 첫 방송의 경우, NULL값을 0으로 채움
+    WHERE product_broadcast_count > 0 OR sales_amount IS NOT NULL; 
+    """
+    
+    df = pd.read_sql(query, engine)
+
+    # NULL 값을 0으로 채우기
+    df['product_avg_sales'] = df['product_avg_sales'].fillna(0)
+    df['category_avg_sales'] = df['category_avg_sales'].fillna(0)
+    df['product_broadcast_count'] = df['product_broadcast_count'].fillna(0)
+    
+    return df
 
 
 def build_pipeline() -> Pipeline:
@@ -63,7 +108,10 @@ def build_pipeline() -> Pipeline:
         "temperature",
         "precipitation",
         "product_price",
-        "time_slot_int",  # 새로 추가된 0~23 정수형 시간대
+        "time_slot_int",
+        "product_avg_sales",   # <<< 추가: 상품 과거 평균 매출
+        "category_avg_sales",  # <<< 추가: 카테고리 과거 평균 매출
+        "product_broadcast_count", # <<< 추가: 상품 과거 방송 횟수
     ]
 
     categorical_features = [
@@ -108,7 +156,8 @@ def train() -> None:
     # 텍스트 컬럼은 제외: 별도 텍스트 전처리를 적용해 실험 후, 성능 개선 시 포함하기로 함
     drop_cols = [
         "broadcast_id",
-        "broadcast_duration",        "broadcast_datetime",
+        "broadcast_duration",        
+        "broadcast_datetime",
         "product_name",  # 텍스트 컬럼 제외
         "keyword",  # 텍스트 컬럼 제외
         "order_count",  # 단일 타깃 학습을 위해 제외. 필요시 다중 타깃 학습 가능
@@ -153,19 +202,31 @@ def _season_kr(month: int) -> str:
     )
 
 
+# 추천할 상품의 '전체 기간' 평균 실적을 조회하도록 수정
 def fetch_product_info(product_codes: List[str]) -> pd.DataFrame:
     engine = create_engine(DB_URI)
     code_tuple = tuple(product_codes)
-    query = (
-        f"SELECT DISTINCT ON (product_code) * FROM {TABLE_NAME} "
-        f"WHERE product_code IN {code_tuple}"
-    )
+    query = f"""
+        SELECT 
+            product_code,
+            -- 상품의 대표 카테고리 정보 (가장 마지막 값 사용)
+            MAX(product_lgroup) AS product_lgroup,
+            MAX(product_mgroup) AS product_mgroup,
+            MAX(product_sgroup) AS product_sgroup,
+            MAX(product_dgroup) AS product_dgroup,
+            MAX(product_type) AS product_type,
+            -- 모델에 필요한 피처들 (전체 기간 Groupby)
+            COALESCE(AVG(product_price), 0) AS product_price,
+            COALESCE(AVG(sales_amount), 0) AS product_avg_sales,
+            COUNT(*) AS product_broadcast_count
+        FROM {TABLE_NAME}
+        WHERE product_code IN {code_tuple}
+        GROUP BY product_code
+    """
     return pd.read_sql(query, engine)
 
-
+# 카테고리 모드일 때도 동일하게 '카테고리별 전체 기간' 평균 실적 조회
 def fetch_category_info() -> pd.DataFrame:
-    """카테고리(대·중·소·세)별 평균 가격/방송시간 정보를 반환한다."""
-
     engine = create_engine(DB_URI)
     query = f"""
         SELECT 
@@ -175,9 +236,10 @@ def fetch_category_info() -> pd.DataFrame:
             product_dgroup,
             product_type,
             COALESCE(AVG(product_price), 0) AS product_price,
-            AVG(broadcast_duration)  AS broadcast_duration
+            COALESCE(AVG(sales_amount), 0) AS category_avg_sales
+            -- 필요시 카테고리별 방송 횟수 등도 추가 가능
         FROM {TABLE_NAME}
-        GROUP BY  product_lgroup, product_mgroup, product_sgroup, product_dgroup, product_type
+        GROUP BY product_lgroup, product_mgroup, product_sgroup, product_dgroup, product_type
     """
     return pd.read_sql(query, engine)
 
@@ -187,6 +249,7 @@ def prepare_candidate_row(
     time_slot: str,
     product: pd.Series,
     weather_info: Dict[str, float],
+    category_sales_map: Dict[str, float], # <<< 인자 추가
 ) -> Dict:
     """모델이 요구하는 입력 형태(딕셔너리)로 변환"""
 
@@ -205,23 +268,37 @@ def prepare_candidate_row(
         }
         slot_int = slot_map.get(time_slot, 12)
 
-    return {
-        "broadcast_duration": product["broadcast_duration"],
+    # 1단계에서 가져온 모든 피처를 모델 입력 형식으로 매핑
+    row_data = {
         "temperature": weather_info["temperature"],
         "precipitation": weather_info["precipitation"],
         "product_price": product["product_price"],
+        "time_slot_int": slot_int,
         "weekday": _weekday_kr(date),
         "time_slot": time_slot,
-        "time_slot_int": slot_int,
         "season": _season_kr(date.month),
         "weather": weather_info["weather"],
         "product_lgroup": product["product_lgroup"],
         "product_mgroup": product["product_mgroup"],
         "product_sgroup": product["product_sgroup"],
         "product_dgroup": product["product_dgroup"],
-        "product_type": product["product_type"],
+        "product_type": product["product_type"]
     }
 
+    # product 모드와 category 모드에서 들어오는 피처 이름이 다르므로 분기 처리
+    if "product_avg_sales" in product:
+        row_data["product_avg_sales"] = product["product_avg_sales"]
+        row_data["product_broadcast_count"] = product["product_broadcast_count"]
+        product_mgroup = product.get("product_mgroup")
+        row_data["category_avg_sales"] = category_sales_map.get(product_mgroup, 0)
+
+    
+    if "category_avg_sales" in product:
+        row_data["category_avg_sales"] = product["category_avg_sales"]
+        row_data["product_avg_sales"] = 0
+        row_data["product_broadcast_count"] = 0
+        
+    return row_data
 
 def get_weather_by_date(date: dt.date) -> Dict[str, float]:
     """weather_daily 테이블에서 주어진 날짜의 날씨 정보를 반환한다.
@@ -270,8 +347,12 @@ def recommend(
     # 모델은 메모리에 1회만 로드해 재사용 -----------------------------
     pipe: Pipeline = _load_model()
 
+    all_categories_info = fetch_category_info()
+    category_sales_map = all_categories_info.set_index('product_mgroup')['category_avg_sales'].to_dict()
+    
+
     if category_mode:
-        items_df = fetch_category_info()
+        items_df = all_categories_info.copy()
         key_cols = [
             "product_lgroup",
             "product_mgroup",
@@ -307,7 +388,7 @@ def recommend(
     candidates: List[Dict] = []
     for slot in time_slots:
         for _, item in items_df.iterrows():
-            row_dict = prepare_candidate_row(target_date, slot, item, weather_info)
+            row_dict = prepare_candidate_row(target_date, slot, item, weather_info, category_sales_map)
             pred = pipe.predict(pd.DataFrame([row_dict]))[0]
             candidates.append({
                 "time_slot": slot,

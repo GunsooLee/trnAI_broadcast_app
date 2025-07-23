@@ -1,4 +1,5 @@
 import datetime as dt
+import zoneinfo  # 표준 타임존 처리 (Python 3.9+)
 from typing import List
 
 import streamlit as st
@@ -25,9 +26,11 @@ if "messages" not in st.session_state:
 def extract_params(user_msg: str) -> dict | None:
     """LLM을 호출해 파라미터(dict) 추출. 실패 시 None 반환"""
 
-    today = dt.date.today()
-    today_str = today.isoformat()
-    today_weekday_kr = ["월","화","수","목","금","토","일"][today.weekday()]
+    # KST(Asia/Seoul) 고정 날짜·요일
+    today_dt = dt.datetime.now(zoneinfo.ZoneInfo("Asia/Seoul"))
+    today_date = today_dt.date()
+    today_str = today_date.isoformat()
+    today_weekday_kr = ["월요일","화요일","수요일","목요일","금요일","토요일","일요일"][today_date.weekday()]
 
     system_prompt = (
         "You are a machine that only returns JSON. Do not add any text before or after the JSON object. Your entire response must be only the JSON object itself.\n\n"
@@ -41,6 +44,7 @@ def extract_params(user_msg: str) -> dict | None:
         "  \"weather\": string | null,            # 예상 날씨 (맑음/흐림 등)\n"
         "  \"temperature\": number | null,        # 평균 기온 (℃)\n"
         "  \"precipitation\": number | null,      # 예상 강수량 (mm)\n"
+        "  \"season\": string | null,             # 계절 (봄/여름/가을/겨울)\n"
         "  \"day_type\": string | null,           # 평일/주말/공휴일\n"
         "  \"keywords\": string[] | null,         # 상품 키워드 배열\n"
         "  \"mode\": string | null,              # '카테고리' | '상품코드'\n"
