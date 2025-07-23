@@ -23,6 +23,7 @@ import datetime as dt
 import joblib
 import os
 from typing import List, Dict
+import re
 
 import numpy as np
 import pandas as pd
@@ -45,6 +46,52 @@ DB_URI = "postgresql://TIKITAKA:TIKITAKA@TIKITAKA_postgres:5432/TIKITAKA_DB" # �
 #DB_URI = "postgresql://TIKITAKA:TIKITAKA@175.106.97.27:5432/TIKITAKA_DB" # 로컬
 TABLE_NAME = "broadcast_training_dataset"
 MODEL_FILE = "xgb_broadcast_sales.joblib"
+
+# ---------------------------------------------------------------------------
+# 헬퍼: 키워드로 상품코드 조회 ---------------------------------------------
+# ---------------------------------------------------------------------------
+
+def _normalize_keywords(raw: list[str]) -> list[str]:
+    """공백·쉼표·슬래시 등을 기준으로 분할 후 소문자 트림 & 중복 제거."""
+    tokens: set[str] = set()
+    for kw in raw:
+        if not kw:
+            continue
+        for token in re.split(r"[\s,/]+", kw):
+            token = token.strip().lower()
+            if token:
+                tokens.add(token)
+    return list(tokens)
+
+
+def search_product_codes_by_keywords(keywords: list[str]) -> list[str]:
+    """product_name / keyword 컬럼 전체에 부분 매칭.
+
+    - 입력 키워드를 공백·쉼표로 분할해 노멀라이즈.
+    - product_name / keyword ILIKE 모두 검사.
+    """
+
+    norm_kw = _normalize_keywords(keywords)
+    if not norm_kw:
+        return []
+
+    engine = create_engine(DB_URI)
+
+    # OR 조건 구성  (ILIKE는 부분·대소문자 무시)
+    clauses: list[str] = []
+    params: dict[str, str] = {}
+    for i, kw in enumerate(norm_kw):
+        clauses.append(f"product_name ILIKE :kw{i} OR keyword ILIKE :kw{i}")
+        params[f"kw{i}"] = f"%{kw}%"
+
+    query = text(
+        f"SELECT DISTINCT product_code FROM {TABLE_NAME} WHERE {' OR '.join(clauses)} LIMIT 200"
+    )
+
+    with engine.connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+
+    return [r[0] for r in rows]
 
 # ---------------------------------------------------------------------------
 # 데이터 로딩 & 전처리 --------------------------------------------------------

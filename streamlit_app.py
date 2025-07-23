@@ -249,11 +249,18 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
                     params.get("mode") == "카테고리" or not params.get("products")
                 )
 
+                # product_codes 결정 로직 -------------------------------
+                product_codes: list[str] = params.get("products") or []
+
+                # 제품 코드가 없고 키워드만 있을 때 키워드 → 상품코드 매핑
+                if not use_category and not product_codes and params.get("keywords"):
+                    product_codes = br.search_product_codes_by_keywords(params["keywords"])
+
                 if use_category:
                     rec_df = cached_recommend(
                         target_date,
                         time_slots,
-                        product_codes=[],
+                        product_codes=product_codes,
                         weather_info=weather_info,
                         category_mode=True,
                         categories=params.get("categories"),
@@ -266,7 +273,7 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
                     rec_result = br.recommend(
                         target_date,
                         time_slots,
-                        product_codes=params.get("products", []),
+                        product_codes=product_codes,
                         weather_info=weather_info,
                         category_mode=False,
                         categories=None,
