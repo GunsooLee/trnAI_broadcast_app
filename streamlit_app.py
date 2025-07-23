@@ -173,6 +173,19 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
                 # 추정한 날짜를 파라미터에도 반영
                 params["date"] = target_date.isoformat()
 
+            # --------- season 보정 ---------------------------------
+            if not params.get("season"):
+                def _infer_season(month: int) -> str:
+                    if 3 <= month <= 5:
+                        return "봄"
+                    if 6 <= month <= 8:
+                        return "여름"
+                    if 9 <= month <= 11:
+                        return "가을"
+                    return "겨울"
+
+                params["season"] = _infer_season(target_date.month)
+
             # ----- 파라미터 보정: time_slots, day_type ------------------------
             # time_slots가 없으면 전체 기본 슬롯 사용
             time_slots = params.get("time_slots") or [
@@ -211,6 +224,7 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
             disp_params["weather"] = weather_info["weather"]
             disp_params["temperature"] = weather_info["temperature"]
             disp_params["precipitation"] = weather_info["precipitation"]
+            disp_params["season"] = params.get("season")
 
             assistant_msg += (
                 "### 추출된 파라미터\n````json\n"
