@@ -196,15 +196,15 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
             }
 
             # ---- 세부 단계 1: 날씨 정보 확인 -------------------------------
-            with st.status("1/3 파라미터 추출 중...", state="running") as w_status:  # type: ignore
+            with st.status("1/3 기본 파라미터 추출 중...", state="running") as w_status:  # type: ignore
                 pass
-            w_status.update(label="1/3 파라미터 추출 완료", state="complete")  # type: ignore
+            w_status.update(label="1/3 기본 파라미터 추출 완료", state="complete")  # type: ignore
 
-            with st.status("2/3 날짜, 날씨 등 기타 정보 확인 중...", state="running") as w_status:  # type: ignore
+            with st.status("2/3 날짜, 날씨 등 기타 정보 가져오는 중...", state="running") as w_status:  # type: ignore
                 if not weather_info["weather"]:
                     fetched = br.get_weather_by_date(target_date)  # type: ignore
                     weather_info.update(fetched)
-                w_status.update(label="2/3 날짜, 날씨 등 기타 정보 확인 완료", state="complete")  # type: ignore
+                w_status.update(label="2/3 날짜, 날씨 등 기타 정보 가져오기 완료", state="complete")  # type: ignore
 
             # 디스플레이용 파라미터 가공(날씨 갱신 포함)
             disp_params = params.copy()
