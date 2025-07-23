@@ -59,6 +59,7 @@ print(result)
 streamlit run streamlit_app.py
 ```
 환경변수 `OPENAI_API_KEY` 가 필요합니다.
+👉 데모 서버가 구동 중이라면 브라우저에서 [http://175.106.97.27:8501/](http://175.106.97.27:8501/) 로 바로 접속해 체험할 수 있습니다.
 
 ## Docker 실행 (학습은 로컬, 추천만 컨테이너로)
 ```bash
