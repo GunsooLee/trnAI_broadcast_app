@@ -7,3 +7,4 @@ psycopg2-binary==2.9.10
 joblib==1.5.1
 streamlit==1.47.0
 openai==1.97.0
+MeCab-python3==1.0.6

@@ -35,12 +35,50 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from xgboost import XGBRegressor
 from functools import lru_cache
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+# --------------------------- Mecab tokenizer utils ---------------------------
+try:
+    import MeCab  # mecab-python3
+except ImportError:  # Library not installed
+    MeCab = None
+
+@lru_cache(maxsize=1)
+def _get_mecab() -> "MeCab.Tagger | None":
+    """Return a cached MeCab Tagger instance (mecab-python3), or None if unavailable."""
+    try:
+        if MeCab is None:
+            return None
+        return MeCab.Tagger("-Owakati")
+    except Exception:
+        return None
+
+def mecab_tokenizer(text):
+    """Tokenize Korean text with mecab-python3.
+    Accepts None/NaN/float inputs and returns an empty list in such cases
+    to prevent AttributeError during vectorization.
+    """
+    # Handle non-string values safely
+    if text is None or (isinstance(text, float) and pd.isna(text)):
+        return []
+    # Ensure we have a string
+    text = str(text)
+
+    tagger = _get_mecab()
+    if tagger is None or not text:
+        return text.split()
+
+    parsed = tagger.parse(text)
+    # Tagger with -Owakati already returns space-separated tokens
+    if parsed:
+        return parsed.strip().split()
+    return text.split()
 
 # ---------------------------------------------------------------------------
 # DB 설정 -----------------------------------------------------
 # ---------------------------------------------------------------------------
-DB_URI = "postgresql://TIKITAKA:TIKITAKA@TIKITAKA_postgres:5432/TIKITAKA_DB" # 서버
-#DB_URI = "postgresql://TIKITAKA:TIKITAKA@175.106.97.27:5432/TIKITAKA_DB" # 로컬
+#DB_URI = "postgresql://TIKITAKA:TIKITAKA@TIKITAKA_postgres:5432/TIKITAKA_DB" # 서버
+DB_URI = "postgresql://TIKITAKA:TIKITAKA@175.106.97.27:5432/TIKITAKA_DB" # 로컬
 TABLE_NAME = "broadcast_training_dataset"
 MODEL_FILE = "xgb_broadcast_sales.joblib"
 
@@ -101,7 +139,7 @@ def load_data() -> pd.DataFrame:
 
 
 def build_pipeline() -> Pipeline:
-    """수치/범주형 전처리 + XGBoost를 묶은 파이프라인을 생성한다."""
+    """수치/범주형/텍스트 전처리 + XGBoost 파이프라인 생성"""
 
     numeric_features = [
         "temperature",
@@ -125,10 +163,35 @@ def build_pipeline() -> Pipeline:
         "product_type",
     ]
 
+    # ---- 텍스트 피처 ----------------------------------------
+    text_transformers = [
+        (
+            "product_name_tfidf",
+            TfidfVectorizer(
+                tokenizer=mecab_tokenizer,
+                lowercase=False,
+                ngram_range=(1, 2),
+                max_features=5000,
+            ),
+            "product_name",
+        ),
+        (
+            "keyword_tfidf",
+            TfidfVectorizer(
+                tokenizer=mecab_tokenizer,
+                lowercase=False,
+                ngram_range=(1, 2),
+                max_features=3000,
+            ),
+            "keyword",
+        ),
+    ]
+
     preprocessor = ColumnTransformer(
         [
             ("num", "passthrough", numeric_features),
             ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_features),
+            *text_transformers,
         ]
     )
 
@@ -152,13 +215,11 @@ def train() -> None:
 
     target = "sales_amount"
     # 모델 입력에 사용하지 않을 컬럼 지정.  
-    # 텍스트 컬럼은 제외: 별도 텍스트 전처리를 적용해 실험 후, 성능 개선 시 포함하기로 함
+    # 텍스트 컬럼을 이제 학습에 사용하므로 삭제하지 않음
     drop_cols = [
         "broadcast_id",
         "broadcast_duration",        
         "broadcast_datetime",
-        "product_name",  # 텍스트 컬럼 제외
-        "keyword",  # 텍스트 컬럼 제외
         "order_count",  # 단일 타깃 학습을 위해 제외. 필요시 다중 타깃 학습 가능
         target,
     ]
@@ -214,6 +275,8 @@ def fetch_product_info(product_codes: List[str]) -> pd.DataFrame:
             MAX(product_sgroup) AS product_sgroup,
             MAX(product_dgroup) AS product_dgroup,
             MAX(product_type) AS product_type,
+            MAX(product_name)  AS product_name,   -- NEW
+            MAX(keyword)       AS keyword,        -- NEW
             -- 모델에 필요한 피처들 (전체 기간 Groupby)
             COALESCE(AVG(product_price), 0) AS product_price,
             COALESCE(AVG(sales_amount), 0) AS product_avg_sales,
@@ -285,6 +348,10 @@ def prepare_candidate_row(
         "product_type": product["product_type"]
     }
 
+    # NEW text fields (may be NaN/None)
+    row_data["product_name"] = product.get("product_name", "")
+    row_data["keyword"] = product.get("keyword", "")
+
     # product 모드와 category 모드에서 들어오는 피처 이름이 다르므로 분기 처리
     if "product_avg_sales" in product:
         row_data["product_avg_sales"] = product["product_avg_sales"]
@@ -296,6 +363,9 @@ def prepare_candidate_row(
         row_data["category_timeslot_avg_sales"] = product["category_timeslot_avg_sales"]
         row_data["product_avg_sales"] = 0
         row_data["product_broadcast_count"] = 0
+        # Text not available in category mode
+        row_data["product_name"] = ""
+        row_data["keyword"] = ""
         
     return row_data
 

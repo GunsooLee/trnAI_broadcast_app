@@ -156,7 +156,8 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
                     "일요일": 6,
                 }
 
-                today = dt.date.today()
+                kst_now = dt.datetime.now(zoneinfo.ZoneInfo("Asia/Seoul"))
+                today = kst_now.date()
                 widx = weekday_map.get(params.get("day_type"))
                 if widx is not None:
                     days_ahead = (widx - today.weekday() + 7) % 7
