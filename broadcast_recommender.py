@@ -531,7 +531,7 @@ def recommend(
                     break
             if pick_row is None:
                 pick_row = slot_df.iloc[0]
-+
+
         # update trackers
         chosen_rows.append(pick_row)
         used_labels.add(pick_row[label_col])
