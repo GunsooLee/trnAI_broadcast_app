@@ -303,10 +303,13 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
                 "predicted_sales": "예상 매출(원)",
                 "product_code": "상품코드",
                 "category": "카테고리",
-                "broadcast_showhost": "쇼호스트",
-                "broadcast_tape_code": "테이프코드",
             }
             display_df = display_df.rename(columns={k: v for k, v in col_name_map.items() if k in display_df.columns})
+
+            # 컬럼 정리: 테이프코드·쇼호스트 제거
+            for col in ["broadcast_tape_code", "broadcast_showhost"]:
+                if col in display_df.columns:
+                    display_df = display_df.drop(columns=[col])
 
             # 스피너 종료 후 결과 표시
             # 제목과 표를 하나의 컨테이너로 묶어 표시

@@ -146,7 +146,6 @@ def load_data() -> pd.DataFrame:
     df['category_timeslot_avg_sales'] = df['category_timeslot_avg_sales'].fillna(0)
     df['product_broadcast_count'] = df['product_broadcast_count'].fillna(0)
     # NEW: 결측 쇼호스트/테이프 코드 기본값 처리
-    df['broadcast_tape_code'] = df['broadcast_tape_code'].fillna('NO_TAPE')
     df['broadcast_showhost'] = df['broadcast_showhost'].fillna('NO_HOST')
     
     return df
@@ -175,7 +174,6 @@ def build_pipeline() -> Pipeline:
         "product_sgroup",
         "product_dgroup",
         "product_type",
-        "broadcast_tape_code",  # <<< 추가: 방송 테이프 코드
         "broadcast_showhost",   # <<< 추가: 쇼호스트 ID
     ]
 
@@ -292,7 +290,6 @@ def fetch_product_info(product_codes: List[str]) -> pd.DataFrame:
             MAX(product_dgroup) AS product_dgroup,
             MAX(product_type) AS product_type,
             MAX(broadcast_showhost) AS broadcast_showhost,
-            MAX(broadcast_tape_code) AS broadcast_tape_code,
             MAX(product_name)  AS product_name,   -- NEW
             MAX(keyword)       AS keyword,        -- NEW
             -- 모델에 필요한 피처들 (전체 기간 Groupby)
@@ -364,7 +361,6 @@ def prepare_candidate_row(
         "product_sgroup": product["product_sgroup"],
         "product_dgroup": product["product_dgroup"],
         "product_type": product["product_type"],
-        "broadcast_tape_code": product.get("broadcast_tape_code", "NO_TAPE"),
         "broadcast_showhost": product.get("broadcast_showhost", "NO_HOST"),
     }
 
@@ -482,8 +478,6 @@ def recommend(
             candidates.append({
                 "time_slot": slot,
                 label_col: item[label_col],
-                "broadcast_showhost": item.get("broadcast_showhost"),
-                "broadcast_tape_code": item.get("broadcast_tape_code"),
                 "predicted_sales": pred,
             })
 
