@@ -100,6 +100,23 @@ docker compose logs -f app
 
 </details>
 
+## 📝 최근 변경사항 (2025-07-24)
+
+| 구분 | 내용 |
+|------|------|
+| 모델 피처 | • `broadcast_tape_code` 완전 제거<br>• `broadcast_showhost` 학습/예측엔 사용하지만 **UI 출력에서 제외** |
+| 추천 로직 | • 동일 `product_lgroup` 편성 **최대 2회** 제한 → 카테고리 다양성 강화<br>• `top_k_sample` softmax 샘플링 온도(`--diversity_temp`) 추가 |
+| 카테고리 전용 모드 | • `--category` 플래그 및 `--categories` 인자 지원 → 특정 카테고리(예: 식품)로만 후보 제한 |
+| CLI 인자 | `--top_k_sample`, `--diversity_temp`, `--top_n` 등 세분화 옵션 추가 |
+| 배포 가이드 | Docker 재배포 추천 순서<br>```bash
+docker compose down --remove-orphans
+git pull
+docker compose build --no-cache
+docker compose up -d
+```|
+
+위 변경으로 추천 결과 다양성이 향상되고, 특정 카테고리 전용 편성도 손쉽게 요청할 수 있습니다.
+
 ## 🔍 어떻게 질문을 이해하나요?
 사용자가 입력한 문장은 OpenAI GPT로 전송되어 **날짜, 시간대, 키워드, 상품코드, 카테고리 등**을 추출한 JSON 형태의 파라미터로 변환됩니다.
 
