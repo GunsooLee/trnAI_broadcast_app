@@ -482,6 +482,7 @@ def recommend(
     # 슬롯별로 예측 매출이 높은 후보를 선택하되, 전체 편성표에서 중복된 카테고리/상품이 나오지 않도록 한다.
     chosen_rows = []
     used_labels: set = set()
+    used_groups: set = set()  # 대분류 중복 방지용
     top_n_rows: list[pd.DataFrame] = []
 
     for slot in time_slots:
@@ -492,7 +493,7 @@ def recommend(
         # 예측 매출 내림차순 정렬
         slot_df = slot_df.sort_values("predicted_sales", ascending=False)
 
-        # 다양성: 상위 top_k_sample 중 softmax 샘플링
+        # 다양성: 상위 top_k_sample 중 softmax 샘플링 + 대분류 중복 방지
         top_slice = slot_df.head(top_k_sample)
         scores = top_slice["predicted_sales"].to_numpy()
         scaled = scores / scores.max() / temp
@@ -504,17 +505,18 @@ def recommend(
         for _ in range(10):
             idx = np.random.choice(len(top_slice), p=probs)
             candidate = top_slice.iloc[idx]
-            if candidate[label_col] not in used_labels:
+            lgroup = candidate.get("product_lgroup")
+            if candidate[label_col] not in used_labels and lgroup not in used_groups:
                 pick_row = candidate
+                used_groups.add(lgroup)
                 break
 
-        # 모두 중복이면 최고 매출 항목 사용
+        # 모두 중복이면 최고 매출 항목 사용 (단, 대분류 중복 허용)
         if pick_row is None:
             pick_row = slot_df.iloc[0]
-
-        # 상위 N 후보 저장(요청 시)
-        if top_n:
-            top_n_rows.append(slot_df.head(top_n).assign(slot=slot))
+            # nevertheless track label
+            used_labels.add(pick_row[label_col])
+            used_groups.add(pick_row.get("product_lgroup"))
 
         chosen_rows.append(pick_row)
         used_labels.add(pick_row[label_col])
