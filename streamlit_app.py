@@ -303,6 +303,8 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
                 "predicted_sales": "예상 매출(원)",
                 "product_code": "상품코드",
                 "category": "카테고리",
+                "broadcast_showhost": "쇼호스트",
+                "broadcast_tape_code": "테이프코드",
             }
             display_df = display_df.rename(columns={k: v for k, v in col_name_map.items() if k in display_df.columns})
 
