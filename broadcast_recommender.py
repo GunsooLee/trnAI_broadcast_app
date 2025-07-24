@@ -474,6 +474,7 @@ def recommend(
             candidates.append({
                 "time_slot": slot,
                 label_col: item[label_col],
+                "product_lgroup": item.get("product_lgroup"),
                 "predicted_sales": pred,
             })
 
