@@ -311,8 +311,20 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
             # 스피너 종료 후 결과 표시
             # 제목과 표를 하나의 컨테이너로 묶어 표시
             with result_placeholder.container():
-                st.markdown("### 📊 시간대별 상위 3개 추천 결과")
-                st.dataframe(display_df, hide_index=True)
+                if not rec_df.empty:
+                    st.subheader("📊 추천 편성표")
+                    st.dataframe(
+                        rec_df.drop(columns=["features"]),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                    for index, row in rec_df.iterrows():
+                        with st.expander(f"**{row['time_slot']} - {row['category']}** 상세 예측 정보 보기"):
+                            st.json(row['features'])
+
+                else:
+                    st.warning("추천할 수 있는 상품을 찾지 못했습니다. 입력 조건을 변경해 보세요.")
 
         except Exception as e:
             assistant_msg = f"추천 실행 중 오류: {e}"

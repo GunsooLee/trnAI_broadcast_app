@@ -542,6 +542,7 @@ def recommend(
                 "product_sgroup": item.get("product_sgroup"),
                 "product_dgroup": item.get("product_dgroup"),
                 "predicted_sales": pred,
+                "features": row_dict, # <<< 예측에 사용된 파라미터 추가
             })
 
     cand_df = pd.DataFrame(candidates)
@@ -579,6 +580,7 @@ def recommend(
         "product_sgroup",
         "product_dgroup",
         "category", # 단일 카테고리 열도 유지
+        "features", # <<< 예측에 사용된 파라미터 추가
     ]
     # 반환할 df에 없는 컬럼은 제외하고, 존재하는 컬럼만 선택
     final_cols = [col for col in display_cols if col in result_df.columns]
