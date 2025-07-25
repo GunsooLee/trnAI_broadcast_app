@@ -480,69 +480,27 @@ def recommend(
 
     cand_df = pd.DataFrame(candidates)
 
-    # 슬롯별로 예측 매출이 높은 후보를 선택하되, 전체 편성표에서 중복된 카테고리/상품이 나오지 않도록 한다.
-    chosen_rows = []
-    used_labels: set = set()
-    used_groups: set = set()  # 대분류 중복 방지용 (at least one)
-    group_counts: dict[str,int] = {}
-    GROUP_MAX_PER_DAY = 2  # 같은 대분류 최대 등장 횟수
-    top_n_rows: list[pd.DataFrame] = []
+    # 시간대별로 예측 매출이 가장 높은 상위 N개 후보를 선택
+    if not top_n:
+        top_n = 1
 
+    top_candidates = []
     for slot in time_slots:
         slot_df = cand_df[cand_df["time_slot"] == slot]
         if slot_df.empty:
             continue
 
-        # 예측 매출 내림차순 정렬
-        slot_df = slot_df.sort_values("predicted_sales", ascending=False)
+        # 예측 매출 내림차순 정렬 후 상위 N개 선택
+        top_slot_candidates = slot_df.sort_values("predicted_sales", ascending=False).head(top_n)
+        top_candidates.append(top_slot_candidates)
 
-        # 다양성: 상위 top_k_sample 중 softmax 샘플링 + 대분류 사용 횟수 제한
-        top_slice = slot_df.head(top_k_sample)
-        scores = top_slice["predicted_sales"].to_numpy()
-        scaled = scores / scores.max() / temp
-        probs = np.exp(scaled)
-        probs = probs / probs.sum()
+    if not top_candidates:
+        return pd.DataFrame()
 
-        # 중복 방지를 위해 최대 10회 시도
-        pick_row = None
-        for _ in range(10):
-            idx = np.random.choice(len(top_slice), p=probs)
-            candidate = top_slice.iloc[idx]
-            lgroup = candidate.get("product_lgroup")
-            # 대분류 사용 횟수 제한
-            if candidate[label_col] in used_labels:
-                continue
-            if lgroup is not None and group_counts.get(lgroup,0) >= GROUP_MAX_PER_DAY:
-                continue
+    result_df = pd.concat(top_candidates).reset_index(drop=True)
 
-            # 선택 조건 만족
-            pick_row = candidate
-            used_groups.add(lgroup)
-            group_counts[lgroup] = group_counts.get(lgroup,0) + 1
-            break
- 
-        # 모두 조건 미충족이면 최고 매출 항목 사용 (단, 대분류 제한 적용)
-        if pick_row is None:
-            for _, fallback in slot_df.iterrows():
-                lgroup_fb = fallback.get("product_lgroup")
-                if group_counts.get(lgroup_fb,0) < GROUP_MAX_PER_DAY:
-                    pick_row = fallback
-                    group_counts[lgroup_fb] = group_counts.get(lgroup_fb,0) + 1
-                    break
-            if pick_row is None:
-                pick_row = slot_df.iloc[0]
-
-        # update trackers
-        chosen_rows.append(pick_row)
-        used_labels.add(pick_row[label_col])
-        used_groups.add(pick_row.get("product_lgroup"))
-
-    best = pd.DataFrame(chosen_rows).reset_index(drop=True)
-
-    if top_n:
-        top_df = pd.concat(top_n_rows).reset_index(drop=True)
-        return best, top_df
-    return best
+    # 기존 top_df 반환 로직은 더 이상 필요 없으므로, 결과만 반환
+    return result_df
 
 # ---------------------------------------------------------------------------
 # 모델 로딩 캐시 -------------------------------------------------------------

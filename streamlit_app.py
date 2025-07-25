@@ -102,6 +102,7 @@ def cached_recommend(
     weather_info: dict,
     category_mode: bool,
     categories: list[str] | None,
+    top_n: int = 1,
 ):
     """브로드캐스트 추천을 캐싱해 동일 요청 재호출 시 속도를 향상."""
 
@@ -112,6 +113,7 @@ def cached_recommend(
         weather_info=weather_info,
         category_mode=category_mode,
         categories=categories,
+        top_n=top_n,
     )
 
 # 채팅 렌더링
@@ -256,36 +258,15 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
                 if not use_category and not product_codes and params.get("keywords"):
                     product_codes = br.search_product_codes_by_keywords(params["keywords"])
 
-                if use_category:
-                    rec_df = cached_recommend(
-                        target_date,
-                        time_slots,
-                        product_codes=product_codes,
-                        weather_info=weather_info,
-                        category_mode=True,
-                        categories=params.get("categories"),
-                    )
-                else:
-                    # 결과 변수 초기화 (상위 후보 표가 없을 수도 있으므로)
-                    # top_df: pd.DataFrame | None = None
-
-                    # 다양성 샘플링 및 상위 후보 표기를 위해 캐시를 사용하지 않고 직접 호출
-                    rec_result = br.recommend(
-                        target_date,
-                        time_slots,
-                        product_codes=product_codes,
-                        weather_info=weather_info,
-                        category_mode=False,
-                        categories=None,
-                        top_k_sample=3,
-                        temp=0.5,
-                        top_n=3,
-                    )
-
-                    if isinstance(rec_result, tuple):
-                        rec_df, top_df = rec_result
-                    else:
-                        rec_df = rec_result
+                rec_df = cached_recommend(
+                    target_date,
+                    time_slots,
+                    product_codes=product_codes,
+                    weather_info=weather_info,
+                    category_mode=use_category,
+                    categories=params.get("categories"),
+                    top_n=3,  # 시간대별 상위 3개 요청
+                )
 
             # 스피너 종료 후 결과 표시
             # ----- 결과 포맷팅 및 한글 컬럼명 ------------------------------
@@ -307,26 +288,15 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
             display_df = display_df.rename(columns={k: v for k, v in col_name_map.items() if k in display_df.columns})
 
             # 컬럼 정리: 테이프코드·쇼호스트 제거
-            for col in ["broadcast_tape_code", "broadcast_showhost"]:
+            for col in ["broadcast_tape_code", "broadcast_showhost", "product_lgroup"]:
                 if col in display_df.columns:
                     display_df = display_df.drop(columns=[col])
 
             # 스피너 종료 후 결과 표시
             # 제목과 표를 하나의 컨테이너로 묶어 표시
             with result_placeholder.container():
-                st.markdown("### 📊 카테고리별 매출 예측 결과")
+                st.markdown("### 📊 시간대별 상위 3개 추천 결과")
                 st.dataframe(display_df, hide_index=True)
-
-                # 상위 후보 표 추가 표시
-                if top_df is not None:
-                    st.markdown("#### 상위 3개 후보")
-                    top_disp = top_df.copy()
-                    if "predicted_sales" in top_disp.columns:
-                        top_disp["predicted_sales"] = (
-                            top_disp["predicted_sales"].round().astype(int).map("{:,}".format)
-                        )
-                    top_disp = top_disp.rename(columns={k: v for k, v in col_name_map.items() if k in top_disp.columns})
-                    st.dataframe(top_disp, hide_index=True)
 
         except Exception as e:
             assistant_msg = f"추천 실행 중 오류: {e}"
