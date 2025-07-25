@@ -272,6 +272,16 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
             # ----- 결과 포맷팅 및 한글 컬럼명 ------------------------------
             display_df = rec_df.copy()
 
+            # 전체 카테고리 경로 생성 (대 > 중 > 소 > 세)
+            cat_cols = ["product_lgroup", "product_mgroup", "product_sgroup", "product_dgroup"]
+            # 데이터프레임에 존재하는 카테고리 컬럼만 필터링
+            existing_cat_cols = [col for col in cat_cols if col in display_df.columns]
+
+            if existing_cat_cols:
+                display_df["전체 카테고리"] = display_df[existing_cat_cols].fillna('').agg(' > '.join, axis=1)
+                # 양쪽 공백 및 '>' 문자 제거
+                display_df["전체 카테고리"] = display_df["전체 카테고리"].str.strip(' > ').str.strip()
+
             # 숫자 -> 천단위 콤마 문자열 변환 (NumberColumn 포맷 오류 대응)
             if "predicted_sales" in display_df.columns:
                 display_df["predicted_sales"] = (
@@ -283,12 +293,18 @@ if prompt := st.chat_input("편성 질문을 입력하세요…"):
                 "time_slot": "시간대",
                 "predicted_sales": "예상 매출(원)",
                 "product_code": "상품코드",
-                "category": "카테고리",
+                # "category": "카테고리", # 전체 카테고리 컬럼을 사용하므로 주석 처리
             }
             display_df = display_df.rename(columns={k: v for k, v in col_name_map.items() if k in display_df.columns})
 
-            # 컬럼 정리: 테이프코드·쇼호스트 제거
-            for col in ["broadcast_tape_code", "broadcast_showhost", "product_lgroup"]:
+            # 컬럼 정리: 불필요한 컬럼들 제거
+            cols_to_drop = [
+                "broadcast_tape_code", 
+                "broadcast_showhost", 
+                "category", # 기존 단일 카테고리 컬럼
+            ] + cat_cols # 상세 카테고리 컬럼들
+            
+            for col in cols_to_drop:
                 if col in display_df.columns:
                     display_df = display_df.drop(columns=[col])
 

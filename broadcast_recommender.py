@@ -490,8 +490,12 @@ def recommend(
         if slot_df.empty:
             continue
 
-        # 예측 매출 내림차순 정렬 후 상위 N개 선택
-        top_slot_candidates = slot_df.sort_values("predicted_sales", ascending=False).head(top_n)
+        # 예측 매출 내림차순 정렬 후, label_col(카테고리/상품) 기준 중복 제거
+        top_slot_candidates = (
+            slot_df.sort_values("predicted_sales", ascending=False)
+            .drop_duplicates(subset=[label_col], keep="first")
+            .head(top_n)
+        )
         top_candidates.append(top_slot_candidates)
 
     if not top_candidates:
