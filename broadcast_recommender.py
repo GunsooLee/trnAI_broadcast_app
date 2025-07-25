@@ -475,6 +475,9 @@ def recommend(
                 "time_slot": slot,
                 label_col: item[label_col],
                 "product_lgroup": item.get("product_lgroup"),
+                "product_mgroup": item.get("product_mgroup"),
+                "product_sgroup": item.get("product_sgroup"),
+                "product_dgroup": item.get("product_dgroup"),
                 "predicted_sales": pred,
             })
 
@@ -503,8 +506,20 @@ def recommend(
 
     result_df = pd.concat(top_candidates).reset_index(drop=True)
 
-    # 기존 top_df 반환 로직은 더 이상 필요 없으므로, 결과만 반환
-    return result_df
+    # 화면 표시에 필요한 컬럼들을 명시적으로 선택하여 반환
+    display_cols = [
+        "time_slot",
+        "predicted_sales",
+        "product_code",
+        "product_lgroup",
+        "product_mgroup",
+        "product_sgroup",
+        "product_dgroup",
+        "category", # 단일 카테고리 열도 유지
+    ]
+    # 반환할 df에 없는 컬럼은 제외하고, 존재하는 컬럼만 선택
+    final_cols = [col for col in display_cols if col in result_df.columns]
+    return result_df[final_cols]
 
 # ---------------------------------------------------------------------------
 # 모델 로딩 캐시 -------------------------------------------------------------
