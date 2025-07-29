@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+openai
+scikit-learn
+xgboost
+
+# Database
+SQLAlchemy
+psycopg2-binary
+python-dotenv
+pandas

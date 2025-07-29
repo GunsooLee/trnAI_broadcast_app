@@ -1,17 +1,56 @@
 version: "3.8"
+
 services:
-  recommender:
-    build: .
-    container_name: streamlit_recommender
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fastapi_backend
     ports:
       - "8501:8501"
-    env_file: .env
+    env_file: backend/.env
     environment:
-      - DB_URI=postgresql://TIKITAKA:TIKITAKA@TIKITAKA_postgres:5432/TIKITAKA_DB
-    networks:
-      - shopping-network
+      - DB_URI=${DB_URI}           # .env에서 불러옴
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     restart: unless-stopped
+    depends_on:
+      - db
+    networks:
+      - app-network
+
+  frontend:
+    build: ./frontend
+    container_name: nextjs_frontend
+    ports:
+      - "3001:3001"
+    env_file: frontend/.env.local  # 프론트엔드용 환경변수 (API base url 등)
+    environment:
+      - NEXT_PUBLIC_API_BASE_URL=http://backend:8501  # 내부 네트워크용
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
+  db:
+    image: postgres:15-alpine
+    container_name: postgres_db
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    env_file: backend/.env
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - app-network
 
 networks:
-  shopping-network:
-    external: true
+  app-network:
+    driver: bridge
+
+volumes:
+  pgdata:
