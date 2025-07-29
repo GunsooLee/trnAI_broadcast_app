@@ -8,6 +8,16 @@ interface Message {
   content: string;
 }
 
+// 추천 결과 타입 정의
+interface Recommendation {
+  time_slot: string;
+  features: {
+    product_name: string;
+    // 필요시 추가 필드 작성
+  };
+  predicted_sales: number;
+}
+
 export default function Chat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -44,7 +54,7 @@ export default function Chat() {
 
       if (recommendations && recommendations.length > 0) {
         // 추천 결과를 보기 좋은 목록 형태로 만듭니다.
-        assistantMessageContent = "다음 편성을 추천합니다:\n\n" + recommendations.map((r: any) => 
+        assistantMessageContent = "다음 편성을 추천합니다:\n\n" + recommendations.map((r: Recommendation) => 
           `- [${r.time_slot}] ${r.features.product_name} (예상 매출: ${Math.round(r.predicted_sales).toLocaleString()}원)`
         ).join('\n');
       } else {
