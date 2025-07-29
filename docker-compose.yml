@@ -7,9 +7,7 @@ services:
     ports:
       - "8501:8501"
     env_file: backend/.env
-    environment:
-      - DB_URI=${DB_URI}           # .env에서 불러옴
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    # env_file에서 직접 환경변수 로드하므로 environment 섹션에서 중복 지정 불필요
     restart: unless-stopped
     depends_on:
       - db
@@ -22,8 +20,7 @@ services:
     ports:
       - "3001:3001"
     env_file: frontend/.env.local  # 프론트엔드용 환경변수 (API base url 등)
-    environment:
-      - NEXT_PUBLIC_API_BASE_URL=http://backend:8501  # 내부 네트워크용
+    # NEXT_PUBLIC_API_BASE_URL은 env_file에서 지정 또는 기본값 사용
     restart: unless-stopped
     depends_on:
       - backend
@@ -37,10 +34,7 @@ services:
     ports:
       - "5432:5432"
     env_file: backend/.env
-    environment:
-      - POSTGRES_DB=${POSTGRES_DB}
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    # POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD는 env_file에서 자동 로드
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks:
