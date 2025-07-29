@@ -15,7 +15,7 @@ services:
     build: ./frontend
     container_name: nextjs_frontend
     ports:
-      - "3001:3001"
+      - "3001:3000"
     env_file: frontend/.env.local
     restart: unless-stopped
     networks:
