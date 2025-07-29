@@ -9,7 +9,7 @@ services:
     env_file: backend/.env
     restart: unless-stopped
     networks:
-      - app-network
+      - shopping-network
 
   frontend:
     build: ./frontend
@@ -19,8 +19,9 @@ services:
     env_file: frontend/.env.local
     restart: unless-stopped
     networks:
-      - app-network
+      - shopping-network
 
 networks:
-  app-network:
-    driver: bridge
+  shopping-network:
+    external: true
+
