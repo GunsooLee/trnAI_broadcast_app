@@ -7,10 +7,7 @@ services:
     ports:
       - "8501:8501"
     env_file: backend/.env
-    # env_file에서 직접 환경변수 로드하므로 environment 섹션에서 중복 지정 불필요
     restart: unless-stopped
-    depends_on:
-      - db
     networks:
       - app-network
 
@@ -19,30 +16,11 @@ services:
     container_name: nextjs_frontend
     ports:
       - "3001:3001"
-    env_file: frontend/.env.local  # 프론트엔드용 환경변수 (API base url 등)
-    # NEXT_PUBLIC_API_BASE_URL은 env_file에서 지정 또는 기본값 사용
+    env_file: frontend/.env.local
     restart: unless-stopped
-    depends_on:
-      - backend
-    networks:
-      - app-network
-
-  db:
-    image: postgres:15-alpine
-    container_name: postgres_db
-    restart: unless-stopped
-    ports:
-      - "5432:5432"
-    env_file: backend/.env
-    # POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD는 env_file에서 자동 로드
-    volumes:
-      - pgdata:/var/lib/postgresql/data
     networks:
       - app-network
 
 networks:
   app-network:
     driver: bridge
-
-volumes:
-  pgdata:
