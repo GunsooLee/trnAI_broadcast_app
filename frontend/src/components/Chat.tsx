@@ -129,9 +129,9 @@ export default function Chat() {
 
   return (
     <div className="w-full h-screen p-4 bg-gray-100">
-      <div className="grid grid-cols-3 grid-rows-2 gap-4 h-full">
+      <div className="grid grid-cols-5 grid-rows-2 gap-4 h-full">
         {/* 2사분면: 채팅창 (좌상) */}
-        <div className="col-start-1 row-start-1 flex flex-col border rounded-lg shadow-lg bg-white">
+        <div className="col-start-1 row-start-1 col-span-2 flex flex-col border rounded-lg shadow-lg bg-white">
           <div className="bg-blue-50 p-3 border-b rounded-t-lg">
             <h3 className="text-lg font-semibold text-blue-800">💬 채팅</h3>
           </div>
@@ -163,7 +163,7 @@ export default function Chat() {
         </div>
 
         {/* 1사분면 + 4사분면: 추천 결과 (우측 전체) */}
-        <div className="col-start-2 col-span-2 row-start-1 row-span-2 flex flex-col border rounded-lg shadow-lg bg-white">
+        <div className="col-start-3 col-span-3 row-start-1 row-span-2 flex flex-col border rounded-lg shadow-lg bg-white">
           <div className="bg-green-50 p-3 border-b rounded-t-lg">
             <h3 className="text-lg font-semibold text-green-800">📋 추천 결과 및 분석</h3>
           </div>
@@ -267,7 +267,7 @@ export default function Chat() {
         </div>
 
         {/* 3사분면: 분석 파라미터 (좌하) */}
-        <div className="col-start-1 row-start-2 flex flex-col bg-white border rounded-lg shadow-lg">
+        <div className="col-start-1 row-start-2 col-span-2 flex flex-col bg-white border rounded-lg shadow-lg">
           <div className="bg-orange-50 p-3 border-b rounded-t-lg">
             <h3 className="text-lg font-semibold text-orange-800">📊 분석 파라미터</h3>
           </div>
