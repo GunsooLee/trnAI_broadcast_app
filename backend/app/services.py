@@ -53,7 +53,7 @@ def extract_params_from_llm(user_msg: str) -> dict | None:
         '  "date": string | null, "time_slots": string[] | null, "weather": string | null, '
         '  "temperature": number | null, "precipitation": number | null, "season": string | null, '
         '  "day_type": string | null, "keywords": string[] | null, "mode": string | null, '
-        '  "categories": string[] | null, "products": string[] | null, "gender": string | null, "age_group": string | null\n'
+        '  "categories": string[] | null, "products": string[] | null, "gender": string | null, "age_group": string | null\n"
         "}\n"
     )
     try:
@@ -132,7 +132,7 @@ async def get_recommendations(user_query: str, model: br.Pipeline) -> RecommendR
         process_and_enrich_params, params, user_query
     )
 
-    use_category = enriched_params.get("mode") == "카테고리" or not enriched_params.get("products")
+    use_category = enriched_params.get("mode") != "상품" and (not enriched_params.get("products") or enriched_params.get("mode") == "카테고리")
     product_codes = enriched_params.get("products") or []
     if not use_category and not product_codes and enriched_params.get("keywords"):
         product_codes = await run_in_threadpool(br.search_product_codes_by_keywords, enriched_params["keywords"])
@@ -156,5 +156,63 @@ async def get_recommendations(user_query: str, model: br.Pipeline) -> RecommendR
 
     return RecommendResponse(
         extracted_params=enriched_params,
+        recommendations=recommendations
+    )
+
+async def extract_and_enrich_params(user_query: str) -> Dict[str, Any]:
+    """
+    사용자 질문에서 파라미터만 추출하고 보강합니다.
+    """
+    print("--- 1. Parameter extraction service started ---")
+    
+    # 동기 함수들을 run_in_threadpool을 사용하여 비동기적으로 실행
+    params = await run_in_threadpool(extract_params_from_llm, user_query)
+    if params is None:
+        raise ValueError("Failed to extract parameters from the query.")
+
+    enriched_params, target_date, weather_info = await run_in_threadpool(
+        process_and_enrich_params, params, user_query
+    )
+    
+    print("--- 2. Parameter extraction completed ---")
+    return enriched_params
+
+async def get_recommendations_with_params(params: Dict[str, Any], model: br.Pipeline) -> RecommendResponse:
+    """
+    수정된 파라미터로 추천을 생성합니다.
+    """
+    print("--- 1. Recommendation with params service started ---")
+    
+    # 파라미터에서 필요한 값들 추출
+    target_date = dt.date.fromisoformat(params["date"])
+    weather_info = {
+        "weather": params.get("weather"),
+        "temperature": params.get("temperature"),
+        "precipitation": params.get("precipitation"),
+    }
+    
+    use_category = params.get("mode") != "상품" and (not params.get("products") or params.get("mode") == "카테고리")
+    product_codes = params.get("products") or []
+    
+    if not use_category and not product_codes and params.get("keywords"):
+        product_codes = await run_in_threadpool(br.search_product_codes_by_keywords, params["keywords"])
+
+    print("--- 2. Calling broadcast recommender with params ---")
+    rec_df = await run_in_threadpool(
+        br.recommend,
+        model=model,
+        target_date=target_date,
+        time_slots=params["time_slots"],
+        product_codes=product_codes,
+        weather_info=weather_info,
+        category_mode=use_category,
+        categories=params.get("categories"),
+        top_n=3,
+    )
+
+    recommendations = [RecommendationItem(**row) for row in rec_df.to_dict('records')] if not rec_df.empty else []
+
+    return RecommendResponse(
+        extracted_params=params,
         recommendations=recommendations
     )

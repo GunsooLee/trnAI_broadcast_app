@@ -63,6 +63,39 @@ async def recommend_broadcast(payload: RecommendRequest, request: Request):
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"detail": str(e)})
 
+@app.post("/api/v1/extract-params")
+async def extract_params(payload: RecommendRequest):
+    """
+    사용자 질문에서 파라미터만 추출합니다.
+    """
+    try:
+        extracted_params = await services.extract_and_enrich_params(payload.user_query)
+        return {"extracted_params": extracted_params}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"--- ERROR IN /api/v1/extract-params ---")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+@app.post("/api/v1/recommend-with-params")
+async def recommend_with_params(payload: dict, request: Request):
+    """
+    수정된 파라미터로 방송 편성을 추천합니다.
+    """
+    try:
+        model = request.app.state.model
+        response_data = await services.get_recommendations_with_params(payload, model)
+        return response_data
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"--- ERROR IN /api/v1/recommend-with-params ---")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
 @app.get("/api/v1/health", summary="Health Check")
 def health_check():
     """API 서버의 상태를 확인합니다."""
