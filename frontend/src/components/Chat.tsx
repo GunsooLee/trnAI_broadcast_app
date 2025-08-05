@@ -32,6 +32,20 @@ interface Recommendation {
     // 필요시 추가 필드 작성
   };
   predicted_sales: number;
+  product_predicted_sales?: number;
+  category_predicted_sales?: number;
+  category?: string;
+  product_mgroup?: string;
+  product_name?: string;
+  product_code?: string;
+  showhost_id?: string;
+  recommendation_reason?: string;
+}
+
+// 시간대별 그룹 타입 정의
+interface TimeSlotGroup {
+  time_slot: string;
+  items: Recommendation[];
 }
 
 export default function Chat() {
@@ -218,7 +232,7 @@ export default function Chat() {
                         acc.push({ time_slot: rec.time_slot, items: [rec] });
                       }
                       return acc;
-                    }, [] as any[]).map((timeSlotGroup, groupIndex) => (
+                    }, [] as TimeSlotGroup[]).map((timeSlotGroup, groupIndex) => (
                       <div key={groupIndex} className="bg-white border border-gray-200 rounded-lg overflow-hidden">
                         {/* 시간대 헤더 */}
                         <div className="bg-gradient-to-r from-blue-500 to-purple-500 text-white p-4">
@@ -233,7 +247,7 @@ export default function Chat() {
                         
                         {/* 추천 상품들 */}
                         <div className="p-4 space-y-3">
-                          {timeSlotGroup.items.map((rec: any, itemIndex: number) => (
+                          {timeSlotGroup.items.map((rec: Recommendation, itemIndex: number) => (
                             <div key={itemIndex} className="bg-gradient-to-r from-gray-50 to-blue-50 p-4 rounded-lg border border-gray-200">
                               {/* 카테고리 정보 */}
                               <div className="flex items-center justify-between mb-3">
