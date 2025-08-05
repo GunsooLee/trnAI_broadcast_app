@@ -6,6 +6,7 @@ import { useState } from 'react';
 interface Message {
   role: 'user' | 'assistant';
   content: string;
+  recommendations?: Recommendation[];
 }
 
 // 추천 결과 타입 정의
@@ -53,15 +54,16 @@ export default function Chat() {
       let assistantMessageContent;
 
       if (recommendations && recommendations.length > 0) {
-        // 추천 결과를 보기 좋은 목록 형태로 만듭니다.
-        assistantMessageContent = "다음 편성을 추천합니다:\n\n" + recommendations.map((r: Recommendation) => 
-          `- [${r.time_slot}] ${r.features.product_name} (예상 매출: ${Math.round(r.predicted_sales).toLocaleString()}원)`
-        ).join('\n');
+        assistantMessageContent = "다음 편성을 추천합니다:";
       } else {
         assistantMessageContent = "추천할 만한 방송을 찾지 못했습니다.";
       }
 
-      const assistantMessage: Message = { role: 'assistant', content: assistantMessageContent };
+      const assistantMessage: Message = { 
+        role: 'assistant', 
+        content: assistantMessageContent,
+        recommendations: recommendations && recommendations.length > 0 ? recommendations : undefined
+      };
 
       setMessages(prevMessages => [...prevMessages, assistantMessage]);
 
@@ -78,8 +80,30 @@ export default function Chat() {
     <div className="w-full max-w-2xl mx-auto flex flex-col h-[70vh] border rounded-lg shadow-lg">
       <div className="flex-1 p-4 overflow-y-auto">
         {messages.map((msg, index) => (
-          <div key={index} className={`my-2 p-2 rounded-lg ${msg.role === 'user' ? 'bg-blue-100 text-right ml-auto' : 'bg-gray-100 text-left mr-auto'} whitespace-pre-wrap`}>
-            {msg.content}
+          <div key={index} className={`my-2 p-2 rounded-lg ${msg.role === 'user' ? 'bg-blue-100 text-right ml-auto' : 'bg-gray-100 text-left mr-auto'}`}>
+            <div className="whitespace-pre-wrap">{msg.content}</div>
+            {msg.recommendations && (
+              <div className="mt-3">
+                <table className="w-full border-collapse border border-gray-300 bg-white rounded-lg overflow-hidden">
+                  <thead className="bg-gray-100">
+                    <tr>
+                      <th className="py-2 px-4 border-r border-gray-300 text-left font-semibold">시간대</th>
+                      <th className="py-2 px-4 border-r border-gray-300 text-left font-semibold">상품명</th>
+                      <th className="py-2 px-4 text-right font-semibold">예상 매출</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {msg.recommendations.map((rec, recIndex) => (
+                      <tr key={recIndex} className="border-b">
+                        <td className="py-2 px-4 border-r">{rec.time_slot}</td>
+                        <td className="py-2 px-4 border-r">{rec.features.product_name}</td>
+                        <td className="py-2 px-4 text-right">{Math.round(rec.predicted_sales).toLocaleString()}원</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         ))}
       </div>
