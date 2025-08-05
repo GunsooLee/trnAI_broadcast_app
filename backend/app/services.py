@@ -202,7 +202,6 @@ async def get_recommendations_with_params(params: Dict[str, Any], model: br.Pipe
     print("--- 2. Calling broadcast recommender with params ---")
     rec_df = await run_in_threadpool(
         br.recommend,
-        model=model,
         target_date=target_date,
         time_slots=params["time_slots"],
         product_codes=product_codes,
