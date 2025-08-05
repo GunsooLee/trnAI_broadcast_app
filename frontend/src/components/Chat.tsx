@@ -122,7 +122,7 @@ export default function Chat() {
     }
   };
 
-  const updateParam = (key: keyof ExtractedParams, value: string | number | string[]) => {
+  const updateParam = (key: keyof ExtractedParams, value: string | number | string[] | null) => {
     if (!editableParams) return;
     setEditableParams(prev => prev ? { ...prev, [key]: value } : null);
   };
@@ -159,11 +159,10 @@ export default function Chat() {
       </div>
 
       {/* 파라미터 패널 */}
-      <div className="w-1/4 border rounded-lg shadow-lg p-4">
-        <h3 className="text-lg font-bold mb-4">📊 분석 파라미터</h3>
-        
+      <div className="w-2/5 bg-gray-50 p-4 border-r overflow-y-auto max-h-screen">
+        <h3 className="text-lg font-semibold mb-4">📊 분석 파라미터</h3>
         {editableParams ? (
-          <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">날짜</label>
               <input
@@ -181,7 +180,7 @@ export default function Chat() {
                 onChange={(e) => updateParam('weather', e.target.value)}
                 className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
-                <option value="">선택하세요</option>
+                <option value="">선택</option>
                 <option value="맑음">맑음</option>
                 <option value="흐림">흐림</option>
                 <option value="비">비</option>
@@ -193,8 +192,8 @@ export default function Chat() {
               <label className="block text-sm font-medium text-gray-700 mb-1">온도 (°C)</label>
               <input
                 type="number"
-                value={editableParams.temperature || ''}
-                onChange={(e) => updateParam('temperature', parseFloat(e.target.value))}
+                value={editableParams.temperature !== null && editableParams.temperature !== undefined ? editableParams.temperature.toString() : ''}
+                onChange={(e) => updateParam('temperature', e.target.value === '' ? null : parseFloat(e.target.value))}
                 className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
@@ -203,15 +202,17 @@ export default function Chat() {
               <label className="block text-sm font-medium text-gray-700 mb-1">강수량 (mm)</label>
               <input
                 type="number"
-                value={editableParams.precipitation ?? 0}
-                onChange={(e) => updateParam('precipitation', parseFloat(e.target.value) || 0)}
+                value={editableParams.precipitation !== null && editableParams.precipitation !== undefined ? editableParams.precipitation.toString() : '0'}
+                onChange={(e) => updateParam('precipitation', e.target.value === '' ? 0 : parseFloat(e.target.value))}
+                min="0"
+                step="0.1"
                 className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
 
-            <div>
+            <div className="col-span-2">
               <label className="block text-sm font-medium text-gray-700 mb-1">시간대</label>
-              <div className="space-y-1">
+              <div className="grid grid-cols-3 gap-2">
                 {['아침', '오전', '점심', '오후', '저녁', '야간'].map(slot => (
                   <label key={slot} className="flex items-center">
                     <input
@@ -227,7 +228,7 @@ export default function Chat() {
                       }}
                       className="mr-2"
                     />
-                    {slot}
+                    <span className="text-sm">{slot}</span>
                   </label>
                 ))}
               </div>
@@ -249,17 +250,6 @@ export default function Chat() {
                 <option value="식품">식품</option>
                 <option value="운동용품">운동용품</option>
               </select>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">키워드</label>
-              <input
-                type="text"
-                value={editableParams.keywords?.join(', ') || ''}
-                onChange={(e) => updateParam('keywords', e.target.value.split(',').map(k => k.trim()).filter(k => k))}
-                placeholder="예: 다이어트, 건강, 미용"
-                className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
             </div>
 
             <div>
@@ -304,13 +294,26 @@ export default function Chat() {
               </select>
             </div>
 
-            <button
-              onClick={handleAnalyze}
-              disabled={isAnalyzing}
-              className="w-full py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:bg-green-300 font-medium"
-            >
-              {isAnalyzing ? '분석 중...' : '🔍 방송편성 추천'}
-            </button>
+            <div className="col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">키워드</label>
+              <input
+                type="text"
+                value={editableParams.keywords?.join(', ') || ''}
+                onChange={(e) => updateParam('keywords', e.target.value.split(',').map(k => k.trim()).filter(k => k))}
+                placeholder="예: 다이어트, 건강, 미용"
+                className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            <div className="col-span-2">
+              <button
+                onClick={handleAnalyze}
+                disabled={isAnalyzing}
+                className="w-full py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:bg-green-300 font-medium"
+              >
+                {isAnalyzing ? '분석 중...' : '🔍 방송편성 추천'}
+              </button>
+            </div>
           </div>
         ) : (
           <div className="text-gray-500 text-center py-8">
