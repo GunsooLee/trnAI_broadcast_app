@@ -268,9 +268,17 @@ export default function Chat() {
 
         {/* 3사분면: 분석 파라미터 (좌하) */}
         <div className="col-start-1 row-start-2 col-span-2 flex flex-col bg-white border rounded-lg shadow-lg">
-          <div className="bg-orange-50 p-3 border-b rounded-t-lg">
+          <div className="flex items-center justify-between bg-orange-50 p-3 border-b rounded-t-lg">
             <h3 className="text-lg font-semibold text-orange-800">📊 분석 파라미터</h3>
+            <button
+              onClick={handleAnalyze}
+              disabled={!editableParams || isAnalyzing}
+              className="px-4 py-1.5 bg-green-500 text-white rounded-md hover:bg-green-600 disabled:bg-green-300 font-semibold text-sm transition-colors"
+            >
+              {isAnalyzing ? '분석중...' : '방송 추천'}
+            </button>
           </div>
+          
           <div className="flex-1 p-4 overflow-y-auto">
             {isLoadingParams ? (
               <div className="text-gray-500 text-center py-12">
@@ -420,16 +428,7 @@ export default function Chat() {
                     className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-orange-500"
                   />
                 </div>
-
-                <div className="col-span-2">
-                  <button
-                    onClick={handleAnalyze}
-                    disabled={isAnalyzing}
-                    className="w-full py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:bg-green-300 font-medium text-lg"
-                  >
-                    {isAnalyzing ? '분석 중...' : '🔍 방송편성 추천'}
-                  </button>
-                </div>
+                
               </div>
             ) : (
               <div className="text-gray-500 text-center py-12 flex flex-col items-center justify-center h-full">
