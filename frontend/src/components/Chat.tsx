@@ -7,6 +7,7 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   recommendations?: Recommendation[];
+  extractedParams?: Record<string, any>;
 }
 
 // 추천 결과 타입 정의
@@ -51,6 +52,7 @@ export default function Chat() {
       
       // 백엔드 응답을 기반으로 어시스턴트 메시지를 생성합니다.
       const recommendations = data.recommendations;
+      const extractedParams = data.extracted_params;
       let assistantMessageContent;
 
       if (recommendations && recommendations.length > 0) {
@@ -62,7 +64,8 @@ export default function Chat() {
       const assistantMessage: Message = { 
         role: 'assistant', 
         content: assistantMessageContent,
-        recommendations: recommendations && recommendations.length > 0 ? recommendations : undefined
+        recommendations: recommendations && recommendations.length > 0 ? recommendations : undefined,
+        extractedParams: extractedParams
       };
 
       setMessages(prevMessages => [...prevMessages, assistantMessage]);
@@ -82,6 +85,37 @@ export default function Chat() {
         {messages.map((msg, index) => (
           <div key={index} className={`my-2 p-2 rounded-lg ${msg.role === 'user' ? 'bg-blue-100 text-right ml-auto' : 'bg-gray-100 text-left mr-auto'}`}>
             <div className="whitespace-pre-wrap">{msg.content}</div>
+            {msg.extractedParams && (
+              <div className="mt-3 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                <h4 className="font-semibold text-blue-800 mb-2">📊 분석된 파라미터</h4>
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  {msg.extractedParams.date && (
+                    <div><span className="font-medium text-gray-600">날짜:</span> {msg.extractedParams.date}</div>
+                  )}
+                  {msg.extractedParams.day_type && (
+                    <div><span className="font-medium text-gray-600">요일:</span> {msg.extractedParams.day_type}</div>
+                  )}
+                  {msg.extractedParams.weather && (
+                    <div><span className="font-medium text-gray-600">날씨:</span> {msg.extractedParams.weather}</div>
+                  )}
+                  {msg.extractedParams.temperature && (
+                    <div><span className="font-medium text-gray-600">온도:</span> {msg.extractedParams.temperature}°C</div>
+                  )}
+                  {msg.extractedParams.precipitation !== undefined && (
+                    <div><span className="font-medium text-gray-600">강수량:</span> {msg.extractedParams.precipitation}mm</div>
+                  )}
+                  {msg.extractedParams.time_slots && (
+                    <div className="col-span-2"><span className="font-medium text-gray-600">시간대:</span> {Array.isArray(msg.extractedParams.time_slots) ? msg.extractedParams.time_slots.join(', ') : msg.extractedParams.time_slots}</div>
+                  )}
+                  {msg.extractedParams.categories && (
+                    <div className="col-span-2"><span className="font-medium text-gray-600">카테고리:</span> {Array.isArray(msg.extractedParams.categories) ? msg.extractedParams.categories.join(', ') : msg.extractedParams.categories}</div>
+                  )}
+                  {msg.extractedParams.products && (
+                    <div className="col-span-2"><span className="font-medium text-gray-600">상품:</span> {Array.isArray(msg.extractedParams.products) ? msg.extractedParams.products.join(', ') : msg.extractedParams.products}</div>
+                  )}
+                </div>
+              </div>
+            )}
             {msg.recommendations && (
               <div className="mt-3">
                 <table className="w-full border-collapse border border-gray-300 bg-white rounded-lg overflow-hidden">
