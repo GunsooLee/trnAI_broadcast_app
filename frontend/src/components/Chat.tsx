@@ -2,12 +2,24 @@
 
 import { useState } from 'react';
 
+// 추출된 파라미터 타입 정의
+interface ExtractedParams {
+  date?: string;
+  day_type?: string;
+  weather?: string;
+  temperature?: number;
+  precipitation?: number;
+  time_slots?: string[];
+  categories?: string[];
+  products?: string[];
+}
+
 // 메시지 타입을 정의합니다.
 interface Message {
   role: 'user' | 'assistant';
   content: string;
   recommendations?: Recommendation[];
-  extractedParams?: Record<string, any>;
+  extractedParams?: ExtractedParams;
 }
 
 // 추천 결과 타입 정의
