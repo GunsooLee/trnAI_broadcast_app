@@ -150,6 +150,8 @@ async def get_recommendations(user_query: str, model: br.Pipeline) -> RecommendR
         category_mode=use_category,
         categories=enriched_params.get("categories"),
         top_n=3,
+        use_category_first=True,  # 카테고리 우선 방식 사용
+        showhost_id="NO_HOST",   # 기본 쇼호스트 ID
     )
 
     recommendations = [RecommendationItem(**row) for row in rec_df.to_dict('records')] if not rec_df.empty else []
@@ -208,6 +210,8 @@ async def get_recommendations_with_params(params: Dict[str, Any], model: br.Pipe
         category_mode=use_category,
         categories=params.get("categories"),
         top_n=3,
+        use_category_first=True,  # 카테고리 우선 방식 사용
+        showhost_id="NO_HOST",   # 기본 쇼호스트 ID
     )
 
     recommendations = [RecommendationItem(**row) for row in rec_df.to_dict('records')] if not rec_df.empty else []

@@ -126,7 +126,8 @@ def load_data() -> pd.DataFrame:
             time_slot,
             sales_amount,
             order_count,
-            product_price
+            product_price,
+            COALESCE(broadcast_showhost, 'NO_HOST') AS broadcast_showhost -- NULL을 'NO_HOST'로 처리
         FROM {TABLE_NAME}
         WHERE sales_amount IS NOT NULL
     ),
@@ -155,6 +156,38 @@ def load_data() -> pd.DataFrame:
             AVG(sales_amount) AS category_overall_avg_sales
         FROM {TABLE_NAME}
         GROUP BY product_mgroup
+    ),
+    -- 5) 쇼호스트별 통계
+    showhost_stats AS (
+        SELECT
+            COALESCE(broadcast_showhost, 'NO_HOST') AS broadcast_showhost,
+            AVG(sales_amount) AS showhost_avg_sales,
+            COUNT(*) AS showhost_broadcast_count
+        FROM {TABLE_NAME}
+        WHERE sales_amount IS NOT NULL
+        GROUP BY COALESCE(broadcast_showhost, 'NO_HOST')
+    ),
+    -- 6) 쇼호스트-카테고리별 특화도 통계
+    showhost_category_stats AS (
+        SELECT
+            COALESCE(broadcast_showhost, 'NO_HOST') AS broadcast_showhost,
+            product_mgroup,
+            AVG(sales_amount) AS showhost_category_avg_sales,
+            COUNT(*) AS showhost_category_count
+        FROM {TABLE_NAME}
+        WHERE sales_amount IS NOT NULL
+        GROUP BY COALESCE(broadcast_showhost, 'NO_HOST'), product_mgroup
+    ),
+    -- 7) 쇼호스트-시간대별 성과 통계
+    showhost_timeslot_stats AS (
+        SELECT
+            COALESCE(broadcast_showhost, 'NO_HOST') AS broadcast_showhost,
+            time_slot,
+            AVG(sales_amount) AS showhost_timeslot_avg_sales,
+            COUNT(*) AS showhost_timeslot_count
+        FROM {TABLE_NAME}
+        WHERE sales_amount IS NOT NULL
+        GROUP BY COALESCE(broadcast_showhost, 'NO_HOST'), time_slot
     )
     -- 최종 학습 데이터셋 구성
     SELECT 
@@ -167,12 +200,25 @@ def load_data() -> pd.DataFrame:
         c.category_timeslot_avg_sales,
         -- 신규 특성: 시간대별 특화 점수 (division by zero 방지)
         COALESCE(c.category_timeslot_avg_sales / NULLIF(co.category_overall_avg_sales, 0), 1) AS timeslot_specialty_score,
-        b.time_slot || '_' || b.product_mgroup AS time_category_interaction
+        b.time_slot || '_' || b.product_mgroup AS time_category_interaction,
+        -- 쇼호스트 관련 특성들
+        hs.showhost_avg_sales,
+        hs.showhost_broadcast_count,
+        hcs.showhost_category_avg_sales,
+        hcs.showhost_category_count,
+        hts.showhost_timeslot_avg_sales,
+        hts.showhost_timeslot_count,
+        -- 쇼호스트 특화도 점수들
+        COALESCE(hcs.showhost_category_avg_sales / NULLIF(hs.showhost_avg_sales, 0), 1) AS showhost_category_specialty,
+        COALESCE(hts.showhost_timeslot_avg_sales / NULLIF(hs.showhost_avg_sales, 0), 1) AS showhost_timeslot_specialty
     FROM base b
     LEFT JOIN weather_daily w ON b.broadcast_date = w.weather_date
     LEFT JOIN product_stats p ON b.product_code = p.product_code
     LEFT JOIN category_timeslot_stats c ON b.product_mgroup = c.product_mgroup AND b.time_slot = c.time_slot
-    LEFT JOIN category_overall_stats co ON b.product_mgroup = co.product_mgroup -- 신규 조인
+    LEFT JOIN category_overall_stats co ON b.product_mgroup = co.product_mgroup
+    LEFT JOIN showhost_stats hs ON b.broadcast_showhost = hs.broadcast_showhost
+    LEFT JOIN showhost_category_stats hcs ON b.broadcast_showhost = hcs.broadcast_showhost AND b.product_mgroup = hcs.product_mgroup
+    LEFT JOIN showhost_timeslot_stats hts ON b.broadcast_showhost = hts.broadcast_showhost AND b.time_slot = hts.time_slot
     """
     
     df = pd.read_sql(query, engine)
@@ -199,6 +245,16 @@ def load_data() -> pd.DataFrame:
     df['precipitation'] = df['precipitation'].fillna(0)
     df['weather'] = df['weather'].fillna('정보없음') # 날씨 정보 없는 경우 대비
     
+    # 쇼호스트 관련 NULL 값 처리
+    df['showhost_avg_sales'] = df['showhost_avg_sales'].fillna(0)
+    df['showhost_broadcast_count'] = df['showhost_broadcast_count'].fillna(0)
+    df['showhost_category_avg_sales'] = df['showhost_category_avg_sales'].fillna(0)
+    df['showhost_category_count'] = df['showhost_category_count'].fillna(0)
+    df['showhost_timeslot_avg_sales'] = df['showhost_timeslot_avg_sales'].fillna(0)
+    df['showhost_timeslot_count'] = df['showhost_timeslot_count'].fillna(0)
+    df['showhost_category_specialty'] = df['showhost_category_specialty'].fillna(1)
+    df['showhost_timeslot_specialty'] = df['showhost_timeslot_specialty'].fillna(1)
+    
     return df
 
 
@@ -213,7 +269,16 @@ def build_pipeline() -> Pipeline:
         "product_avg_sales",
         "product_broadcast_count",
         "category_timeslot_avg_sales",
-        "timeslot_specialty_score", # <<< 신규 특성 추가
+        "timeslot_specialty_score",
+        # 쇼호스트 관련 수치 특성
+        "showhost_avg_sales",
+        "showhost_broadcast_count",
+        "showhost_category_avg_sales",
+        "showhost_category_count",
+        "showhost_timeslot_avg_sales",
+        "showhost_timeslot_count",
+        "showhost_category_specialty",
+        "showhost_timeslot_specialty",
     ]
 
     categorical_features = [
@@ -226,7 +291,9 @@ def build_pipeline() -> Pipeline:
         "product_sgroup",
         "product_dgroup",
         "product_type",
-        "time_category_interaction", # <<< 새로운 상호작용 특성 추가
+        "time_category_interaction",
+        # 쇼호스트 관련 범주형 특성
+        "broadcast_showhost",
     ]
 
     # ---- 텍스트 피처 ----------------------------------------
@@ -375,13 +442,92 @@ def fetch_category_info() -> pd.DataFrame:
 
 def get_category_overall_avg_sales() -> Dict[str, float]:
     """카테고리(mgroup)별 전체 시간대 평균 매출액 조회"""
+    engine = create_engine(DB_URI)
     query = f"""
-        SELECT product_mgroup, AVG(sales_amount) as avg_sales
-        FROM {TABLE_NAME}
-        GROUP BY product_mgroup
+    SELECT product_mgroup, AVG(sales_amount) as avg_sales
+    FROM {TABLE_NAME}
+    WHERE sales_amount IS NOT NULL
+    GROUP BY product_mgroup
     """
-    df = pd.read_sql(query, create_engine(DB_URI))
-    return pd.Series(df.avg_sales.values, index=df.product_mgroup).to_dict()
+    with engine.connect() as conn:
+        rows = conn.execute(text(query)).fetchall()
+    return {row[0]: row[1] for row in rows}
+
+
+def get_showhost_stats() -> Dict[str, Dict[str, float]]:
+    """쇼호스트별 기본 통계 조회"""
+    engine = create_engine(DB_URI)
+    query = f"""
+    SELECT 
+        COALESCE(broadcast_showhost, 'NO_HOST') as showhost_id,
+        AVG(sales_amount) as avg_sales,
+        COUNT(*) as broadcast_count
+    FROM {TABLE_NAME}
+    WHERE sales_amount IS NOT NULL
+    GROUP BY COALESCE(broadcast_showhost, 'NO_HOST')
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(text(query)).fetchall()
+    
+    result = {}
+    for row in rows:
+        result[row[0]] = {
+            'avg_sales': row[1],
+            'broadcast_count': row[2]
+        }
+    return result
+
+
+def get_showhost_category_stats() -> Dict[str, Dict[str, float]]:
+    """쇼호스트-카테고리별 특화도 통계 조회"""
+    engine = create_engine(DB_URI)
+    query = f"""
+    SELECT 
+        COALESCE(broadcast_showhost, 'NO_HOST') as showhost_id,
+        product_mgroup,
+        AVG(sales_amount) as avg_sales,
+        COUNT(*) as broadcast_count
+    FROM {TABLE_NAME}
+    WHERE sales_amount IS NOT NULL
+    GROUP BY COALESCE(broadcast_showhost, 'NO_HOST'), product_mgroup
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(text(query)).fetchall()
+    
+    result = {}
+    for row in rows:
+        key = f"{row[0]}_{row[1]}"  # showhost_id_category
+        result[key] = {
+            'avg_sales': row[2],
+            'broadcast_count': row[3]
+        }
+    return result
+
+
+def get_showhost_timeslot_stats() -> Dict[str, Dict[str, float]]:
+    """쇼호스트-시간대별 성과 통계 조회"""
+    engine = create_engine(DB_URI)
+    query = f"""
+    SELECT 
+        COALESCE(broadcast_showhost, 'NO_HOST') as showhost_id,
+        time_slot,
+        AVG(sales_amount) as avg_sales,
+        COUNT(*) as broadcast_count
+    FROM {TABLE_NAME}
+    WHERE sales_amount IS NOT NULL
+    GROUP BY COALESCE(broadcast_showhost, 'NO_HOST'), time_slot
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(text(query)).fetchall()
+    
+    result = {}
+    for row in rows:
+        key = f"{row[0]}_{row[1]}"  # showhost_id_timeslot
+        result[key] = {
+            'avg_sales': row[2],
+            'broadcast_count': row[3]
+        }
+    return result
 
 
 def prepare_candidate_row(
@@ -390,7 +536,11 @@ def prepare_candidate_row(
     product: pd.Series,
     weather_info: Dict[str, float],
     category_timeslot_sales_map: Dict[str, float],
-    category_overall_sales_map: Dict[str, float], # <<< 인자 추가
+    category_overall_sales_map: Dict[str, float],
+    showhost_id: str = "NO_HOST",  # 쇼호스트 ID 추가
+    showhost_stats: Dict[str, Dict[str, float]] = None,  # 쇼호스트 통계
+    showhost_category_stats: Dict[str, Dict[str, float]] = None,  # 쇼호스트-카테고리 통계
+    showhost_timeslot_stats: Dict[str, Dict[str, float]] = None,  # 쇼호스트-시간대 통계
 ) -> Dict:
     """모델이 요구하는 입력 형태(딕셔너리)로 변환"""
 
@@ -412,6 +562,22 @@ def prepare_candidate_row(
     category_key = f"{product['product_mgroup']}_{time_slot}"
     timeslot_avg = category_timeslot_sales_map.get(category_key, 0)
     overall_avg = category_overall_sales_map.get(product['product_mgroup'], 0)
+    
+    # 쇼호스트 관련 통계 계산
+    showhost_stats = showhost_stats or {}
+    showhost_category_stats = showhost_category_stats or {}
+    showhost_timeslot_stats = showhost_timeslot_stats or {}
+    
+    showhost_basic = showhost_stats.get(showhost_id, {'avg_sales': 0, 'broadcast_count': 0})
+    showhost_category_key = f"{showhost_id}_{product['product_mgroup']}"
+    showhost_category = showhost_category_stats.get(showhost_category_key, {'avg_sales': 0, 'broadcast_count': 0})
+    showhost_timeslot_key = f"{showhost_id}_{time_slot}"
+    showhost_timeslot = showhost_timeslot_stats.get(showhost_timeslot_key, {'avg_sales': 0, 'broadcast_count': 0})
+    
+    # 쇼호스트 특화도 점수 계산
+    showhost_avg_sales = showhost_basic['avg_sales']
+    showhost_category_specialty = (showhost_category['avg_sales'] / showhost_avg_sales) if showhost_avg_sales > 0 else 1
+    showhost_timeslot_specialty = (showhost_timeslot['avg_sales'] / showhost_avg_sales) if showhost_avg_sales > 0 else 1
 
     row = {
         # 날짜/시간 관련
@@ -440,6 +606,17 @@ def prepare_candidate_row(
 
         # 상호작용 특성
         "time_category_interaction": f"{time_slot}_{product.get('product_mgroup', '기타')}",
+        
+        # 쇼호스트 관련 특성
+        "broadcast_showhost": showhost_id,
+        "showhost_avg_sales": showhost_avg_sales,
+        "showhost_broadcast_count": showhost_basic['broadcast_count'],
+        "showhost_category_avg_sales": showhost_category['avg_sales'],
+        "showhost_category_count": showhost_category['broadcast_count'],
+        "showhost_timeslot_avg_sales": showhost_timeslot['avg_sales'],
+        "showhost_timeslot_count": showhost_timeslot['broadcast_count'],
+        "showhost_category_specialty": showhost_category_specialty,
+        "showhost_timeslot_specialty": showhost_timeslot_specialty,
     }
 
     return row
@@ -471,6 +648,227 @@ def get_weather_by_date(date: dt.date) -> Dict[str, float]:
     }
 
 
+def predict_category_performance(
+    target_date: dt.date,
+    time_slots: List[str],
+    weather_info: Dict[str, float] | None = None,
+    showhost_id: str = "NO_HOST",
+    top_categories: int = 10
+) -> pd.DataFrame:
+    """시간대별 카테고리 성과를 예측하여 상위 카테고리를 반환한다."""
+    
+    # 모델 로드
+    pipe: Pipeline = _load_model()
+    
+    # 통계 데이터 로드
+    all_categories_info = fetch_category_info()
+    category_timeslot_sales_map = all_categories_info.set_index(['product_mgroup', 'time_slot'])['category_timeslot_avg_sales'].to_dict()
+    category_overall_sales_map = get_category_overall_avg_sales()
+    showhost_stats = get_showhost_stats()
+    showhost_category_stats = get_showhost_category_stats()
+    showhost_timeslot_stats = get_showhost_timeslot_stats()
+    
+    if weather_info is None:
+        weather_info = get_weather_by_date(target_date)
+    
+    # 카테고리별 대표 상품 선정 (각 카테고리에서 가장 성과가 좋은 상품)
+    category_representatives = {}
+    for mgroup in all_categories_info['product_mgroup'].unique():
+        category_items = all_categories_info[all_categories_info['product_mgroup'] == mgroup]
+        # 해당 카테고리에서 가장 평균 매출이 높은 상품 선택
+        best_item = category_items.loc[category_items['category_timeslot_avg_sales'].idxmax()]
+        category_representatives[mgroup] = best_item
+    
+    # 시간대별 카테고리 성과 예측
+    category_predictions = []
+    for slot in time_slots:
+        for mgroup, representative in category_representatives.items():
+            row_dict = prepare_candidate_row(
+                target_date,
+                slot,
+                representative,
+                weather_info,
+                category_timeslot_sales_map,
+                category_overall_sales_map,
+                showhost_id=showhost_id,
+                showhost_stats=showhost_stats,
+                showhost_category_stats=showhost_category_stats,
+                showhost_timeslot_stats=showhost_timeslot_stats
+            )
+            
+            pred = pipe.predict(pd.DataFrame([row_dict]))[0]
+            category_predictions.append({
+                'time_slot': slot,
+                'category': mgroup,
+                'predicted_sales': pred,
+                'representative_item': representative,
+                'features': row_dict
+            })
+    
+    # DataFrame으로 변환 후 시간대별 상위 카테고리 선정
+    pred_df = pd.DataFrame(category_predictions)
+    
+    # 시간대별 상위 카테고리 선정
+    top_categories_by_slot = []
+    for slot in time_slots:
+        slot_df = pred_df[pred_df['time_slot'] == slot]
+        top_slot_categories = (
+            slot_df.sort_values('predicted_sales', ascending=False)
+            .head(top_categories)
+        )
+        top_categories_by_slot.append(top_slot_categories)
+    
+    if top_categories_by_slot:
+        return pd.concat(top_categories_by_slot).reset_index(drop=True)
+    else:
+        return pd.DataFrame()
+
+
+def recommend_category_first(
+    target_date: dt.date,
+    time_slots: List[str],
+    weather_info: Dict[str, float] | None = None,
+    showhost_id: str = "NO_HOST",
+    top_categories_per_slot: int = 3,
+    top_products_per_category: int = 1
+) -> pd.DataFrame:
+    """카테곦0리 우선 추천 방식
+    
+    1단계: 시간대별 최적 카테고리 선정
+    2단계: 선정된 카테고리 내에서 최적 상품 추천
+    """
+    
+    # 1단계: 카테고리 성과 예측
+    category_performance = predict_category_performance(
+        target_date=target_date,
+        time_slots=time_slots,
+        weather_info=weather_info,
+        showhost_id=showhost_id,
+        top_categories=top_categories_per_slot
+    )
+    
+    if category_performance.empty:
+        return pd.DataFrame()
+    
+    # 2단계: 선정된 카테곦0리 내에서 상품 추천
+    final_recommendations = []
+    
+    for slot in time_slots:
+        slot_categories = category_performance[category_performance['time_slot'] == slot]
+        
+        for _, category_row in slot_categories.head(top_categories_per_slot).iterrows():
+            category = category_row['category']
+            
+            # 해당 카테곦0리의 상품들 조회
+            category_products = get_products_by_category(category)
+            
+            if not category_products.empty:
+                # 카테곦0리 내 최적 상품 예측
+                best_products = recommend_products_in_category(
+                    target_date=target_date,
+                    time_slot=slot,
+                    category=category,
+                    products_df=category_products,
+                    weather_info=weather_info,
+                    showhost_id=showhost_id,
+                    top_n=top_products_per_category
+                )
+                
+                for _, product in best_products.iterrows():
+                    final_recommendations.append({
+                        'time_slot': slot,
+                        'category': category,
+                        'category_predicted_sales': category_row['predicted_sales'],
+                        'product_code': product.get('product_code'),
+                        'product_name': product.get('product_name'),
+                        'product_predicted_sales': product.get('predicted_sales'),
+                        'product_lgroup': product.get('product_lgroup'),
+                        'product_mgroup': product.get('product_mgroup'),
+                        'product_sgroup': product.get('product_sgroup'),
+                        'product_dgroup': product.get('product_dgroup'),
+                        'showhost_id': showhost_id,
+                        'recommendation_reason': f"카테곦0리 '{category}' 예상매출: {category_row['predicted_sales']:.0f}원"
+                    })
+    
+    return pd.DataFrame(final_recommendations)
+
+
+def get_products_by_category(category: str) -> pd.DataFrame:
+    """특정 카테곦0리의 상품들을 조회한다."""
+    engine = create_engine(DB_URI)
+    query = f"""
+    SELECT DISTINCT
+        product_code,
+        product_name,
+        product_lgroup,
+        product_mgroup,
+        product_sgroup,
+        product_dgroup,
+        product_type,
+        keyword,
+        AVG(product_price) as product_price,
+        AVG(sales_amount) as product_avg_sales,
+        COUNT(*) as product_broadcast_count
+    FROM {TABLE_NAME}
+    WHERE product_mgroup = :category
+        AND sales_amount IS NOT NULL
+    GROUP BY product_code, product_name, product_lgroup, product_mgroup, 
+             product_sgroup, product_dgroup, product_type, keyword
+    ORDER BY AVG(sales_amount) DESC
+    LIMIT 50  -- 상위 50개 상품만 고려
+    """
+    return pd.read_sql(query, engine, params={'category': category})
+
+
+def recommend_products_in_category(
+    target_date: dt.date,
+    time_slot: str,
+    category: str,
+    products_df: pd.DataFrame,
+    weather_info: Dict[str, float],
+    showhost_id: str = "NO_HOST",
+    top_n: int = 1
+) -> pd.DataFrame:
+    """특정 카테곦0리 내에서 최적 상품들을 추천한다."""
+    
+    # 모델 로드
+    pipe: Pipeline = _load_model()
+    
+    # 통계 데이터 로드
+    all_categories_info = fetch_category_info()
+    category_timeslot_sales_map = all_categories_info.set_index(['product_mgroup', 'time_slot'])['category_timeslot_avg_sales'].to_dict()
+    category_overall_sales_map = get_category_overall_avg_sales()
+    showhost_stats = get_showhost_stats()
+    showhost_category_stats = get_showhost_category_stats()
+    showhost_timeslot_stats = get_showhost_timeslot_stats()
+    
+    # 상품별 예측
+    product_predictions = []
+    for _, product in products_df.iterrows():
+        row_dict = prepare_candidate_row(
+            target_date,
+            time_slot,
+            product,
+            weather_info,
+            category_timeslot_sales_map,
+            category_overall_sales_map,
+            showhost_id=showhost_id,
+            showhost_stats=showhost_stats,
+            showhost_category_stats=showhost_category_stats,
+            showhost_timeslot_stats=showhost_timeslot_stats
+        )
+        
+        pred = pipe.predict(pd.DataFrame([row_dict]))[0]
+        product_dict = product.to_dict()
+        product_dict['predicted_sales'] = pred
+        product_dict['features'] = row_dict
+        product_predictions.append(product_dict)
+    
+    # 예측 매출 상위 N개 선정
+    pred_df = pd.DataFrame(product_predictions)
+    return pred_df.sort_values('predicted_sales', ascending=False).head(top_n)
+
+
 def recommend(
     target_date: dt.date,
     time_slots: List[str],
@@ -482,18 +880,65 @@ def recommend(
     top_k_sample: int = 5,
     temp: float = 0.5,
     top_n: int | None = None,
+    use_category_first: bool = True,  # 새로운 매개변수: 카테곦0리 우선 방식 사용 여부
+    showhost_id: str = "NO_HOST",     # 쇼호스트 ID 매개변수 추가
 ) -> "pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]":
     """시간대별 최적 상품(또는 카테고리)을 추천한다.
 
-    category_mode=True 이면 product_codes를 무시하고 카테고리 단위로 추천한다.
+    use_category_first=True: 카테고리 우선 추천 방식 사용
+    category_mode=True: 기존 카테고리 모드 사용
     """
-
+    
+    # 카테고리 우선 방식 사용
+    if use_category_first:
+        result = recommend_category_first(
+            target_date=target_date,
+            time_slots=time_slots,
+            weather_info=weather_info,
+            showhost_id=showhost_id,
+            top_categories_per_slot=3,
+            top_products_per_category=1
+        )
+        
+        # 기존 형식과 맞추기 위해 컴럼 이름 조정
+        if not result.empty:
+            result = result.rename(columns={
+                'product_predicted_sales': 'predicted_sales',
+                'product_code': 'product_code',
+                'product_name': 'product_name'
+            })
+            
+            # 기존 형식에 맞는 컴럼 추가
+            display_cols = [
+                "time_slot",
+                "predicted_sales", 
+                "product_code",
+                "product_name",
+                "product_lgroup",
+                "product_mgroup",
+                "product_sgroup",
+                "product_dgroup",
+                "category",
+                "showhost_id",
+                "recommendation_reason"
+            ]
+            final_cols = [col for col in display_cols if col in result.columns]
+            return result[final_cols]
+        else:
+            return pd.DataFrame()
+    
+    # 기존 방식 사용
     # 모델은 메모리에 1회만 로드해 재사용 -----------------------------
     pipe: Pipeline = _load_model()
 
     all_categories_info = fetch_category_info()
     category_timeslot_sales_map = all_categories_info.set_index(['product_mgroup', 'time_slot'])['category_timeslot_avg_sales'].to_dict()
     category_overall_sales_map = get_category_overall_avg_sales()
+    
+    # 쇼호스트 관련 통계 로드
+    showhost_stats = get_showhost_stats()
+    showhost_category_stats = get_showhost_category_stats()
+    showhost_timeslot_stats = get_showhost_timeslot_stats()
 
     if category_mode:
         items_df = all_categories_info.copy()
@@ -532,7 +977,20 @@ def recommend(
     candidates: List[Dict] = []
     for slot in time_slots:
         for _, item in items_df.iterrows():
-            row_dict = prepare_candidate_row(target_date, slot, item, weather_info, category_timeslot_sales_map, category_overall_sales_map)
+            # 쇼호스트 ID는 매개변수로 받은 값 사용
+            
+            row_dict = prepare_candidate_row(
+                target_date, 
+                slot, 
+                item, 
+                weather_info, 
+                category_timeslot_sales_map, 
+                category_overall_sales_map,
+                showhost_id=showhost_id,
+                showhost_stats=showhost_stats,
+                showhost_category_stats=showhost_category_stats,
+                showhost_timeslot_stats=showhost_timeslot_stats
+            )
             pred = pipe.predict(pd.DataFrame([row_dict]))[0]
             candidates.append({
                 "time_slot": slot,
@@ -542,6 +1000,7 @@ def recommend(
                 "product_sgroup": item.get("product_sgroup"),
                 "product_dgroup": item.get("product_dgroup"),
                 "predicted_sales": pred,
+                "showhost_id": showhost_id,  # 쇼호스트 ID 추가
                 "features": row_dict, # <<< 예측에 사용된 파라미터 추가
             })
 

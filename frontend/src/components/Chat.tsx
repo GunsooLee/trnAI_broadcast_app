@@ -175,29 +175,120 @@ export default function Chat() {
               </div>
             ) : recommendations.length > 0 ? (
               <div className="space-y-6">
-                {/* 추천 결과 테이블 */}
+                {/* 추천 로직 설명 */}
+                <div className="bg-gradient-to-r from-blue-50 to-purple-50 p-4 rounded-lg border border-blue-200">
+                  <h4 className="text-lg font-semibold text-blue-800 mb-3">🧠 카테고리 우선 추천 로직</h4>
+                  <div className="grid grid-cols-4 gap-2 text-sm">
+                    <div className="bg-white p-3 rounded-lg border border-blue-200 text-center">
+                      <div className="text-2xl mb-1">🏆</div>
+                      <div className="font-semibold text-blue-700">1단계</div>
+                      <div className="text-xs text-gray-600">카테고리별 대표상품 선정</div>
+                    </div>
+                    <div className="bg-white p-3 rounded-lg border border-purple-200 text-center">
+                      <div className="text-2xl mb-1">📊</div>
+                      <div className="font-semibold text-purple-700">2단계</div>
+                      <div className="text-xs text-gray-600">시간대별 카테고리 성과 예측</div>
+                    </div>
+                    <div className="bg-white p-3 rounded-lg border border-green-200 text-center">
+                      <div className="text-2xl mb-1">🎯</div>
+                      <div className="font-semibold text-green-700">3단계</div>
+                      <div className="text-xs text-gray-600">최적 카테고리 선정</div>
+                    </div>
+                    <div className="bg-white p-3 rounded-lg border border-orange-200 text-center">
+                      <div className="text-2xl mb-1">🛒</div>
+                      <div className="font-semibold text-orange-700">4단계</div>
+                      <div className="text-xs text-gray-600">카테고리 내 최적 상품 추천</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 카테고리별 추천 결과 */}
                 <div>
-                  <h4 className="text-lg font-semibold text-gray-800 mb-3">🎯 추천 목록</h4>
-                  <table className="w-full border-collapse border border-gray-300 bg-white rounded-lg overflow-hidden">
-                    <thead className="bg-gray-100">
-                      <tr>
-                        <th className="py-3 px-4 border-r border-gray-300 text-left font-semibold">시간대</th>
-                        <th className="py-3 px-4 border-r border-gray-300 text-left font-semibold">상품명</th>
-                        <th className="py-3 px-4 text-right font-semibold">예상 매출</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {recommendations.map((rec, index) => (
-                        <tr key={index} className="border-b hover:bg-gray-50">
-                          <td className="py-3 px-4 border-r font-medium text-blue-600">{rec.time_slot}</td>
-                          <td className="py-3 px-4 border-r">{rec.features.product_name}</td>
-                          <td className="py-3 px-4 text-right font-semibold text-green-600">
-                            {Math.round(rec.predicted_sales).toLocaleString()}원
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <h4 className="text-lg font-semibold text-gray-800 mb-4 flex items-center">
+                    <span className="text-2xl mr-2">🏆</span>
+                    시간대별 추천 카테고리 & 상품
+                  </h4>
+                  
+                  <div className="space-y-4">
+                    {recommendations.reduce((acc, rec) => {
+                      const existing = acc.find(item => item.time_slot === rec.time_slot);
+                      if (existing) {
+                        existing.items.push(rec);
+                      } else {
+                        acc.push({ time_slot: rec.time_slot, items: [rec] });
+                      }
+                      return acc;
+                    }, [] as any[]).map((timeSlotGroup, groupIndex) => (
+                      <div key={groupIndex} className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+                        {/* 시간대 헤더 */}
+                        <div className="bg-gradient-to-r from-blue-500 to-purple-500 text-white p-4">
+                          <h5 className="text-lg font-bold flex items-center">
+                            <span className="text-2xl mr-3">🕰️</span>
+                            {timeSlotGroup.time_slot} 시간대
+                            <span className="ml-auto text-sm bg-white bg-opacity-20 px-3 py-1 rounded-full">
+                              {timeSlotGroup.items.length}개 추천
+                            </span>
+                          </h5>
+                        </div>
+                        
+                        {/* 추천 상품들 */}
+                        <div className="p-4 space-y-3">
+                          {timeSlotGroup.items.map((rec: any, itemIndex: number) => (
+                            <div key={itemIndex} className="bg-gradient-to-r from-gray-50 to-blue-50 p-4 rounded-lg border border-gray-200">
+                              {/* 카테고리 정보 */}
+                              <div className="flex items-center justify-between mb-3">
+                                <div className="flex items-center space-x-3">
+                                  <div className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-semibold">
+                                    🏷️ {rec.category || rec.product_mgroup}
+                                  </div>
+                                  {rec.recommendation_reason && (
+                                    <div className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
+                                      {rec.recommendation_reason}
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="text-right">
+                                  <div className="text-sm text-gray-500">카테고리 예상매출</div>
+                                  <div className="font-bold text-blue-600">
+                                    {rec.category_predicted_sales ? 
+                                      Math.round(rec.category_predicted_sales).toLocaleString() + '원' : 
+                                      '정보없음'
+                                    }
+                                  </div>
+                                </div>
+                              </div>
+                              
+                              {/* 상품 정보 */}
+                              <div className="bg-white p-4 rounded-lg border border-gray-100">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex-1">
+                                    <div className="flex items-center space-x-2 mb-2">
+                                      <span className="text-lg">🛒</span>
+                                      <h6 className="font-semibold text-gray-800">
+                                        {rec.product_name || rec.features?.product_name || '상품명 없음'}
+                                      </h6>
+                                    </div>
+                                    <div className="text-sm text-gray-600 space-x-4">
+                                      <span>🏷️ {rec.product_code || '코드없음'}</span>
+                                      {rec.showhost_id && rec.showhost_id !== 'NO_HOST' && (
+                                        <span>🎤 쇼호스트: {rec.showhost_id}</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div className="text-right">
+                                    <div className="text-sm text-gray-500">상품 예상매출</div>
+                                    <div className="text-xl font-bold text-green-600">
+                                      {Math.round(rec.product_predicted_sales || rec.predicted_sales).toLocaleString()}원
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
 
                 {/* 추천 통계 */}
