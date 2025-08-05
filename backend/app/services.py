@@ -53,7 +53,7 @@ def extract_params_from_llm(user_msg: str) -> dict | None:
         '  "date": string | null, "time_slots": string[] | null, "weather": string | null, '
         '  "temperature": number | null, "precipitation": number | null, "season": string | null, '
         '  "day_type": string | null, "keywords": string[] | null, "mode": string | null, '
-        '  "categories": string[] | null, "products": string[] | null, "gender": string | null, "age_group": string | null\n'
+        '  "categories": string[] | null, "products": string[] | null, "gender": string | null, "age_group": string | null\n"
         "}"
     )
     try:
@@ -142,7 +142,7 @@ async def get_recommendations(user_query: str, model: br.Pipeline) -> RecommendR
     # 하지만 DB I/O 등 다른 동기 작업이 있을 수 있으므로 threadpool 사용을 유지합니다.
     rec_df = await run_in_threadpool(
         br.recommend,
-        model=model, # 미리 로드된 모델을 전달
+        model=model,  # 미리 로드된 모델을 전달
         target_date=target_date,
         time_slots=enriched_params["time_slots"],
         product_codes=product_codes,
@@ -150,8 +150,6 @@ async def get_recommendations(user_query: str, model: br.Pipeline) -> RecommendR
         category_mode=use_category,
         categories=enriched_params.get("categories"),
         top_n=3,
-        use_category_first=True,  # 카테고리 우선 방식 사용
-        showhost_id="NO_HOST",   # 기본 쇼호스트 ID
     )
 
     recommendations = [RecommendationItem(**row) for row in rec_df.to_dict('records')] if not rec_df.empty else []
@@ -202,6 +200,7 @@ async def get_recommendations_with_params(params: Dict[str, Any], model: br.Pipe
     print("--- 2. Calling broadcast recommender with params ---")
     rec_df = await run_in_threadpool(
         br.recommend,
+        model=model,  # Docker 컨테이너의 이전 버전에서 필요한 매개변수
         target_date=target_date,
         time_slots=params["time_slots"],
         product_codes=product_codes,
@@ -209,9 +208,6 @@ async def get_recommendations_with_params(params: Dict[str, Any], model: br.Pipe
         category_mode=use_category,
         categories=params.get("categories"),
         top_n=3,
-        # 임시로 새 매개변수들 제거 (Docker 컴테이너 이전 버전 호환성)
-        # use_category_first=True,  # 카테고리 우선 방식 사용
-        # showhost_id="NO_HOST",   # 기본 쇼호스트 ID
     )
 
     recommendations = [RecommendationItem(**row) for row in rec_df.to_dict('records')] if not rec_df.empty else []
