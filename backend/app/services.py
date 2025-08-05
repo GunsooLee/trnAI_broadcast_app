@@ -53,8 +53,8 @@ def extract_params_from_llm(user_msg: str) -> dict | None:
         '  "date": string | null, "time_slots": string[] | null, "weather": string | null, '
         '  "temperature": number | null, "precipitation": number | null, "season": string | null, '
         '  "day_type": string | null, "keywords": string[] | null, "mode": string | null, '
-        '  "categories": string[] | null, "products": string[] | null, "gender": string | null, "age_group": string | null\n"
-        "}\n"
+        '  "categories": string[] | null, "products": string[] | null, "gender": string | null, "age_group": string | null\n'
+        "}"
     )
     try:
         resp = client.chat.completions.create(
