@@ -37,7 +37,6 @@ export default function Chat() {
   const [input, setInput] = useState('');
   const [isLoadingParams, setIsLoadingParams] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [extractedParams, setExtractedParams] = useState<ExtractedParams | null>(null);
   const [editableParams, setEditableParams] = useState<ExtractedParams | null>(null);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
 
@@ -48,7 +47,6 @@ export default function Chat() {
     setMessages(prev => [...prev, userMessage]);
     setInput('');
     setIsLoadingParams(true);
-    setExtractedParams(null);
     setEditableParams(null);
     setRecommendations([]);
 
@@ -68,7 +66,6 @@ export default function Chat() {
       const data = await response.json();
       const params = data.extracted_params;
       
-      setExtractedParams(params);
       setEditableParams({ ...params });
 
       const assistantMessage: Message = { 
@@ -123,7 +120,7 @@ export default function Chat() {
     }
   };
 
-  const updateParam = (key: keyof ExtractedParams, value: any) => {
+  const updateParam = (key: keyof ExtractedParams, value: string | number | string[]) => {
     if (!editableParams) return;
     setEditableParams(prev => prev ? { ...prev, [key]: value } : null);
   };
