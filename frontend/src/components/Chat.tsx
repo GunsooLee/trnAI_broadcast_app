@@ -14,6 +14,8 @@ interface ExtractedParams {
   products?: string[];
   keywords?: string[];
   mode?: string;
+  gender?: string;
+  age_group?: string;
 }
 
 // 메시지 타입을 정의합니다.
@@ -201,8 +203,8 @@ export default function Chat() {
               <label className="block text-sm font-medium text-gray-700 mb-1">강수량 (mm)</label>
               <input
                 type="number"
-                value={editableParams.precipitation || ''}
-                onChange={(e) => updateParam('precipitation', parseFloat(e.target.value))}
+                value={editableParams.precipitation ?? 0}
+                onChange={(e) => updateParam('precipitation', parseFloat(e.target.value) || 0)}
                 className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
@@ -229,6 +231,77 @@ export default function Chat() {
                   </label>
                 ))}
               </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">카테고리</label>
+              <select
+                value={editableParams.categories?.[0] || ''}
+                onChange={(e) => updateParam('categories', e.target.value ? [e.target.value] : [])}
+                className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">전체</option>
+                <option value="건강식품">건강식품</option>
+                <option value="화장품">화장품</option>
+                <option value="생활용품">생활용품</option>
+                <option value="패션">패션</option>
+                <option value="전자제품">전자제품</option>
+                <option value="식품">식품</option>
+                <option value="운동용품">운동용품</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">키워드</label>
+              <input
+                type="text"
+                value={editableParams.keywords?.join(', ') || ''}
+                onChange={(e) => updateParam('keywords', e.target.value.split(',').map(k => k.trim()).filter(k => k))}
+                placeholder="예: 다이어트, 건강, 미용"
+                className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">성별 타겟</label>
+              <select
+                value={editableParams.gender || ''}
+                onChange={(e) => updateParam('gender', e.target.value)}
+                className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">전체</option>
+                <option value="남성">남성</option>
+                <option value="여성">여성</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">연령대</label>
+              <select
+                value={editableParams.age_group || ''}
+                onChange={(e) => updateParam('age_group', e.target.value)}
+                className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">전체</option>
+                <option value="20대">20대</option>
+                <option value="30대">30대</option>
+                <option value="40대">40대</option>
+                <option value="50대">50대</option>
+                <option value="60대 이상">60대 이상</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">요일 타입</label>
+              <select
+                value={editableParams.day_type || ''}
+                onChange={(e) => updateParam('day_type', e.target.value)}
+                className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">자동</option>
+                <option value="평일">평일</option>
+                <option value="주말">주말</option>
+              </select>
             </div>
 
             <button
