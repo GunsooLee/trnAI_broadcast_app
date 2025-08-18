@@ -10,7 +10,7 @@ import pandas as pd
 
 # broadcast_recommender 모듈을 br로 임포트
 from . import broadcast_recommender as br
-from .schemas import RecommendResponse, RecommendationItem
+from .schemas import RecommendResponse, RecommendationItem, CandidatesResponse, TimeSlotCandidates
 
 # OpenAI API key is set as an environment variable OPENAI_API_KEY
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -53,7 +53,7 @@ def extract_params_from_llm(user_msg: str) -> dict | None:
         '  "date": string | null, "time_slots": string[] | null, "weather": string | null, '
         '  "temperature": number | null, "precipitation": number | null, "season": string | null, '
         '  "day_type": string | null, "keywords": string[] | null, "mode": string | null, '
-        '  "categories": string[] | null, "products": string[] | null, "gender": string | null, "age_group": string | null"\n'
+        '  "categories": string[] | null, "products": string[] | null, "gender": string | null, "age_group": string | null\n'
         "}"
     )
     try:
@@ -216,3 +216,58 @@ async def get_recommendations_with_params(params: Dict[str, Any], model: br.Pipe
         extracted_params=params,
         recommendations=recommendations
     )
+
+async def get_candidates(user_query: str, model: br.Pipeline, top_k: int = 5) -> CandidatesResponse:
+    """사용자 질문 기반 시간대별 Top-k 후보를 반환합니다 (카테고리/상품 모드 지원, 기본은 카테고리 모드)."""
+    print("--- 1. Candidate service started ---")
+
+    # 1) 파라미터 추출/보강
+    params = await run_in_threadpool(extract_params_from_llm, user_query)
+    if params is None:
+        raise ValueError("Failed to extract parameters from the query.")
+
+    enriched_params, target_date, weather_info = await run_in_threadpool(
+        process_and_enrich_params, params, user_query
+    )
+
+    # 2) 모드/상품코드 결정
+    use_category = enriched_params.get("mode") != "상품" and (
+        not enriched_params.get("products") or enriched_params.get("mode") == "카테고리"
+    )
+    product_codes = enriched_params.get("products") or []
+    if not use_category and not product_codes and enriched_params.get("keywords"):
+        product_codes = await run_in_threadpool(br.search_product_codes_by_keywords, enriched_params["keywords"])
+
+    print("--- 2. Calling broadcast recommender for candidates ---")
+    # 모든 조합 예측 후 그룹 상위 k를 뽑기 위해 큰 top_n을 사용해 충분한 결과를 가져옵니다.
+    rec_df = await run_in_threadpool(
+        br.recommend,
+        model=model,
+        target_date=target_date,
+        time_slots=enriched_params["time_slots"],
+        product_codes=product_codes,
+        weather_info=weather_info,
+        category_mode=use_category,
+        categories=enriched_params.get("categories"),
+        top_n=1_000_000,
+    )
+
+    # 3) 시간대별 Top-k 추출 및 스키마 매핑
+    candidates: List[TimeSlotCandidates] = []
+    if isinstance(rec_df, pd.DataFrame) and not rec_df.empty:
+        # 입력한 슬롯 순서를 유지하여 그룹화 결과를 정렬합니다.
+        for slot in enriched_params["time_slots"]:
+            slot_df = rec_df[rec_df["time_slot"] == slot]
+            if slot_df.empty:
+                candidates.append(TimeSlotCandidates(time_slot=slot, items=[]))
+                continue
+            top_slot_df = slot_df.sort_values(by="predicted_sales", ascending=False).head(top_k)
+            items = [RecommendationItem(**row) for row in top_slot_df.to_dict("records")]
+            candidates.append(TimeSlotCandidates(time_slot=slot, items=items))
+    else:
+        # 예측 결과가 없을 경우 빈 리스트 반환
+        for slot in enriched_params["time_slots"]:
+            candidates.append(TimeSlotCandidates(time_slot=slot, items=[]))
+
+    print("--- 3. Candidate service completed ---")
+    return CandidatesResponse(extracted_params=enriched_params, candidates=candidates)

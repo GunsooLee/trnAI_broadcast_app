@@ -18,3 +18,12 @@ class RecommendResponse(BaseModel):
     """추천 API 응답 스키마"""
     extracted_params: Dict[str, Any] = Field(description="사용자 질문에서 추출 및 보강된 파라미터")
     recommendations: List[RecommendationItem] = Field(description="추천된 방송 편성 목록")
+
+# --- Top-k 후보 응답 스키마 ---
+class TimeSlotCandidates(BaseModel):
+    time_slot: str
+    items: List[RecommendationItem]
+
+class CandidatesResponse(BaseModel):
+    extracted_params: Dict[str, Any]
+    candidates: List[TimeSlotCandidates]

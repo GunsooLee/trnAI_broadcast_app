@@ -9,3 +9,10 @@ SQLAlchemy
 psycopg2-binary
 python-dotenv
 pandas
+
+# Vector Database
+qdrant-client==1.7.0
+
+# Additional dependencies for RAG
+aiohttp
+asyncio

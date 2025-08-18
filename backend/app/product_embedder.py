@@ -1,0 +1,152 @@
+import openai
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams, PointStruct
+import pandas as pd
+from typing import List, Dict, Optional
+import logging
+import os
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+class ProductEmbedder:
+    def __init__(self, openai_api_key: str, qdrant_host: str = "localhost", qdrant_port: int = 6333):
+        self.openai_client = openai.OpenAI(api_key=openai_api_key)
+        self.qdrant_client = QdrantClient(qdrant_host, port=qdrant_port)
+        self.collection_name = "products"
+        
+    def setup_collection(self):
+        """컬렉션 초기화 (기존 컬렉션이 있으면 삭제 후 재생성)"""
+        try:
+            # 기존 컬렉션 확인 및 삭제
+            collections = self.qdrant_client.get_collections()
+            if any(col.name == self.collection_name for col in collections.collections):
+                self.qdrant_client.delete_collection(self.collection_name)
+                logger.info(f"기존 컬렉션 '{self.collection_name}' 삭제됨")
+            
+            # 새 컬렉션 생성
+            self.qdrant_client.create_collection(
+                collection_name=self.collection_name,
+                vectors_config=VectorParams(size=1536, distance=Distance.COSINE)  # OpenAI embedding 차원
+            )
+            logger.info(f"컬렉션 '{self.collection_name}' 생성 완료")
+            
+        except Exception as e:
+            logger.error(f"컬렉션 설정 실패: {e}")
+            raise
+    
+    def get_embedding(self, text: str) -> List[float]:
+        """OpenAI API로 임베딩 생성"""
+        try:
+            response = self.openai_client.embeddings.create(
+                model="text-embedding-3-small",  # 비용 효율적
+                input=text.strip()
+            )
+            return response.data[0].embedding
+        except Exception as e:
+            logger.error(f"임베딩 생성 실패: {text[:50]}... - {e}")
+            raise
+    
+    def build_product_index(self, products_df: pd.DataFrame, batch_size: int = 100):
+        """상품 데이터를 임베딩하여 Qdrant에 저장"""
+        logger.info(f"총 {len(products_df)}개 상품 임베딩 시작")
+        
+        points = []
+        processed = 0
+        
+        for idx, row in products_df.iterrows():
+            try:
+                # 상품 정보 결합 (None 값 처리)
+                product_name = str(row.get('product_name', ''))
+                keyword = str(row.get('keyword', ''))
+                category = str(row.get('product_mgroup', ''))
+                
+                text = f"{product_name} {keyword} {category}".strip()
+                
+                if not text:
+                    logger.warning(f"빈 텍스트 건너뜀: {row.get('product_code', 'Unknown')}")
+                    continue
+                
+                # OpenAI 임베딩 생성
+                embedding = self.get_embedding(text)
+                
+                point = PointStruct(
+                    id=processed,
+                    vector=embedding,
+                    payload={
+                        "product_code": str(row.get('product_code', '')),
+                        "product_name": product_name,
+                        "category": category,
+                        "keyword": keyword,
+                        "text": text,
+                        "created_at": datetime.now().isoformat()
+                    }
+                )
+                points.append(point)
+                processed += 1
+                
+                # 배치 단위로 업로드
+                if len(points) >= batch_size:
+                    self.qdrant_client.upsert(
+                        collection_name=self.collection_name,
+                        points=points
+                    )
+                    logger.info(f"{processed}개 상품 임베딩 완료")
+                    points = []
+                    
+            except Exception as e:
+                logger.error(f"상품 임베딩 실패 (idx: {idx}): {e}")
+                continue
+        
+        # 남은 포인트들 업로드
+        if points:
+            self.qdrant_client.upsert(
+                collection_name=self.collection_name,
+                points=points
+            )
+        
+        logger.info(f"전체 임베딩 완료: {processed}개 상품")
+        return processed
+    
+    def search_products(self, trend_keywords: List[str], top_k: int = 10, score_threshold: float = 0.7) -> List[Dict]:
+        """트렌드 키워드로 관련 상품 검색"""
+        if not trend_keywords:
+            return []
+        
+        try:
+            query_text = " ".join(trend_keywords)
+            query_embedding = self.get_embedding(query_text)
+            
+            results = self.qdrant_client.search(
+                collection_name=self.collection_name,
+                query_vector=query_embedding,
+                limit=top_k,
+                score_threshold=score_threshold
+            )
+            
+            products = []
+            for hit in results:
+                product = hit.payload.copy()
+                product['similarity_score'] = hit.score
+                products.append(product)
+            
+            logger.info(f"키워드 '{query_text}'로 {len(products)}개 상품 검색됨")
+            return products
+            
+        except Exception as e:
+            logger.error(f"상품 검색 실패: {e}")
+            return []
+    
+    def get_collection_info(self) -> Dict:
+        """컬렉션 정보 조회"""
+        try:
+            info = self.qdrant_client.get_collection(self.collection_name)
+            return {
+                "name": info.config.params.name,
+                "vectors_count": info.vectors_count,
+                "indexed_vectors_count": info.indexed_vectors_count,
+                "points_count": info.points_count
+            }
+        except Exception as e:
+            logger.error(f"컬렉션 정보 조회 실패: {e}")
+            return {}

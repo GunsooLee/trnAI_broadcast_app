@@ -16,7 +16,17 @@ services:
     container_name: nextjs_frontend
     ports:
       - "3001:3000"
-    env_file: frontend/.env.local
+    restart: unless-stopped
+    networks:
+      - shopping-network
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant_vector_db
+    ports:
+      - "6333:6333"
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
     restart: unless-stopped
     networks:
       - shopping-network
@@ -24,4 +34,3 @@ services:
 networks:
   shopping-network:
     external: true
-

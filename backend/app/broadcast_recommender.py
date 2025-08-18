@@ -38,7 +38,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from xgboost import XGBRegressor
 from sklearn.feature_extraction.text import TfidfVectorizer
-from .tokenizer_utils import mecab_tokenizer
+from tokenizer_utils import mecab_tokenizer
 from functools import lru_cache
 import sys
 
@@ -588,7 +588,7 @@ def recommend(
     cand_df["broadcast_date"] = target_date.strftime("%Y-%m-%d")
     cand_df["weekday"] = _weekday_kr(target_date)
     cand_df["season"] = _season_kr(target_date.month)
-    slot_map = {"오전": 9, "오후": 15, "야간": 21}
+    slot_map = {"심야": 2, "아침": 7, "오전": 10, "점심": 12, "오후": 15, "저녁": 18, "야간": 21}
     # 임시 컬럼명을 사용하여 파생 특성 생성
     cand_df["time_slot_int"] = cand_df["time_slot_temp"].map(slot_map).fillna(12).astype(int)
 
@@ -625,6 +625,34 @@ def recommend(
     print("  [br.recommend] 2.15. 모델 예측 완료")
 
     cand_df["predicted_sales"] = predictions
+
+    # [옵션] 시간대 강화 포스트-부스팅: 재학습 없이도 슬롯 × 카테고리 특성을 강화할 수 있음
+    # 환경변수 TIMESLOT_BOOST_ALPHA 로 세기 조절 (기본 1.0 = 변경 없음)
+    try:
+        _alpha = float(os.getenv("TIMESLOT_BOOST_ALPHA", "1.0"))
+    except Exception:
+        _alpha = 1.0
+    if _alpha != 1.0 and "timeslot_specialty_score" in cand_df.columns:
+        cand_df["predicted_sales"] = cand_df["predicted_sales"] * (
+            cand_df["timeslot_specialty_score"].replace([np.inf, -np.inf], 1.0).fillna(1.0) ** _alpha
+        )
+
+    # 3.a 보정: product 모드 등에서 'category' 컬럼이 없을 경우 생성
+    if "category" not in cand_df.columns:
+        group_cols = [
+            "product_lgroup",
+            "product_mgroup",
+            "product_sgroup",
+            "product_dgroup",
+            "product_type",
+        ]
+        existing = [c for c in group_cols if c in cand_df.columns]
+        if existing:
+            cand_df["category"] = (
+                cand_df[existing].astype(str).agg("/".join, axis=1)
+            )
+        else:
+            cand_df["category"] = "미정"
 
     # --- [400 Bad Request 해결] API 스키마에 맞게 결과 포맷팅 ---
     # 1. 상위 N개 필터링 및 정렬
