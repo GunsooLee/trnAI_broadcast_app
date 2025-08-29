@@ -31,6 +31,41 @@ services:
     networks:
       - shopping-network
 
+
+  postgres:
+    image: postgres:16
+    container_name: trnAi_postgres # 컨테이너 이름
+    environment:
+      POSTGRES_USER: TRN_AI     # PostgreSQL 사용자 이름
+      POSTGRES_PASSWORD: TRN_AI # PostgreSQL 비밀번호
+      POSTGRES_DB: TRNAI_DB     # 생성할 데이터베이스 이름
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+    networks:
+      - shopping-network
+
+  n8n:
+    image: n8nio/n8n:1.100.1
+    container_name: trnAi_n8n
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - WEBHOOK_TUNNEL_URL=http://localhost:5678/
+    volumes:
+      - n8n_data:/home/node/.n8n
+    restart: always
+    networks:
+      - shopping-network
+
 networks:
   shopping-network:
     external: true
+
+volumes:
+  postgres_data:
+  n8n_data:

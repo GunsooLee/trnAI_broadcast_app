@@ -38,7 +38,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from xgboost import XGBRegressor
 from sklearn.feature_extraction.text import TfidfVectorizer
-from tokenizer_utils import mecab_tokenizer
+from .tokenizer_utils import mecab_tokenizer
 from functools import lru_cache
 import sys
 
@@ -413,7 +413,9 @@ def prepare_candidate_row(
     product: pd.Series,
     weather_info: Dict[str, float],
     category_timeslot_sales_map: Dict[str, float],
-    category_overall_sales_map: Dict[str, float], # <<< 인자 추가
+    category_overall_sales_map: Dict[str, float],
+    competitor_count: int = 0,
+    is_holiday: int = 0,
 ) -> Dict:
     """모델이 요구하는 입력 형태(딕셔너리)로 변환"""
 
@@ -460,12 +462,52 @@ def prepare_candidate_row(
         "product_broadcast_count": product.get("product_broadcast_count", 0),
         "category_timeslot_avg_sales": timeslot_avg,
         "timeslot_specialty_score": timeslot_avg / overall_avg if overall_avg else 1,
-
+        # 새로운 피처들
+        "competitor_count_same_category": competitor_count,
+        "is_holiday": is_holiday,
         # 상호작용 특성
         "time_category_interaction": f"{time_slot}_{product.get('product_mgroup', '없음')}",
     }
 
     return row
+
+def get_competitor_count(date: dt.date, time_slot: str, category_main: str, engine: Engine | None = None) -> int:
+    """특정 날짜/시간대/카테고리에서 경쟁사 방송 수를 조회한다."""
+    if engine is None:
+        engine = get_db_engine()
+
+    query = text("""
+        SELECT COUNT(*) as competitor_count
+        FROM competitor_broadcasts
+        WHERE broadcast_date = :date 
+        AND time_slot = :time_slot 
+        AND category_main = :category_main
+    """)
+    
+    df = pd.read_sql(query, engine, params={
+        "date": date,
+        "time_slot": time_slot,
+        "category_main": category_main
+    })
+    
+    return int(df.iloc[0]["competitor_count"]) if not df.empty else 0
+
+
+def is_holiday_date(date: dt.date, engine: Engine | None = None) -> int:
+    """특정 날짜가 공휴일인지 확인한다. 공휴일이면 1, 아니면 0을 반환."""
+    if engine is None:
+        engine = get_db_engine()
+
+    query = text("""
+        SELECT COUNT(*) as holiday_count
+        FROM holidays
+        WHERE holiday_date = :date
+    """)
+    
+    df = pd.read_sql(query, engine, params={"date": date})
+    
+    return 1 if int(df.iloc[0]["holiday_count"]) > 0 else 0
+
 
 def get_weather_by_date(date: dt.date, engine: Engine | None = None) -> Dict[str, float]:
     """weather_daily 테이블에서 주어진 날짜의 날씨 정보를 반환한다.
@@ -601,6 +643,16 @@ def recommend(
     cand_df["category_timeslot_avg_sales"] = cand_df["category_key"].map(category_timeslot_sales_map).fillna(0)
     cand_df["category_overall_avg_sales"] = cand_df["product_mgroup"].map(category_overall_sales_map).fillna(0)
     cand_df["timeslot_specialty_score"] = (cand_df["category_timeslot_avg_sales"] / cand_df["category_overall_avg_sales"]).fillna(1)
+    
+    # 6. 새로운 피처들 추가
+    holiday_flag = is_holiday_date(target_date, engine)
+    cand_df["is_holiday"] = holiday_flag
+    
+    # 경쟁사 수는 카테고리별로 다르므로 개별 계산
+    def get_competitor_for_row(row):
+        return get_competitor_count(target_date, row["time_slot_temp"], row["product_lgroup"], engine)
+    
+    cand_df["competitor_count_same_category"] = cand_df.apply(get_competitor_for_row, axis=1)
 
     # 6. 상호작용 특성 추가
     cand_df["time_category_interaction"] = cand_df["time_slot_temp"] + "_" + cand_df["product_mgroup"]

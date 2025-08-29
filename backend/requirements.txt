@@ -4,6 +4,11 @@ openai
 scikit-learn
 xgboost
 
+# LangChain for AI workflow orchestration
+langchain
+langchain-openai
+langchain-community
+
 # Database
 SQLAlchemy
 psycopg2-binary
@@ -15,4 +20,5 @@ qdrant-client==1.7.0
 
 # Additional dependencies for RAG
 aiohttp
-asyncio
+beautifulsoup4
+pytrends

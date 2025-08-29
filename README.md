@@ -1,390 +1,441 @@
-# 🛍️ 홈쇼핑 방송 매출 예측 & 편성 추천
+# 🤖 AI 기반 홈쇼핑 방송 편성 추천 시스템 (v2.0 - 상세 구현 명세)
 
-**링크 하나만 열면 바로 체험할 수 있어요!**
+데이터 기반의 AI 예측을 통해 방송 편성 효율을 극대화하는 백엔드 시스템입니다.
 
-[➡️ 데모 바로가기](http://175.106.97.27:8501/) _(PC·모바일 모두 지원)_
+## 📖 목차
 
----
-
-## ✨ 개발 사고 과정 메모
-
-RAG=검색/추론 지원, XGB=예측/최적화
-
-RAG가 '추천 엔진'으로 적합하다고 보기는 어렵다. 다만 탐색, 큐레이션에는 유용하다.
-
-팔릴 걸 고르는일(매출 극대화. 편성 순서) -> XGB
-뭘 팔 수 있는지 빠르게 모으고, 근거를 붙이는 일 -> RAG
-
-## ✨ 전체적인 플로우
-1. **트렌드 키워드 검색**
-2. **상품 or 카테고리 매칭**
-3. **모델 로드, 시간대 x 후보 조합 생성**  
-4. **예측**
-5. **시간대별 상위 N개 선택**
-6. **최종 반환 구조**
-
-
-
-
-
-
-## ✨ 트렌드 키워드 검색
-
-1. **신호 모으기**
-외부 트렌드:
- - 네이버 데이터랩/실시간 급상승, 구글 트렌드(Realtime), 인스타/유튜브/커뮤니트(키워드 카운트).
- - 재난/날씨: 기상청 특보, 지진 속보, 미세먼지 지수 등
- - 뉴스 스트림/RSS: 키워드 감시
-
-2. **돌발 감지**
- - 
-
-3. **키워드를 상품 매칭**
- - 임베딩 매칭(상품명, 키워드, 카테고리)
-
-
-
-
-
-
-## ✨ 무엇을 할 수 있나요?
-1. **질문만 입력**하면, AI가 날짜·시간대·상품 키워드를 이해해
-2. 과거 매출 데이터를 학습한 모델이 **시간대별 예상 매출**을 계산하고
-3. 가장 잘 팔릴 것으로 예측되는 **상품(또는 카테고리)** 편성을 추천해 줍니다.
-
-예)  
-“다음 주 토요일 오전에 다이어트 보조제 방송 추천해 줘” →  📋 추천 편성표 + 예상 매출 표시
+1. [프로젝트 개요](#-프로젝트-개요)
+2. [주요 기능](#-주요-기능)
+3. [사용자 시나리오](#-사용자-시나리오)
+4. [시스템 아키텍처](#-시스템-아키텍처)
+5. [기술 스택](#-기술-스택)
+6. [상세 알고리즘 명세](#-상세-알고리즘-명세)
+   - 6.1. [메인 컨트롤러 의사코드](#61-메인-컨트롤러-의사코드)
+   - 6.2. [Track A/B 병렬 처리 및 결과 통합](#62-track-ab-병렬-처리-및-결과-통합)
+   - 6.3. [최종 상품 랭킹 점수 공식](#63-최종-상품-랭킹-점수-공식)
+   - 6.4. [RAG 검색 파라미터 설정](#64-rag-검색-파라미터-설정)
+7. [데이터 플로우 및 형식](#-데이터-플로우-및-형식)
+8. [성능 기준 및 캐싱 전략](#-성능-기준-및-캐싱-전략)
+9. [LangChain 워크플로우 상세](#-langchain-워크플로우-상세)
+10. [XGBoost 모델 학습 데이터](#-xgboost-모델-학습-데이터)
+11. [API 명세서](#-api-명세서)
+12. [시작하기 (개발 환경 설정)](#-시작하기-개발-환경-설정)
 
 ---
 
-## ⚡️ FastAPI & Next.js 기반 실행/운영 가이드 (2025년 최신)
+## 🎯 프로젝트 개요
 
-### 1. 전체 아키텍처
-- **Backend:** Python FastAPI (API 서버)
-- **Frontend:** Next.js (React 기반 SPA, 포트 3001)
-- **DB:** PostgreSQL
+### 🎯 문제 정의
+홈쇼핑 방송 편성 과정에서 발생하는 **공백 시간을 편성하는 작업**은 PD와 MD의 경험과 직관에 크게 의존해왔습니다. 이는 비효율적일 뿐만 아니라, 방대한 데이터를 활용하여 매출을 극대화할 기회를 놓치는 원인이 됩니다.
 
-### 2. 개발/로컬 실행 방법
+### 💡 해결 방안
+본 프로젝트는 **최신 트렌드, 날씨, 경쟁사 편성 현황, 과거 판매 데이터** 등 다양한 요소를 종합적으로 분석하는 AI 모델을 통해, 주어진 공백 시간에 가장 높은 매출을 기대할 수 있는 **최적의 상품을 자동으로 추천**하는 시스템을 구축합니다.
 
-#### 2-1. 백엔드(FastAPI) 실행
-```bash
-cd backend
-# 가상환경 활성화 및 의존성 설치
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+### 🚀 핵심 목표
 
-# FastAPI 서버 실행 (포트 8501)
-uvicorn app.main:app --host 0.0.0.0 --port 8501 --reload
-```
-- 환경변수: `.env` 파일에 `DB_URI`, `OPENAI_API_KEY` 등 필요
-- API 문서: [http://localhost:8501/docs](http://localhost:8501/docs)
-
-#### 2-2. 프론트엔드(Next.js) 실행
-```bash
-cd frontend
-npm install
-npm run dev   # http://localhost:3001
-```
-- 환경변수 필요시 `.env.local` 사용 (ex: API base url)
-
-#### 2-3. 전체 연동
-- 프론트엔드가 백엔드의 8501 포트로 API 요청
-- CORS/Proxy 설정은 이미 적용됨
-
-### 3. 운영 서버 배포/실행 방법
-
-#### 3-1. 백엔드(FastAPI) Docker 빌드/실행
-- **(중요) 기존 Dockerfile/compose는 Streamlit 기준 → FastAPI용으로 수정 필요!**
-- 아래는 FastAPI 기준 예시:
-
-**Dockerfile (backend/ 디렉토리 기준 예시)**
-```dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . /app
-EXPOSE 8501
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8501"]
-```
-
-**docker-compose.yml (예시)**
-```yaml
-version: "3.8"
-services:
-  backend:
-    build: ./backend
-    container_name: fastapi_backend
-    ports:
-      - "8501:8501"
-    env_file: ./backend/.env
-    restart: unless-stopped
-  frontend:
-    build: ./frontend
-    container_name: nextjs_frontend
-    ports:
-      - "3001:3001"
-    restart: unless-stopped
-networks:
-  default:
-    external: false
-```
-
-- **운영 배포 절차**
-  1. 서버에 소스 업로드 (혹은 git pull)
-  2. `.env`, `frontend/.env.local` 등 환경파일 세팅
-  3. `docker compose up -d --build`로 전체 서비스 기동
-  4. (DB/Postgres는 별도 운영 필요)
-
-#### 3-2. 프론트엔드(Next.js) Docker 빌드/실행
-- `frontend/Dockerfile` 예시
-```dockerfile
-FROM node:20-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm install
-COPY . .
-RUN npm run build
-EXPOSE 3001
-CMD ["npm", "start"]
-```
-- Next.js는 `npm run build` 후 `npm start`로 운영
-
-### 4. 기타 참고
-- **운영 서버 오픈 포트:** 8501(FastAPI), 3001(Next.js)
-- **DB 연결:** 운영 DB URI를 `.env`에 반드시 명시
-- **모델 파일:** 학습 후 `backend/app/xgb_broadcast_sales.joblib` 위치에 존재해야 함
-- **모든 서비스는 Docker로 통합 배포 가능**
+- ⏰ **공백 시간 편성에 소요되는 시간 및 인력 최소화**
+- 📈 **데이터 기반 추천을 통한 방송 매출 증대**  
+- 🎯 **PD/MD의 편성을 돕는 강력한 의사결정 지원 도구 제공**
 
 ---
 
-## 🧑‍💻 개발자용 가이드
-아래 내용은 직접 학습·배포하고 싶은 분들을 위한 상세 설명입니다. 사용만 해보려면 건너뛰어도 괜찮아요.
+## ✨ 주요 기능
 
-<details>
-<summary>클릭해서 펼치기</summary>
+- **🎯 실시간 AI 상품 추천**: 특정 방송 시간을 지정하면, 해당 시간에 가장 적합한 상품 리스트를 실시간으로 추천합니다.
 
-### 환경 구성
-```bash
-# Python 3.11 권장 (mecab-python3 wheel 지원)
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-```
-Mecab 사전은 `mecab-python3` wheel 에 포함되어 추가 설정이 필요 없습니다.
+- **📊 데이터 기반 분석**: 과거 방송 실적, 날씨, 기념일, 외부 최신 트렌드 키워드를 종합하여 추천 근거를 생성합니다.
 
-### 학습
-```bash
-python broadcast_recommender.py train \
-    --db-uri postgresql://USER:PASS@HOST:PORT/DB  # (옵션) 환경변수/파일 설정 가능
-```
-출력 예시
-```
-=== 모델 평가 ===
-MAE : 7.1M
-RMSE: 11.9M
-R2  : 0.83
-```
+- **⚔️ 전략적 경쟁사 분석**: 동시간대 경쟁사 편성 데이터를 분석하여, 틈새시장을 공략하거나 맞불 작전을 펼치는 등 전략적인 추천을 수행합니다.
 
-### 로컬 추천 예시
+- **🧠 하이브리드 추천 로직**: 의미 기반 검색(RAG)과 머신러닝 매출 예측(XGBoost)을 결합하여 추천의 정확성과 설득력을 높입니다.
+
+- **🧑‍💻 전문가 최종 결정 (Human-in-the-loop)**: AI는 최적의 후보군을 제시하고, 최종 선택은 편성 전문가인 PD가 수행하여 시스템의 안정성과 유연성을 확보합니다.
+
+- **🔄 주기적 데이터 수집**: 배치 서버(n8n)가 주기적으로 외부 트렌드 및 경쟁사 편성 데이터를 수집하여 최신성을 유지합니다.
+
+---
+
+## 👤 사용자 시나리오
+
+1. **공백 시간 확인**: PD가 방송 편성 웹페이지에서 비어있는 편성 슬롯을 확인합니다.
+
+2. **AI 추천 요청**: 해당 슬롯의 'AI 추천' 버튼을 클릭합니다.
+
+3. **추천 결과 확인**: 잠시 후, 추천 상품 리스트가 담긴 팝업창이 나타납니다. 리스트는 AI가 매긴 추천 점수 순으로 정렬되어 있습니다.
+
+4. **추천 근거 파악**: 각 상품별로 왜 추천되었는지에 대한 명확한 이유(예상 매출, 관련 트렌드 키워드, 경쟁 상황 등)를 확인합니다.
+
+5. **최종 편성 확정**: PD는 제시된 후보군 중에서 가장 적합하다고 판단하는 상품을 선택하여 편성을 최종 확정합니다.
+
+---
+
+## 🏗️ 시스템 아키텍처
+
+본 시스템은 **마이크로서비스 아키텍처(MSA)**를 채택하여, 실시간 요청을 처리하는 AI 백엔드 서버와 주기적인 데이터 수집을 담당하는 배치 서버의 역할을 명확히 분리하여 안정성과 확장성을 확보했습니다.
+
+### 주요 구성요소
+
+- **AI 백엔드 서버 (FastAPI)**: 사용자의 실시간 추천 요청을 받아 AI 연산 및 비즈니스 로직을 수행하는 핵심 서버입니다.
+
+- **배치 서버 (n8n)**: 주기적으로 외부 웹사이트 및 API를 통해 최신 트렌드와 경쟁사 편성 데이터를 수집하고 RDB에 저장하는 역할을 담당합니다.
+
+- **RDB (PostgreSQL)**: 상품 정보, 과거 매출 데이터, 경쟁사 편성 데이터 등 모든 정형 데이터를 저장하고 관리합니다.
+
+- **Vector DB (Qdrant)**: 상품 및 카테고리 정보의 텍스트를 벡터로 변환하여 저장하고, 의미 기반 검색(RAG)을 수행합니다.
+
+---
+
+## 🛠️ 기술 스택
+
+| 구분 | 기술 | 역할 및 이유 |
+|------|------|-------------|
+| **AI 백엔드 서버** | Python & FastAPI | AI/ML 생태계의 표준. 빠르고 현대적인 API 서버 구축에 최적화 |
+| **AI 프레임워크** | LangChain | RAG, 모델 호출, 비즈니스 로직 등 복잡한 AI 워크플로우를 지휘하는 역할 |
+| **머신러닝 모델** | XGBoost | 카테고리별 매출 예측을 위한 고성능 ML 모델 |
+| **RDB** | PostgreSQL | 상품, 매출, 경쟁사 데이터 등 핵심 정형 데이터를 안정적으로 관리 |
+| **Vector DB** | Qdrant | 고성능 벡터 검색 엔진. Rust 기반으로 빠르고 가벼워 초기 구축에 유리 |
+| **배치 서버** | n8n | 주기적인 데이터 수집 워크플로우를 시각적으로 쉽게 구축하고 관리 |
+| **DevOps** | Docker, GitHub Actions | 개발 환경 통일 및 CI/CD 자동화 (권장) |
+
+---
+
+## 📋 상세 알고리즘 명세
+
+본 섹션은 시스템의 핵심 로직을 구체적인 의사코드와 공식, 파라미터 값으로 명세합니다.
+
+### 6.1. 메인 컨트롤러 의사코드
+
+FastAPI의 API 엔드포인트에서 호출될 메인 함수의 논리적 흐름입니다.
+
 ```python
-import datetime as dt
-import broadcast_recommender as br
+# main.py - /api/v1/broadcast/recommendations
 
-date = dt.date.today() + dt.timedelta(days=1)
-result = br.recommend(
-    target_date=date,
-    time_slots=["아침", "오전"],
-    product_codes=["A00123"],
-    weather_info={"weather": "맑음", "temperature": 25, "precipitation": 0},
-)
-print(result)
+async def get_recommendations(request: Request):
+    # 1. 컨텍스트 수집 및 키워드 분류
+    context = await gather_context(request.broadcastTime)
+    classified_keywords = await classify_keywords(context.trends)
+
+    # 2. Track A, B 비동기 병렬 실행
+    # asyncio.gather를 사용하여 두 트랙을 동시에 실행
+    track_a_result, track_b_result = await asyncio.gather(
+        execute_track_a(context, classified_keywords.category_keywords),
+        execute_track_b(context, classified_keywords.product_keywords)
+    )
+
+    # 3. 후보군 생성 및 통합
+    candidate_products = await generate_candidates(
+        promising_categories=track_a_result.categories,
+        trend_products=track_b_result.products
+    )
+
+    # 4. 최종 랭킹 계산
+    ranked_products = await rank_final_candidates(
+        candidate_products,
+        category_scores=track_a_result.scores,
+        context=context
+    )
+
+    # 5. API 응답 생성
+    return format_response(ranked_products, track_a_result.categories)
 ```
 
-### 주요 파일 구조
+### 6.2. Track A/B 병렬 처리 및 결과 통합
+
+**병렬 처리 방법:** Python의 `asyncio.gather`를 사용하여 두 개의 비동기 함수(`execute_track_a`, `execute_track_b`)를 동시에 실행합니다. 이를 통해 I/O 바운드 작업(DB 조회, API 호출) 대기 시간을 최소화합니다.
+
+**결과 통합 로직:**
+1. `execute_track_b`에서 반환된 '상품 특정' 상품 리스트를 최종 후보군에 먼저 추가합니다.
+2. `execute_track_a`에서 반환된 '유망 카테고리' 리스트를 순회하며, 각 카테고리별로 RDB에서 '에이스 상품'(판매량 상위 100개 등)을 SQL로 조회합니다.
+3. 두 리스트를 합친 후, `product_id`를 기준으로 중복을 제거하여 최종 후보군(Candidate Pool)을 생성합니다.
+
+### 6.3. 최종 상품 랭킹 점수 공식
+
+**가중치 (W1, W2):** 초기값은 비즈니스 요구사항에 따라 설정하며, 향후 A/B 테스트를 통해 최적화합니다.
+- **W1 (카테고리 적합도 가중치):** 0.6
+- **W2 (경쟁 상황 가중치):** 0.3
+
+**최종 점수 공식:**
 ```
-├── broadcast_recommender.py  # 학습 + 추천 백엔드
-├── tokenizer_utils.py        # Mecab 토크나이저 모듈 (joblib 호환)
-├── streamlit_app.py          # 챗봇 UI
-├── requirements.txt
-├── Dockerfile
-├── docker-compose.yml
-└── README.md
-```
-
-### 기여 / TODO
-- 하이퍼파라미터 튜닝 & 모델 앙상블
-- 모델 모니터링 지표 대시보드
-- API 서버(FastAPI) 분리 배포
-
-</details>
-
-## 🧑‍💻 개발자용 상세 가이드
-
-### 1. 모델 학습(Training) 파이프라인
-
-#### 데이터 소스 및 테이블
-- **주 테이블:** `broadcast_training_dataset`
-- **날씨 테이블:** `weather_daily` (조인)
-- **사용 컬럼:**
-  - 방송 정보: `broadcast_id`, `broadcast_datetime`, `broadcast_duration`
-  - 상품 정보: `product_code`, `product_lgroup`, `product_mgroup`, `product_sgroup`, `product_dgroup`, `product_type`, `product_name`, `keyword`, `product_price`
-  - 매출 정보: `sales_amount`, `order_count`
-  - 시간대 정보: `time_slot`
-  - 외부 정보: `temperature`, `precipitation`, `weather` (날씨)
-
-#### 주요 Feature Engineering
-- **상품별 통계:**
-  - `product_avg_sales`: 상품별 전체 기간 평균 매출
-  - `product_broadcast_count`: 상품별 방송 횟수
-- **카테고리-시간대별 통계:**
-  - `category_timeslot_avg_sales`: (중분류, 시간대)별 평균 매출
-  - `category_overall_avg_sales`: 중분류 전체 기간 평균 매출
-  - `timeslot_specialty_score`: 시간대별 특화 점수 (category_timeslot_avg_sales / category_overall_avg_sales)
-- **파생 변수:**
-  - `weekday`: 방송 요일(월~일)
-  - `season`: 방송 월로부터 계절 추출(봄/여름/가을/겨울)
-  - `time_slot_int`: 시간대를 숫자로 변환
-  - `time_category_interaction`: 시간대와 카테고리의 조합
-- **결측치 처리:** 평균/0/‘정보없음’ 등으로 채움
-
-#### SQL 예시 (학습 데이터 생성)
-```sql
-WITH base AS (
-    SELECT ... FROM broadcast_training_dataset WHERE sales_amount IS NOT NULL
-),
-product_stats AS (
-    SELECT product_code, AVG(sales_amount) AS product_avg_sales, COUNT(*) AS product_broadcast_count
-    FROM broadcast_training_dataset GROUP BY product_code
-),
-category_timeslot_stats AS (
-    SELECT product_mgroup, time_slot, AVG(sales_amount) AS category_timeslot_avg_sales
-    FROM broadcast_training_dataset GROUP BY product_mgroup, time_slot
-),
-category_overall_stats AS (
-    SELECT product_mgroup, AVG(sales_amount) AS category_overall_avg_sales
-    FROM broadcast_training_dataset GROUP BY product_mgroup
-)
-SELECT
-    b.*, w.temperature, w.precipitation, w.weather,
-    p.product_avg_sales, p.product_broadcast_count,
-    c.category_timeslot_avg_sales,
-    COALESCE(c.category_timeslot_avg_sales / NULLIF(co.category_overall_avg_sales, 0), 1) AS timeslot_specialty_score,
-    b.time_slot || '_' || b.product_mgroup AS time_category_interaction
-FROM base b
-LEFT JOIN weather_daily w ON b.broadcast_date = w.weather_date
-LEFT JOIN product_stats p ON b.product_code = p.product_code
-LEFT JOIN category_timeslot_stats c ON b.product_mgroup = c.product_mgroup AND b.time_slot = c.time_slot
-LEFT JOIN category_overall_stats co ON b.product_mgroup = co.product_mgroup
+Final_Score = (Category_Score * W1) + Individual_Score - (Competition_Penalty * W2)
 ```
 
-### 전처리 및 파이프라인
-- **수치형 특성:**
-  - `product_price`, `product_avg_sales`, `product_broadcast_count`, `category_timeslot_avg_sales`, `timeslot_specialty_score`, `temperature`, `precipitation`, `time_slot_int`
-- **범주형 특성:**
-  - `weekday`, `season`, `weather`, `product_lgroup`, `product_mgroup`, `product_sgroup`, `product_dgroup`, `product_type`, `time_slot`, `time_category_interaction`
-- **텍스트 특성:**
-  - `product_name`, `keyword` (TF-IDF + Mecab 형태소 분석기 사용)
-- **모델:**
-  - `XGBRegressor` (n_estimators=500, learning_rate=0.05 등 하이퍼파라미터)
-- **전체 파이프라인:**
-  - Scikit-learn `Pipeline`
-    - ColumnTransformer로 수치/범주/텍스트 특성 각각 처리
-    - 최종적으로 XGBoost 회귀 모델에 입력
-- **학습 실행:**
-  - `python train.py`
-  - 학습 완료 후 `backend/app/xgb_broadcast_sales.joblib`에 모델 저장
+**각 점수 계산 방법:**
+- **Category_Score (0~1):** 상품이 속한 카테고리가 Track A에서 받은 최종 점수. (XGBoost 예측값과 RAG 관련성 점수를 합산 후 Min-Max 정규화)
+- **Individual_Score (0~1):** 상품 개별 지표를 합산한 점수.
+  ```
+  (Normalized_Past_Sales * 0.5) + (Normalized_Margin_Rate * 0.3) + (Normalized_Stock_Level * 0.2)
+  ```
+- **Competition_Penalty (0 또는 1):** 동시간대 경쟁사가 동일 카테고리(중분류 기준) 상품을 방송할 경우 1, 아닐 경우 0.
+
+**정규화:** 모든 개별 지표(과거 매출, 마진율 등)는 후보군 내에서 Min-Max Scaling을 사용하여 0과 1 사이의 값으로 정규화합니다. `(value - min) / (max - min)`
+
+### 6.4. RAG 검색 파라미터 설정
+
+Qdrant(Vector DB) 검색 시 사용할 구체적인 파라미터입니다.
+
+**검색 대상:** 카테고리 인덱스, 상품 인덱스
+
+**top_k (반환할 결과 수):**
+- 카테고리 검색 시: `k = 5`
+- 상품 검색 시: `k = 20`
+
+**score_threshold (최소 유사도 임계값):**
+- `threshold = 0.7` (코사인 유사도 기준, 이 값보다 낮으면 결과에서 제외)
+
+**필터링 조건 (Metadata Filtering):**
+- 모든 상품 검색 시 `is_active = true`, `stock_level > 0` 과 같은 필터를 기본으로 적용하여 판매 불가능한 상품을 사전에 제외합니다.
 
 ---
 
-### 2. 예측(추천) 파이프라인
+## 📊 데이터 플로우 및 형식
 
-#### 입력 파라미터
-- **날짜:** `date` (YYYY-MM-DD)
-- **시간대:** `time_slots` (예: "오전,오후,저녁")
-- **상품 코드:** `product_codes` (or 카테고리)
-- **날씨 정보:** (없으면 자동으로 조회)
+**데이터 플로우 다이어그램 (텍스트 기반):**
+```
+Request (broadcastTime) -> [컨트롤러] -> gather_context -> Context Object 
+-> [Track A | Track B] -> [Category_Result | Product_Result] 
+-> generate_candidates -> List[Product] -> rank_candidates 
+-> List[Ranked_Product] -> [API 응답]
+```
 
-#### 파라미터 처리 및 후보 생성
-- **카테고리 모드/상품 모드:**
-  - 카테고리 모드: 중분류/소분류 등 카테고리별 추천
-  - 상품 모드: 개별 상품별 추천
-- **후보 생성:**
-  - 입력받은 모든 시간대 × 상품/카테고리 조합을 생성
-  - 각 후보에 대해 날짜, 요일, 계절, 시간대(숫자), 날씨, 카테고리별 통계 등 feature를 벡터화하여 추가
-- **Feature Engineering:**
-  - 학습과 동일하게 각종 통계/파생변수 계산
-  - 결측값은 동일하게 처리
+**주요 데이터 형식 (Pydantic 모델 예시):**
+```python
+class Context:
+    broadcast_time: datetime
+    weather: str
+    is_holiday: bool
+    trends: List[str]
+    competitors: List[CompetitorInfo]
 
-#### 예측 및 결과 포맷
-- **예측:**
-  - 후보 DataFrame에서 학습된 파이프라인의 feature만 추출
-  - `model.predict()`로 매출 예측
-- **정렬 및 상위 N개 선택:**
-  - 예측 매출 기준 내림차순 정렬
-  - 시간대별 상위 N개 후보 선택
-- **최종 반환 구조:**
-  - `time_slot`: 추천 시간대
-  - `predicted_sales`: 예측 매출
-  - `product_code` (or `category`): 추천 상품/카테고리
-  - `features`: 추천 후보의 상세 정보(딕셔너리)
+class RankedProduct:
+    product_id: str
+    product_name: str
+    final_score: float
+    reasoning: Dict[str, Any]
+```
 
-#### API/CLI 사용 예시
-- **API:**
-  - `/api/v1/recommend`
-  - Request: `{ "user_query": "내일 오전에 건강식품 뭐 팔면 좋을까?" }`
-- **CLI:**
-  - `python broadcast_recommender.py recommend --date 2025-07-18 --time_slots "오전,오후,저녁" --products "P001,P002"`
+**에러 핸들링:**
+- Vector DB/RDB 연결 실패: `503 Service Unavailable` 응답.
+- XGBoost 모델 로드 실패: `500 Internal Server Error` 응답.
+- 유효하지 않은 broadcastTime: `400 Bad Request` 응답.
 
 ---
 
-## 📝 최근 변경사항 (2025-07-24)
+## ⚡ 성능 기준 및 캐싱 전략
 
-| 구분 | 내용 |
-|------|------|
-| 모델 피처 | • `broadcast_tape_code` 완전 제거<br>• `broadcast_showhost` 학습/예측엔 사용하지만 **UI 출력에서 제외** |
-| 추천 로직 | • 동일 `product_lgroup` 편성 **최대 2회** 제한 → 카테고리 다양성 강화<br>• `top_k_sample` softmax 샘플링 온도(`--diversity_temp`) 추가 |
-| 카테고리 전용 모드 | • `--category` 플래그 및 `--categories` 인자 지원 → 특정 카테고리(예: 식품)로만 후보 제한 |
-| CLI 인자 | `--top_k_sample`, `--diversity_temp`, `--top_n` 등 세분화 옵션 추가 |
-| 배포 가이드 | Docker 재배포 추천 순서<br>```bash
-docker compose down --remove-orphans
-git pull
-docker compose build --no-cache
-docker compose up -d
-```|
+**API 응답 시간 목표:** 최종 사용자(PD)의 경험을 위해, API 요청부터 응답까지 평균 2초, 최대 3초를 목표로 합니다.
 
-위 변경으로 추천 결과 다양성이 향상되고, 특정 카테고리 전용 편성도 손쉽게 요청할 수 있습니다.
+**추천 정확도 기준 (초기):** 추천된 상위 5개 상품 중 1개 이상이 실제 편성으로 이어지는 비율(Hit Rate @5)을 30% 이상으로 목표 설정하고, 피드백을 통해 지속적으로 개선합니다.
 
-## 🔍 어떻게 질문을 이해하나요?
-사용자가 입력한 문장은 OpenAI GPT로 전송되어 **날짜, 시간대, 키워드, 상품코드, 카테고리 등**을 추출한 JSON 형태의 파라미터로 변환됩니다.
+**캐싱 전략:**
+- **날씨, 공휴일 정보:** 외부 API 호출 결과를 1시간 주기로 캐싱합니다. (Redis 또는 인메모리 캐시 사용)
+- **트렌드 키워드:** n8n이 수 시간 주기로 업데이트하므로, API 서버 시작 시 메모리에 로드하여 사용합니다.
+- **Vector DB 연결:** 애플리케이션 시작 시 커넥션 풀을 생성하여 재사용합니다.
 
-예시 입력 → 추출 JSON
+---
 
-```text
-"내일 저녁에 루테인 제품 방송하면 얼마나 팔릴까?"
+## 🔗 LangChain 워크플로우 상세
+
+**프롬프트 템플릿 (키워드 분류기):**
 ```
+You are a helpful assistant. Classify the given keywords into 'category_keywords' which are general situations or lifestyles, and 'product_keywords' which are specific brand or product names.
 
-```json
+Keywords: [{keywords}]
+
+Respond ONLY in JSON format like this:
 {
-  "date": "2025-07-24",
-  "time_slots": ["저녁"],
-  "keywords": ["루테인"],
-  "mode": null,
-  "products": null,
-  "categories": null
+  "category_keywords": ["list of keywords"],
+  "product_keywords": ["list of keywords"]
 }
 ```
 
-이 JSON 이 `recommend()` 함수로 전달되어 모델 예측에 활용됩니다.
+**Chain 구성 (LCEL - LangChain Expression Language):**
+```python
+# 의사코드 예시
+prompt = ChatPromptTemplate.from_template(template)
+model = ChatOpenAI(model="gpt-4-turbo")
+parser = JsonOutputParser()
+
+classification_chain = prompt | model | parser
+```
+
+**에러 처리:** LLM 응답이 JSON 형식이 아니거나, API 호출에 실패할 경우 재시도(Retry) 로직을 2회 수행하고, 최종 실패 시 모든 키워드를 '카테고리 키워드'로 간주하여 시스템 중단을 방지합니다.
 
 ---
 
-## 🚧 향후 개선 로드맵
-- 🔬 **모델 고도화**: 하이퍼파라미터 튜닝, LightGBM/TabNet 앙상블 실험
-- 🗣️ **질문 이해 향상**: 키워드, 상품명 외에 프로모션·할인 조건 등 추가 파싱
-- 📈 **모니터링**: 실시간 예측 정확도·매출 대비 그래프 대시보드(Grafana)
-- 🌐 **REST API**: FastAPI 기반 추천/학습 엔드포인트 분리 제공
-- ☁️ **배포 자동화**: GitHub Actions + Docker Hub, Kubernetes Helm 차트
+## ⚡ 상세 워크플로우
+
+사용자 요청부터 응답까지 AI 백엔드 서버 내부에서 일어나는 상세한 동작 과정입니다.
+
+### 1단계: AI의 방향 탐색 (숲 찾기)
+
+#### 요청 분석 및 컨텍스트 수집
+- API 요청으로 `broadcastTime`을 받습니다.
+- 해당 시간을 기준으로 날씨, 공휴일 정보, 경쟁사 편성 현황 등 실시간 및 사전 수집 데이터를 모두 로드합니다.
+- 수집된 모든 키워드를 LangChain을 통해 **'카테고리 연관 키워드'**와 '상품 특정 키워드' 두 그룹으로 자동 분류합니다.
+
+#### 병렬 검색 및 예측 (Hybrid Search & Prediction)
+
+**Track A (카테고리 트랙):**
+- 카테고리 연관 키워드와 경쟁 상황("경쟁이 없는 카테고리 찾아줘" 등)을 조합하여 의미 있는 쿼리를 생성합니다.
+- LangChain이 이 쿼리를 **Qdrant(Vector DB)**로 보내 RAG 검색을 실행, 의미적으로 가장 유사한 카테고리 후보군을 얻습니다.
+- 이 소수의 카테고리 후보군에 대해서만 경쟁사 편성 데이터를 포함하여 학습된 XGBoost 모델을 호출, 예상 매출액을 예측합니다.
+- 관련성 점수와 예상 매출액을 가중 합산하여 **'오늘의 유망 카테고리 TOP 3'**를 최종 선정합니다.
+
+**Track B (상품 트랙):**
+- 상품 특정 키워드를 LangChain에 전달, **Qdrant(Vector DB)**를 RAG 검색하여 관련 개별 상품 리스트를 직접 찾아냅니다.
+
+### 2단계: 최종 후보 선정 및 고속 랭킹 (나무 고르기)
+
+#### 후보군 생성 (Candidate Generation)
+- Track B에서 찾은 상품들을 최종 후보군에 포함시킵니다.
+- Track A에서 찾은 '유망 카테고리'에 대해, PostgreSQL에 SQL 쿼리를 실행하여 에이스 상품들을 선별해 후보군에 추가합니다.
+
+#### 가벼운 규칙 기반 랭킹 (Lightweight Ranking)
+- 통합된 후보 상품들을 대상으로 단순한 점수 공식으로 최종 순위를 매깁니다.
+
+**점수 공식 예시:**
+```
+상품 최종 점수 = (① 카테고리 점수 × W1) + (② 상품 개별 점수) - (③ 경쟁 페널티 점수 × W2)
+```
+
+- **③ 경쟁 페널티 점수**: 추천 상품과 동시간대 경쟁사 상품의 카테고리가 겹칠 경우 부여되는 페널티입니다.
+
+#### API 응답 생성
+- 최종 점수가 높은 순서대로 상품을 정렬하여 JSON 형식으로 응답을 생성합니다.
 
 ---
+
+## 📊 XGBoost 모델 학습 데이터
+
+카테고리별 매출 예측 모델(XGBoost)을 학습시키기 위한 데이터 테이블(Training Data)의 예시입니다. 과거 방송 편성 데이터를 기반으로 구축하며, **경쟁사 현황과 공휴일 정보**가 핵심 피처(Feature)로 포함됩니다.
+
+### 주요 피처 (Features)
+
+| 피처명 | 설명 | 예시 |
+|--------|------|------|
+| `broadcast_timestamp` | 방송 날짜 및 시간 | 2024-10-01 22:00 |
+| `day_of_week` | 요일 | 화요일 |
+| `category_name` | 방송된 상품의 카테고리 | 패션의류, 주방용품 |
+| `is_holiday` | 공휴일 여부 (1 or 0) | 1 (공휴일), 0 (평일) |
+| `temperature` | 당시 기온 | 23.5°C |
+| `competitor_count_same_category` | 동시간대 동일 카테고리를 방송하는 경쟁사 수 | 2개사 |
+
+### 타겟 변수 (Label)
+
+- **`actual_sales_amount`**: 해당 방송의 실제 매출액 (예측 목표)
+
+---
+
+## 📋 API 명세서
+
+### 방송 추천 API
+
+**Endpoint:** `POST /api/v1/broadcast/recommendations`
+
+#### Request Body
+```json
+{
+  "broadcastTime": "2025-09-15T22:40:00+09:00",
+  "recommendationCount": 5
+}
+```
+
+#### Response Body (Success: 200 OK)
+```json
+{
+  "requestTime": "2025-08-25T14:01:44+09:00",
+  "recommendedCategories": [
+    {
+      "rank": 1,
+      "name": "주방용품",
+      "reason": "경쟁사 부재 및 '주말 저녁' 키워드와 관련성 높음",
+      "predictedSales": "9.8억"
+    }
+  ],
+  "recommendations": [
+    {
+      "rank": 1,
+      "productInfo": {
+        "productId": "P300123",
+        "productName": "[해피콜] 다이아몬드 프라이팬 3종 세트",
+        "category": "생활 > 주방용품"
+      },
+      "reasoning": {
+        "summary": "'주방용품' 카테고리의 예상 매출이 높고, 동시간대 경쟁이 없어 독점 방송이 가능합니다.",
+        "linkedCategories": ["주방용품"],
+        "matchedKeywords": ["주말 저녁", "요리"]
+      },
+      "businessMetrics": {
+        "pastAverageSales": "8.5억",
+        "marginRate": 0.35,
+        "stockLevel": "Good"
+      }
+    }
+  ]
+}
+```
+
+---
+
+## 🚀 시작하기 (개발 환경 설정)
+
+### 사전 준비
+- Python 3.11+
+- PostgreSQL 14+
+- Docker & Docker Compose
+- OpenAI API Key
+
+### 설치 및 실행
+
+#### 1. 저장소 복제
+```bash
+git clone https://github.com/your-repo/trnAi.git
+cd trnAi
+```
+
+#### 2. Docker 환경 설정
+```bash
+# Docker 네트워크 생성
+docker network create shopping-network
+
+# 서비스 실행
+docker-compose up -d
+```
+
+#### 3. 환경변수 설정
+`backend/.env` 파일을 생성하고 다음 정보를 입력합니다:
+```env
+DB_URI=postgresql://TRN_AI:TRN_AI@localhost:5432/TRNAI_DB
+OPENAI_API_KEY=your_openai_api_key_here
+```
+
+#### 4. 데이터베이스 초기화
+```bash
+# PostgreSQL 컨테이너에서 초기 스키마 실행
+docker exec -i trnAi_postgres psql -U TRN_AI -d TRNAI_DB < init_database.sql
+```
+
+#### 5. XGBoost 모델 학습
+```bash
+cd backend
+python train.py
+```
+
+### 서비스 접속
+- **Backend API**: http://localhost:8501
+- **API 문서**: http://localhost:8501/docs
+- **Frontend**: http://localhost:3001
+- **Qdrant**: http://localhost:6333
+- **n8n**: http://localhost:5678
+
+---
+
+## 🔮 향후 개선 과제
+
+- **📈 모델 A/B 테스팅**: 여러 버전의 추천 로직(가중치, 모델 등)을 운영 환경에서 테스트하고 성과를 비교하는 시스템 구축
+
+- **✍️ 실시간 피드백 루프**: PD가 AI의 추천 결과를 평가(좋아요/싫어요)하고, 이 피드백을 다음 모델 학습에 반영하는 MLOps 파이프라인 구축
+
+- **🔗 CI/CD 자동화**: GitHub Actions를 이용한 테스트 및 배포 자동화 파이프라인 구축
+
+- **🎁 프로모션 자동 추천**: 상품과 함께 매출을 극대화할 수 있는 최적의 프로모션(무이자 할부, 사은품 등)을 함께 제안하는 기능 추가

@@ -9,10 +9,12 @@ import os
 load_dotenv()
 from fastapi.middleware.cors import CORSMiddleware
 
-from .schemas import RecommendRequest, RecommendResponse, CandidatesResponse
+from .schemas import RecommendRequest, RecommendResponse, CandidatesResponse, TrendCollectionResponse, TrendAnalysisResponse, BroadcastRequest, BroadcastResponse
 from . import services
 from . import broadcast_recommender as br # broadcast_recommender 임포트
 from .product_embedder import ProductEmbedder
+from .trend_collector import TrendCollector, TrendProcessor
+from .broadcast_workflow import BroadcastWorkflow
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -29,15 +31,27 @@ async def lifespan(app: FastAPI):
             qdrant_host="qdrant_vector_db" if os.getenv("DOCKER_ENV") else "localhost"
         )
         print("--- ProductEmbedder initialized ---")
+        
+        # TrendProcessor 초기화
+        app.state.trend_processor = TrendProcessor(app.state.product_embedder)
+        print("--- TrendProcessor initialized ---")
+        
+        # BroadcastWorkflow 초기화
+        app.state.broadcast_workflow = BroadcastWorkflow(model, app.state.product_embedder)
+        print("--- BroadcastWorkflow initialized ---")
     else:
         print("--- Warning: OPENAI_API_KEY not found, ProductEmbedder not initialized ---")
         app.state.product_embedder = None
+        app.state.trend_processor = None
+        app.state.broadcast_workflow = None
     
     print("--- Model loaded successfully. ---")
     yield
     # 애플리케이션 종료 시 정리 (필요 시)
     app.state.model = None
     app.state.product_embedder = None
+    app.state.trend_processor = None
+    app.state.broadcast_workflow = None
 
 app = FastAPI(
     title="Home Shopping Broadcast Recommender API",
@@ -123,6 +137,136 @@ async def recommend_candidates(payload: RecommendRequest, request: Request, top_
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         print(f"--- ERROR IN /api/v1/recommend-candidates ---")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+@app.get("/api/v1/trends/collect", response_model=TrendCollectionResponse)
+async def collect_trends():
+    """실시간 트렌드 데이터를 수집합니다."""
+    try:
+        async with TrendCollector() as collector:
+            trends = await collector.collect_all_trends()
+            
+            # 스키마에 맞게 변환
+            trend_schemas = []
+            for trend in trends:
+                trend_schemas.append({
+                    "keyword": trend.keyword,
+                    "source": trend.source,
+                    "score": trend.score,
+                    "timestamp": trend.timestamp.isoformat(),
+                    "category": trend.category,
+                    "related_keywords": trend.related_keywords,
+                    "metadata": trend.metadata
+                })
+            
+            return TrendCollectionResponse(
+                trends=trend_schemas,
+                collection_timestamp=trends[0].timestamp.isoformat() if trends else "",
+                total_count=len(trends)
+            )
+            
+    except Exception as e:
+        print(f"--- ERROR IN /api/v1/trends/collect ---")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+@app.get("/api/v1/trends/analyze", response_model=TrendAnalysisResponse)
+async def analyze_trends(request: Request):
+    """트렌드를 분석하고 상품과 매칭합니다."""
+    try:
+        trend_processor = request.app.state.trend_processor
+        if not trend_processor:
+            raise HTTPException(status_code=503, detail="TrendProcessor가 초기화되지 않았습니다.")
+        
+        # 트렌드 수집
+        async with TrendCollector() as collector:
+            trends = await collector.collect_all_trends()
+        
+        # 상품 매칭
+        matched_results = await trend_processor.match_trends_to_products(trends)
+        
+        # 응답 데이터 구성
+        trend_schemas = []
+        matching_responses = {}
+        
+        for trend in trends:
+            trend_schemas.append({
+                "keyword": trend.keyword,
+                "source": trend.source,
+                "score": trend.score,
+                "timestamp": trend.timestamp.isoformat(),
+                "category": trend.category,
+                "related_keywords": trend.related_keywords,
+                "metadata": trend.metadata
+            })
+            
+            if trend.keyword in matched_results:
+                boost_factor = trend_processor.calculate_trend_boost_factor(trend.score)
+                matching_responses[trend.keyword] = {
+                    "trend_keyword": trend.keyword,
+                    "trend_info": matched_results[trend.keyword]["trend_info"],
+                    "matched_products": matched_results[trend.keyword]["matched_products"],
+                    "boost_factor": boost_factor
+                }
+        
+        return TrendAnalysisResponse(
+            trends=trend_schemas,
+            matched_results=matching_responses,
+            analysis_timestamp=trends[0].timestamp.isoformat() if trends else ""
+        )
+        
+    except Exception as e:
+        print(f"--- ERROR IN /api/v1/trends/analyze ---")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+@app.post("/api/v1/recommend-with-trends", response_model=RecommendResponse)
+async def recommend_with_trends(payload: RecommendRequest, request: Request):
+    """트렌드 데이터를 반영한 강화된 방송 편성 추천"""
+    print("--- API Endpoint /api/v1/recommend-with-trends received a request ---")
+    try:
+        model = request.app.state.model
+        product_embedder = request.app.state.product_embedder
+        
+        if not product_embedder:
+            raise HTTPException(status_code=503, detail="ProductEmbedder가 초기화되지 않았습니다.")
+        
+        response_data = await services.get_trend_enhanced_recommendations(
+            payload.user_query, model, product_embedder
+        )
+        return response_data
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"--- ERROR IN /api/v1/recommend-with-trends ---")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+@app.post("/api/v1/broadcast/recommendations", response_model=BroadcastResponse)
+async def broadcast_recommendations(payload: BroadcastRequest, request: Request):
+    """새로운 방송 편성 AI 추천 API - LangChain 기반 2단계 워크플로우"""
+    print(f"--- API Endpoint /api/v1/broadcast/recommendations received a request: {payload.broadcastTime} ---")
+    try:
+        broadcast_workflow = request.app.state.broadcast_workflow
+        
+        if not broadcast_workflow:
+            raise HTTPException(status_code=503, detail="BroadcastWorkflow가 초기화되지 않았습니다.")
+        
+        response_data = await broadcast_workflow.process_broadcast_recommendation(
+            payload.broadcastTime, 
+            payload.recommendationCount
+        )
+        return response_data
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"--- ERROR IN /api/v1/broadcast/recommendations ---")
         import traceback
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"detail": str(e)})

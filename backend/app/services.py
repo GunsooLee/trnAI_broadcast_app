@@ -11,6 +11,7 @@ import pandas as pd
 # broadcast_recommender 모듈을 br로 임포트
 from . import broadcast_recommender as br
 from .schemas import RecommendResponse, RecommendationItem, CandidatesResponse, TimeSlotCandidates
+from .trend_enhanced_recommender import TrendEnhancedRecommender
 
 # OpenAI API key is set as an environment variable OPENAI_API_KEY
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -271,3 +272,34 @@ async def get_candidates(user_query: str, model: br.Pipeline, top_k: int = 5) ->
 
     print("--- 3. Candidate service completed ---")
     return CandidatesResponse(extracted_params=enriched_params, candidates=candidates)
+
+async def get_trend_enhanced_recommendations(user_query: str, model, product_embedder) -> RecommendResponse:
+    """트렌드 강화 추천 서비스"""
+    print("--- Trend Enhanced Recommendation Service Started ---")
+    
+    # 1) 파라미터 추출 및 보강
+    enriched_params = await extract_and_enrich_params(user_query)
+    print(f"--- Extracted params: {enriched_params} ---")
+    
+    # 2) 트렌드 강화 추천기 초기화 및 실행
+    trend_recommender = TrendEnhancedRecommender(model, product_embedder)
+    result = await trend_recommender.recommend_with_trends(enriched_params)
+    
+    # 3) 응답 스키마에 맞게 변환
+    recommendations = []
+    for rec in result.get('recommendations', []):
+        # 필수 필드 확인 및 기본값 설정
+        recommendation_item = RecommendationItem(
+            time_slot=rec.get('time_slot', '오전'),
+            predicted_sales=rec.get('predicted_sales', 0),
+            product_code=rec.get('product_code', ''),
+            category=rec.get('category', ''),
+            features=rec.get('features', {})
+        )
+        recommendations.append(recommendation_item)
+    
+    print("--- Trend Enhanced Recommendation Service Completed ---")
+    return RecommendResponse(
+        extracted_params=result.get('extracted_params', enriched_params),
+        recommendations=recommendations
+    )

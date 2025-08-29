@@ -52,31 +52,33 @@ def load_data(engine: Engine) -> pd.DataFrame:
     """DB에서 학습용 데이터를 로드하고 기본 전처리를 수행합니다."""
     print("데이터 로딩 시작...")
     
-    # 추천 로직과 동일한 피처를 생성하는 SQL 쿼리 사용
+    # 새로운 피처들을 포함한 SQL 쿼리
     query = f"""
     WITH base AS (
         SELECT
-            product_code,
-            product_lgroup,
-            product_mgroup,
-            product_sgroup,
-            product_dgroup,
-            product_type,
-            product_name,
-            keyword,
-            time_slot,
-            sales_amount,
-            order_count,
-            product_price
-        FROM {TABLE_NAME}
-        WHERE sales_amount IS NOT NULL
+            b.product_code,
+            p.category_main as product_lgroup,
+            p.category_middle as product_mgroup,
+            p.category_sub as product_sgroup,
+            '' as product_dgroup,
+            '' as product_type,
+            p.product_name,
+            p.search_keywords as keyword,
+            b.time_slot,
+            b.sales_amount,
+            0 as order_count,
+            p.price as product_price,
+            b.broadcast_date
+        FROM broadcasts b
+        JOIN products p ON b.product_code = p.product_code
+        WHERE b.sales_amount IS NOT NULL
     ),
     product_stats AS (
         SELECT
             product_code,
             AVG(sales_amount) AS product_avg_sales,
             COUNT(*) AS product_broadcast_count
-        FROM {TABLE_NAME}
+        FROM base
         GROUP BY product_code
     ),
     category_timeslot_stats AS (
@@ -84,17 +86,38 @@ def load_data(engine: Engine) -> pd.DataFrame:
             product_mgroup,
             time_slot,
             AVG(sales_amount) AS category_timeslot_avg_sales
-        FROM {TABLE_NAME}
+        FROM base
         GROUP BY product_mgroup, time_slot
+    ),
+    competitor_counts AS (
+        SELECT
+            cb.broadcast_date,
+            cb.time_slot,
+            cb.category_main,
+            COUNT(*) as competitor_count_same_category
+        FROM competitor_broadcasts cb
+        GROUP BY cb.broadcast_date, cb.time_slot, cb.category_main
+    ),
+    holiday_info AS (
+        SELECT
+            holiday_date,
+            1 as is_holiday
+        FROM holidays
     )
     SELECT
         b.*,
         ps.product_avg_sales,
         ps.product_broadcast_count,
-        cts.category_timeslot_avg_sales
+        cts.category_timeslot_avg_sales,
+        COALESCE(cc.competitor_count_same_category, 0) as competitor_count_same_category,
+        COALESCE(h.is_holiday, 0) as is_holiday
     FROM base b
     LEFT JOIN product_stats ps ON b.product_code = ps.product_code
     LEFT JOIN category_timeslot_stats cts ON b.product_mgroup = cts.product_mgroup AND b.time_slot = cts.time_slot
+    LEFT JOIN competitor_counts cc ON b.broadcast_date = cc.broadcast_date 
+        AND b.time_slot = cc.time_slot 
+        AND b.product_lgroup = cc.category_main
+    LEFT JOIN holiday_info h ON b.broadcast_date = h.holiday_date
     """
     
     df = pd.read_sql(query, engine)
@@ -106,7 +129,14 @@ def load_data(engine: Engine) -> pd.DataFrame:
 def build_pipeline() -> Pipeline:
     """Scikit-learn 파이프라인을 구축합니다."""
     print("모델 파이프라인 생성...")
-    numeric_features = ["product_price", "product_avg_sales", "product_broadcast_count", "category_timeslot_avg_sales"]
+    numeric_features = [
+        "product_price", 
+        "product_avg_sales", 
+        "product_broadcast_count", 
+        "category_timeslot_avg_sales",
+        "competitor_count_same_category",
+        "is_holiday"
+    ]
     categorical_features = ["product_lgroup", "product_mgroup", "time_slot"]
     text_features = ["product_name", "keyword"]
 
@@ -155,6 +185,7 @@ def train() -> None:
         "product_dgroup",
         "product_type",
         "order_count",
+        "broadcast_date",  # 날짜는 피처로 사용하지 않음
         target,
     ]
     X = df.drop(columns=drop_cols)

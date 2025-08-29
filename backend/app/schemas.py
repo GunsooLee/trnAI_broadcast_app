@@ -27,3 +27,77 @@ class TimeSlotCandidates(BaseModel):
 class CandidatesResponse(BaseModel):
     extracted_params: Dict[str, Any]
     candidates: List[TimeSlotCandidates]
+
+# --- 트렌드 관련 스키마 ---
+class TrendKeywordSchema(BaseModel):
+    """트렌드 키워드 스키마"""
+    keyword: str
+    source: str
+    score: float
+    timestamp: str
+    category: Optional[str] = None
+    related_keywords: Optional[List[str]] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+class TrendCollectionResponse(BaseModel):
+    """트렌드 수집 응답 스키마"""
+    trends: List[TrendKeywordSchema]
+    collection_timestamp: str
+    total_count: int
+
+class TrendMatchingResponse(BaseModel):
+    """트렌드-상품 매칭 응답 스키마"""
+    trend_keyword: str
+    trend_info: Dict[str, Any]
+    matched_products: List[Dict[str, Any]]
+    boost_factor: float
+
+class TrendAnalysisResponse(BaseModel):
+    """트렌드 분석 응답 스키마"""
+    trends: List[TrendKeywordSchema]
+    matched_results: Dict[str, TrendMatchingResponse]
+    analysis_timestamp: str
+
+# --- 새로운 방송 추천 API 스키마 ---
+class BroadcastRequest(BaseModel):
+    """방송 추천 요청 스키마"""
+    broadcastTime: str = Field(..., description="방송 시간", example="2025-09-15T22:40:00+09:00")
+    recommendationCount: int = Field(default=5, description="추천 개수", example=5)
+
+class RecommendedCategory(BaseModel):
+    """추천 카테고리 스키마"""
+    rank: int
+    name: str
+    reason: str
+    predictedSales: str
+
+class ProductInfo(BaseModel):
+    """상품 정보 스키마"""
+    productId: str
+    productName: str
+    category: str
+
+class Reasoning(BaseModel):
+    """추천 근거 스키마"""
+    summary: str
+    linkedCategories: List[str]
+    matchedKeywords: List[str]
+
+class BusinessMetrics(BaseModel):
+    """비즈니스 지표 스키마"""
+    pastAverageSales: str
+    marginRate: float
+    stockLevel: str
+
+class BroadcastRecommendation(BaseModel):
+    """방송 추천 항목 스키마"""
+    rank: int
+    productInfo: ProductInfo
+    reasoning: Reasoning
+    businessMetrics: BusinessMetrics
+
+class BroadcastResponse(BaseModel):
+    """방송 추천 응답 스키마"""
+    requestTime: str
+    recommendedCategories: List[RecommendedCategory]
+    recommendations: List[BroadcastRecommendation]
