@@ -501,7 +501,7 @@ JSON 형식으로 응답해주세요."""),
         
         # 1. 트렌드 상품 우선 포함
         for product in trend_products[:recommendation_count//2]:
-            candidate = await self._create_recommendation_item(product, "trend")
+            candidate = await self._create_recommendation_item(product, "trend", context)
             if candidate:
                 final_candidates.append(candidate)
         
@@ -513,7 +513,7 @@ JSON 형식으로 응답해주세요."""),
                 if len(final_candidates) >= recommendation_count:
                     break
                     
-                candidate = await self._create_recommendation_item(product, "category")
+                candidate = await self._create_recommendation_item(product, "category", context)
                 if candidate:
                     final_candidates.append(candidate)
         
@@ -600,7 +600,73 @@ JSON 형식으로 응답해주세요."""),
             logger.error(f"에이스 상품 조회 오류: {e}")
             return []
     
-    async def _create_recommendation_item(self, product: Dict[str, Any], source_type: str) -> Optional[Dict[str, Any]]:
+    async def _generate_detailed_summary(self, product: Dict[str, Any], source_type: str, context: Dict[str, Any] = None) -> str:
+        """LangChain을 사용한 상세 추천 근거 생성"""
+        try:
+            # 컨텍스트 정보 준비
+            category = product.get("category_main", "")
+            avg_sales = product.get("avg_sales", 0)
+            
+            # 경쟁사 정보 수집
+            competitors = context.get("competitors", []) if context else []
+            competitor_categories = [comp.get("category_main", "") for comp in competitors]
+            has_competition = category in competitor_categories
+            
+            # 트렌드 키워드 정보
+            trend_keywords = context.get("trend_keywords", []) if context else []
+            
+            # 시간대 정보
+            broadcast_time = context.get("broadcast_time", "") if context else ""
+            time_period = self._get_time_period(broadcast_time)
+            
+            # LangChain 프롬프트로 상세 설명 생성
+            summary_prompt = ChatPromptTemplate.from_messages([
+                ("system", """당신은 홈쇼핑 방송 편성 전문가입니다. 
+주어진 정보를 바탕으로 상품 추천 근거를 구체적이고 설득력 있게 작성해주세요.
+
+다음 요소들을 포함해서 작성하세요:
+1. 카테고리의 매출 전망
+2. 경쟁 상황 분석 (독점 방송 가능성 등)
+3. 트렌드 키워드와의 연관성
+4. 시간대 적합성
+
+한 문장으로 간결하게 작성해주세요."""),
+                ("human", """
+상품 정보:
+- 카테고리: {category}
+- 예상 매출: {avg_sales}만원
+- 방송 시간: {time_period}
+
+경쟁 상황:
+- 동시간대 경쟁사 카테고리: {competitor_categories}
+- 경쟁 여부: {has_competition}
+
+트렌드 키워드: {trend_keywords}
+""")
+            ])
+            
+            chain = summary_prompt | self.llm
+            
+            result = await chain.ainvoke({
+                "category": category,
+                "avg_sales": int(avg_sales / 10000),  # 만원 단위
+                "time_period": time_period,
+                "competitor_categories": ", ".join(competitor_categories) if competitor_categories else "없음",
+                "has_competition": "있음" if has_competition else "없음",
+                "trend_keywords": ", ".join(trend_keywords) if trend_keywords else "없음"
+            })
+            
+            return result.content.strip()
+            
+        except Exception as e:
+            logger.error(f"상세 설명 생성 오류: {e}")
+            # 폴백: 기본 템플릿 사용
+            if source_type == "trend":
+                return f"'{product.get('trend_keyword', '')}' 트렌드와 관련된 인기 상품입니다."
+            else:
+                return f"'{product.get('category_main', '')}' 카테고리의 베스트셀러 상품입니다."
+    
+    async def _create_recommendation_item(self, product: Dict[str, Any], source_type: str, context: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
         """추천 아이템 생성"""
         try:
             # 기본 점수 계산
@@ -610,11 +676,11 @@ JSON 형식으로 응답해주세요."""),
                 base_score *= 1.5  # 트렌드 보너스
                 linked_categories = ["트렌드"]
                 matched_keywords = [product.get("trend_keyword", "")]
-                summary = f"'{product.get('trend_keyword', '')}' 트렌드와 관련된 인기 상품입니다."
+                summary = await self._generate_detailed_summary(product, source_type, context)
             else:
                 linked_categories = [product.get("category_main", "")]
                 matched_keywords = []
-                summary = f"'{product.get('category_main', '')}' 카테고리의 베스트셀러 상품입니다."
+                summary = await self._generate_detailed_summary(product, source_type, context)
             
             return {
                 "product_code": product.get("product_code", ""),
