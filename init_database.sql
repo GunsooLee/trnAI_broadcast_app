@@ -1,5 +1,6 @@
 -- 홈쇼핑 방송 추천 시스템 데이터베이스 초기화
 
+
 -- 1. 날씨 데이터 테이블
 CREATE TABLE IF NOT EXISTS weather_daily (
     weather_date DATE PRIMARY KEY,
@@ -21,6 +22,18 @@ CREATE TABLE IF NOT EXISTS products (
     embedded_at TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 2-1. 방송테이프 정보 테이블 (TPGMTAPE)
+CREATE TABLE IF NOT EXISTS TPGMTAPE (
+    tape_code VARCHAR(50) PRIMARY KEY,
+    tape_name VARCHAR(200),
+    duration_minutes INTEGER,
+    product_code VARCHAR(50),
+    production_status VARCHAR(20) DEFAULT 'ready', -- 'ready', 'in_production', 'archived'
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (product_code) REFERENCES products(product_code)
 );
 
 -- 3. 방송 데이터 테이블
@@ -76,6 +89,17 @@ INSERT INTO products (product_code, product_name, category_main, category_middle
 ('P009', '무선 이어폰', '전자제품', '음향기기', '이어폰', '무선 이어폰 전자제품 음향기기 이어폰 무선 음악', 95000),
 ('P010', '마사지 건', '건강용품', '마사지용품', '마사지기', '마사지 건 건강용품 마사지용품 마사지기 마사지 근육 릴렉스', 135000)
 ON CONFLICT (product_code) DO NOTHING;
+
+-- 5-1. 모의 방송테이프 데이터 삽입 (일부 상품만 테이프 제작 완료)
+INSERT INTO TPGMTAPE (tape_code, tape_name, duration_minutes, product_code, production_status) VALUES
+('T001', '프리미엄 다이어트 보조제 방송테이프', 30, 'P001', 'ready'),
+('T002', '홈트레이닝 세트 완전정복', 45, 'P002', 'ready'),
+('T003', '비타민C 건강 특집', 25, 'P003', 'ready'),
+('T004', '스킨케어 뷰티 솔루션', 35, 'P004', 'ready'),
+('T005', '시원한 여름나기 선풍기', 20, 'P005', 'ready'),
+('T007', '에어프라이어 요리천국', 40, 'P007', 'ready'),
+('T009', '무선 이어폰 음악세상', 25, 'P009', 'ready')
+ON CONFLICT (tape_code) DO NOTHING;
 
 -- 6. 모의 공휴일 데이터 삽입
 INSERT INTO holidays (holiday_date, holiday_name, holiday_type) VALUES

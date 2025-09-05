@@ -32,6 +32,7 @@ def get_products_to_embed(engine, force_all=False):
             category_main,
             category_middle,
             category_sub,
+            search_keywords,
             created_at,
             updated_at,
             embedded_at
@@ -48,6 +49,7 @@ def get_products_to_embed(engine, force_all=False):
             category_main,
             category_middle,
             category_sub,
+            search_keywords,
             created_at,
             updated_at,
             embedded_at
@@ -160,14 +162,18 @@ def main():
             # 개별 상품 임베딩
             for idx, row in batch_df.iterrows():
                 try:
-                    # 상품 정보 결합
+                    # 상품 정보 결합 (search_keywords 우선 사용)
+                    search_keywords = str(row.get('search_keywords', ''))
                     product_name = str(row.get('product_name', ''))
                     category_main = str(row.get('category_main', ''))
                     category_middle = str(row.get('category_middle', ''))
                     category_sub = str(row.get('category_sub', ''))
                     
-                    
-                    text = f"{product_name} {category_main} > {category_middle} > {category_sub}".strip()
+                    # search_keywords가 있으면 우선 사용, 없으면 기본 조합
+                    if search_keywords and search_keywords != 'nan':
+                        text = search_keywords.strip()
+                    else:
+                        text = f"{product_name} {category_main} > {category_middle} > {category_sub}".strip()
                     
                     if not text:
                         print(f"     ⚠️  빈 텍스트 건너뜀: {row.get('product_code', 'Unknown')}")
@@ -187,6 +193,7 @@ def main():
                             "category_main": category_main,
                             "category_middle": category_middle,
                             "category_sub": category_sub,
+                            "search_keywords": search_keywords,
                             "text": text,
                             "updated_at": datetime.now().isoformat()
                         }

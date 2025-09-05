@@ -45,7 +45,7 @@ import sys
 # ---------------------------------------------------------------------------
 # DB 설정 -----------------------------------------------------
 # ---------------------------------------------------------------------------
-DB_URI = os.getenv("DB_URI", "postgresql://TIKITAKA:TIKITAKA@175.106.97.27:5432/TIKITAKA_DB")
+DB_URI = os.getenv("POSTGRES_URI", os.getenv("DB_URI", "postgresql://TIKITAKA:TIKITAKA@175.106.97.27:5432/TIKITAKA_DB"))
 TABLE_NAME = "broadcast_training_dataset"
 MODEL_FILE = "xgb_broadcast_sales.joblib"
 
