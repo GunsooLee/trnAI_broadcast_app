@@ -63,7 +63,7 @@ def load_data(engine: Engine) -> pd.DataFrame:
             '' as product_dgroup,
             '' as product_type,
             p.product_name,
-            p.search_keywords as keyword,
+            '' as keyword,
             b.time_slot,
             b.sales_amount,
             0 as order_count,
@@ -88,36 +88,20 @@ def load_data(engine: Engine) -> pd.DataFrame:
             AVG(sales_amount) AS category_timeslot_avg_sales
         FROM base
         GROUP BY product_mgroup, time_slot
-    ),
-    competitor_counts AS (
-        SELECT
-            cb.broadcast_date,
-            cb.time_slot,
-            cb.category_main,
-            COUNT(*) as competitor_count_same_category
-        FROM competitor_broadcasts cb
-        GROUP BY cb.broadcast_date, cb.time_slot, cb.category_main
-    ),
-    holiday_info AS (
-        SELECT
-            holiday_date,
-            1 as is_holiday
-        FROM holidays
     )
+    -- competitor_counts 제거 - 테이블 존재하지 않음
+    -- holiday_info 제거 - 테이블 존재하지 않음
     SELECT
         b.*,
         ps.product_avg_sales,
         ps.product_broadcast_count,
         cts.category_timeslot_avg_sales,
-        COALESCE(cc.competitor_count_same_category, 0) as competitor_count_same_category,
-        COALESCE(h.is_holiday, 0) as is_holiday
+        0 as competitor_count_same_category,
+        0 as is_holiday
     FROM base b
     LEFT JOIN product_stats ps ON b.product_code = ps.product_code
     LEFT JOIN category_timeslot_stats cts ON b.product_mgroup = cts.product_mgroup AND b.time_slot = cts.time_slot
-    LEFT JOIN competitor_counts cc ON b.broadcast_date = cc.broadcast_date 
-        AND b.time_slot = cc.time_slot 
-        AND b.product_lgroup = cc.category_main
-    LEFT JOIN holiday_info h ON b.broadcast_date = h.holiday_date
+    -- LEFT JOIN 제거됨
     """
     
     df = pd.read_sql(query, engine)
@@ -134,32 +118,18 @@ def build_pipeline() -> Pipeline:
         "product_avg_sales", 
         "product_broadcast_count", 
         "category_timeslot_avg_sales",
-        "competitor_count_same_category",
+        # "competitor_count_same_category",  # 테이블 존재하지 않음으로 제거
         "is_holiday"
     ]
     categorical_features = ["product_lgroup", "product_mgroup", "time_slot"]
-    text_features = ["product_name", "keyword"]
-
-    text_transformers = [
-        (
-            f"tfidf_{col}",
-            TfidfVectorizer(
-                tokenizer=mecab_tokenizer,
-                lowercase=False,
-                ngram_range=(1, 2),
-                max_features=3000,
-            ),
-            col,
-        )
-        for col in text_features
-    ]
+    # text_features 제거 - 메인 API에서 실제로 사용되지 않음
 
     preprocessor = ColumnTransformer(
         [
             ("num", "passthrough", numeric_features),
             ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_features),
-            *text_transformers,
-        ]
+        ],
+        remainder="drop",
     )
 
     model = XGBRegressor(

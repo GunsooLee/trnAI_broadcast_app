@@ -453,20 +453,20 @@ def prepare_candidate_row(
         "product_price": product.get("product_price", 0),
         "product_lgroup": product.get("product_lgroup", "없음"),
         "product_mgroup": product.get("product_mgroup", "없음"),
-        "product_sgroup": product.get("product_sgroup", "없음"),
-        "product_dgroup": product.get("product_dgroup", "없음"),
-        "product_type": product.get("product_type", "없음"),
-        "product_name": product.get("product_name", ""),
-        "keyword": product.get("keyword", ""),
+        # "product_sgroup": product.get("product_sgroup", "없음"),  # 사용 빈도 낮음
+        # "product_dgroup": product.get("product_dgroup", "없음"),  # 사용 빈도 낮음
+        # "product_type": product.get("product_type", "없음"),  # 카테고리와 중복
+        # "product_name": product.get("product_name", ""),  # 제거됨
+        # "keyword": product.get("keyword", ""),  # 제거됨
         "product_avg_sales": product.get("product_avg_sales", 0),
         "product_broadcast_count": product.get("product_broadcast_count", 0),
         "category_timeslot_avg_sales": timeslot_avg,
         "timeslot_specialty_score": timeslot_avg / overall_avg if overall_avg else 1,
         # 새로운 피처들
-        "competitor_count_same_category": competitor_count,
+        # "competitor_count_same_category": competitor_count,  # 데이터 부족으로 제거
         "is_holiday": is_holiday,
         # 상호작용 특성
-        "time_category_interaction": f"{time_slot}_{product.get('product_mgroup', '없음')}",
+        # "time_category_interaction": f"{time_slot}_{product.get('product_mgroup', '없음')}",  # 복잡도 감소
     }
 
     return row
