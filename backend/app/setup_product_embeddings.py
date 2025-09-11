@@ -36,7 +36,7 @@ def get_products_to_embed(engine, force_all=False):
             created_at,
             updated_at,
             embedded_at
-        FROM products
+        FROM TAIGOODS
         ORDER BY product_code
         """
         print("🔄 전체 상품 재처리 모드")
@@ -53,7 +53,7 @@ def get_products_to_embed(engine, force_all=False):
             created_at,
             updated_at,
             embedded_at
-        FROM products
+        FROM TAIGOODS
         WHERE embedded_at IS NULL 
            OR updated_at > embedded_at
         ORDER BY product_code
@@ -70,7 +70,7 @@ def update_embedded_timestamp(engine, product_codes):
     
     placeholders = ','.join([f"'{code}'" for code in product_codes])
     query = f"""
-    UPDATE products 
+    UPDATE TAIGOODS 
     SET embedded_at = CURRENT_TIMESTAMP
     WHERE product_code IN ({placeholders})
     """

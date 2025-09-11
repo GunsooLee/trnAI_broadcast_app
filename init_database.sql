@@ -2,7 +2,7 @@
 
 
 -- 1. 날씨 데이터 테이블
-CREATE TABLE IF NOT EXISTS weather_daily (
+CREATE TABLE IF NOT EXISTS taiweather_daily (
     weather_date DATE PRIMARY KEY,
     weather VARCHAR(50),
     temperature DECIMAL(5,2),
@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS weather_daily (
 );
 
 -- 2. 상품 정보 테이블
-CREATE TABLE IF NOT EXISTS products (
+CREATE TABLE IF NOT EXISTS TAIGOODS (
     product_code VARCHAR(50) PRIMARY KEY,
     product_name VARCHAR(200),
     category_main VARCHAR(100),
@@ -24,8 +24,8 @@ CREATE TABLE IF NOT EXISTS products (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 2-1. 방송테이프 정보 테이블 (TPGMTAPE)
-CREATE TABLE IF NOT EXISTS TPGMTAPE (
+-- 2-1. 방송테이프 정보 테이블 (TAIPGMTAPE)
+CREATE TABLE IF NOT EXISTS TAIPGMTAPE (
     tape_code VARCHAR(50) PRIMARY KEY,
     tape_name VARCHAR(200),
     duration_minutes INTEGER,
@@ -33,11 +33,11 @@ CREATE TABLE IF NOT EXISTS TPGMTAPE (
     production_status VARCHAR(20) DEFAULT 'ready', -- 'ready', 'in_production', 'archived'
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (product_code) REFERENCES products(product_code)
+    FOREIGN KEY (product_code) REFERENCES TAIGOODS(product_code)
 );
 
 -- 3. 방송 데이터 테이블
-CREATE TABLE IF NOT EXISTS broadcasts (
+CREATE TABLE IF NOT EXISTS TAIBROADCASTS (
     id SERIAL PRIMARY KEY,
     broadcast_date DATE,
     time_slot VARCHAR(20),
@@ -45,11 +45,11 @@ CREATE TABLE IF NOT EXISTS broadcasts (
     sales_amount DECIMAL(15,2),
     viewer_count INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (product_code) REFERENCES products(product_code)
+    FOREIGN KEY (product_code) REFERENCES TAIGOODS(product_code)
 );
 
 -- 4. 공휴일 정보 테이블
-CREATE TABLE IF NOT EXISTS holidays (
+CREATE TABLE IF NOT EXISTS TAIHOLIDAYS (
     holiday_date DATE PRIMARY KEY,
     holiday_name VARCHAR(100),
     holiday_type VARCHAR(50), -- 법정공휴일, 대체공휴일, 임시공휴일 등
@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS holidays (
 );
 
 -- 5. 경쟁사 방송 정보 테이블
-CREATE TABLE IF NOT EXISTS competitor_broadcasts (
+CREATE TABLE IF NOT EXISTS TAICOMPETITOR_BROADCASTS (
     id SERIAL PRIMARY KEY,
     broadcast_date DATE,
     time_slot VARCHAR(20),
@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS competitor_broadcasts (
 );
 
 -- 4. 모의 날씨 데이터 삽입
-INSERT INTO weather_daily (weather_date, weather, temperature, precipitation) VALUES
+INSERT INTO taiweather_daily (weather_date, weather, temperature, precipitation) VALUES
 ('2025-08-18', '폭염', 35.5, 0.0),
 ('2025-08-17', '맑음', 32.0, 0.0),
 ('2025-08-16', '구름많음', 28.5, 2.5),
@@ -77,7 +77,7 @@ INSERT INTO weather_daily (weather_date, weather, temperature, precipitation) VA
 ON CONFLICT (weather_date) DO NOTHING;
 
 -- 5. 모의 상품 데이터 삽입
-INSERT INTO products (product_code, product_name, category_main, category_middle, category_sub, search_keywords, price) VALUES
+INSERT INTO TAIGOODS (product_code, product_name, category_main, category_middle, category_sub, search_keywords, price) VALUES
 ('P001', '프리미엄 다이어트 보조제', '건강식품', '영양보조식품', '다이어트', '프리미엄 다이어트 보조제 건강식품 영양보조식품 다이어트 체중감량 건강', 89000),
 ('P002', '홈트레이닝 세트', '운동용품', '헬스용품', '홈트레이닝', '홈트레이닝 세트 운동용품 헬스용품 홈트레이닝 운동 헬스', 150000),
 ('P003', '비타민C 1000mg', '건강식품', '영양보조식품', '비타민', '비타민C 1000mg 건강식품 영양보조식품 비타민 면역력 건강', 45000),
@@ -91,7 +91,7 @@ INSERT INTO products (product_code, product_name, category_main, category_middle
 ON CONFLICT (product_code) DO NOTHING;
 
 -- 5-1. 모의 방송테이프 데이터 삽입 (일부 상품만 테이프 제작 완료)
-INSERT INTO TPGMTAPE (tape_code, tape_name, duration_minutes, product_code, production_status) VALUES
+INSERT INTO TAIPGMTAPE (tape_code, tape_name, duration_minutes, product_code, production_status) VALUES
 ('T001', '프리미엄 다이어트 보조제 방송테이프', 30, 'P001', 'ready'),
 ('T002', '홈트레이닝 세트 완전정복', 45, 'P002', 'ready'),
 ('T003', '비타민C 건강 특집', 25, 'P003', 'ready'),
@@ -102,7 +102,7 @@ INSERT INTO TPGMTAPE (tape_code, tape_name, duration_minutes, product_code, prod
 ON CONFLICT (tape_code) DO NOTHING;
 
 -- 6. 모의 공휴일 데이터 삽입
-INSERT INTO holidays (holiday_date, holiday_name, holiday_type) VALUES
+INSERT INTO TAIHOLIDAYS (holiday_date, holiday_name, holiday_type) VALUES
 ('2025-01-01', '신정', '법정공휴일'),
 ('2025-02-09', '설날 연휴', '법정공휴일'),
 ('2025-02-10', '설날', '법정공휴일'),
@@ -121,7 +121,7 @@ INSERT INTO holidays (holiday_date, holiday_name, holiday_type) VALUES
 ON CONFLICT (holiday_date) DO NOTHING;
 
 -- 7. 모의 경쟁사 방송 데이터 삽입
-INSERT INTO competitor_broadcasts (broadcast_date, time_slot, competitor_name, category_main, category_middle) VALUES
+INSERT INTO TAICOMPETITOR_BROADCASTS (broadcast_date, time_slot, competitor_name, category_main, category_middle) VALUES
 ('2025-08-18', '20:00-22:00', 'A쇼핑', '건강식품', '영양보조식품'),
 ('2025-08-18', '20:00-22:00', 'B몰', '화장품', '기초화장품'),
 ('2025-08-18', '22:00-24:00', 'C샵', '가전제품', '생활가전'),
@@ -134,7 +134,7 @@ INSERT INTO competitor_broadcasts (broadcast_date, time_slot, competitor_name, c
 ('2025-08-14', '20:00-22:00', 'B몰', '전자제품', '음향기기');
 
 -- 8. 모의 방송 데이터 삽입
-INSERT INTO broadcasts (broadcast_date, time_slot, product_code, sales_amount, viewer_count) VALUES
+INSERT INTO TAIBROADCASTS (broadcast_date, time_slot, product_code, sales_amount, viewer_count) VALUES
 ('2025-08-18', '20:00-22:00', 'P001', 15000000, 25000),
 ('2025-08-18', '22:00-24:00', 'P002', 8000000, 18000),
 ('2025-08-17', '20:00-22:00', 'P003', 12000000, 22000),
@@ -147,8 +147,74 @@ INSERT INTO broadcasts (broadcast_date, time_slot, product_code, sales_amount, v
 ('2025-08-14', '22:00-24:00', 'P010', 11000000, 21000);
 
 -- 인덱스 생성
-CREATE INDEX IF NOT EXISTS idx_broadcasts_date ON broadcasts(broadcast_date);
-CREATE INDEX IF NOT EXISTS idx_broadcasts_timeslot ON broadcasts(time_slot);
-CREATE INDEX IF NOT EXISTS idx_products_category_main ON products(category_main);
-CREATE INDEX IF NOT EXISTS idx_holidays_date ON holidays(holiday_date);
-CREATE INDEX IF NOT EXISTS idx_competitor_broadcasts_date_slot ON competitor_broadcasts(broadcast_date, time_slot);
+CREATE INDEX IF NOT EXISTS idx_TAIBROADCASTS_date ON TAIBROADCASTS(broadcast_date);
+CREATE INDEX IF NOT EXISTS idx_TAIBROADCASTS_timeslot ON TAIBROADCASTS(time_slot);
+CREATE INDEX IF NOT EXISTS idx_TAIGOODS_category_main ON TAIGOODS(category_main);
+CREATE INDEX IF NOT EXISTS idx_TAIHOLIDAYS_date ON TAIHOLIDAYS(holiday_date);
+CREATE INDEX IF NOT EXISTS idx_TAICOMPETITOR_BROADCASTS_date_slot ON TAICOMPETITOR_BROADCASTS(broadcast_date, time_slot);
+
+-- 9. 트렌드 데이터 테이블 (n8n이 채워줄 데이터)
+CREATE TABLE IF NOT EXISTS TAITRENDS (
+    id SERIAL PRIMARY KEY,
+    trend_date DATE NOT NULL,
+    keyword VARCHAR(255) NOT NULL,
+    source VARCHAR(50) NOT NULL, -- 'NAVER', 'GOOGLE'
+    score INTEGER DEFAULT 0,
+    category VARCHAR(100),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(trend_date, keyword, source)
+);
+
+-- 인덱스 생성 (트렌드 테이블용)
+CREATE INDEX IF NOT EXISTS idx_TAITRENDS_date ON TAITRENDS(trend_date);
+CREATE INDEX IF NOT EXISTS idx_TAITRENDS_score ON TAITRENDS(score DESC);
+CREATE INDEX IF NOT EXISTS idx_TAITRENDS_category ON TAITRENDS(category);
+
+-- 10. 모의 트렌드 데이터 삽입
+INSERT INTO TAITRENDS (trend_date, keyword, source, score, category) VALUES
+('2025-09-09', '다이어트', 'NAVER', 95, '건강식품'),
+('2025-09-09', '캠핑', 'GOOGLE', 88, '레저/스포츠'),
+('2025-09-09', '가을 옷', 'NAVER', 92, '의류'),
+('2025-09-09', '스킨케어', 'NAVER', 90, '화장품'),
+('2025-09-09', '홈트레이닝', 'GOOGLE', 87, '운동용품'),
+('2025-09-08', '비타민', 'GOOGLE', 85, '건강식품'),
+('2025-09-08', '에어프라이어', 'NAVER', 80, '가전제품'),
+('2025-09-08', '선풍기', 'NAVER', 78, '가전제품'),
+('2025-09-08', '원피스', 'GOOGLE', 82, '의류'),
+('2025-09-07', '마사지', 'NAVER', 75, '건강용품')
+ON CONFLICT (trend_date, keyword, source) DO NOTHING;
+
+
+-- XGBoost 모델 학습용 방송 데이터셋 테이블
+CREATE TABLE IF NOT EXISTS broadcast_training_dataset (
+    id SERIAL PRIMARY KEY,
+    broadcast_date DATE NOT NULL,
+    time_slot VARCHAR(20) NOT NULL,
+    product_code VARCHAR(50) NOT NULL,
+    product_name VARCHAR(200),
+    category_main VARCHAR(100),
+    category_middle VARCHAR(100),
+    category_sub VARCHAR(100),
+    price DECIMAL(10,2),
+    sales_amount DECIMAL(15,2) NOT NULL,
+    viewer_count INTEGER,
+    weather VARCHAR(50),
+    temperature DECIMAL(5,2),
+    precipitation DECIMAL(5,2),
+    is_holiday BOOLEAN DEFAULT FALSE,
+    competitor_count INTEGER DEFAULT 0,
+    season VARCHAR(10),
+    day_of_week INTEGER,
+    hour INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 인덱스 생성 (성능 최적화)
+CREATE INDEX IF NOT EXISTS idx_broadcast_training_date ON broadcast_training_dataset(broadcast_date);
+CREATE INDEX IF NOT EXISTS idx_broadcast_training_timeslot ON broadcast_training_dataset(time_slot);
+CREATE INDEX IF NOT EXISTS idx_broadcast_training_product ON broadcast_training_dataset(product_code);
+CREATE INDEX IF NOT EXISTS idx_broadcast_training_category ON broadcast_training_dataset(category_main);
+
+-- 테이블 코멘트
+COMMENT ON TABLE broadcast_training_dataset IS 'XGBoost 모델 학습을 위한 방송 매출 데이터셋';

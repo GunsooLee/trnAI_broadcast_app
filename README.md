@@ -92,19 +92,19 @@
 
 **Track A - 카테고리 기반 검색 (2단계 처리):**
 
-*3-1단계: RAG 검색*
-1. 카테고리 연관 키워드로 Qdrant에서 유사한 카테고리들을 RAG 검색
-2. 벡터 유사도 기반으로 관련성 높은 카테고리 후보군 추출 (예: 5-10개)
+*3-1단계: 벡터 RAG 검색*
+1. 카테고리 연관 키워드로 Qdrant에서 유사한 카테고리들을 벡터 검색
+2. OpenAI 임베딩 기반 코사인 유사도로 관련성 높은 카테고리 후보군 추출 (예: 5-10개)
 
 *3-2단계: XGBoost 매출 예측*
-1. RAG로 찾은 카테고리 후보군에 대해 XGBoost 모델로 매출 예측 수행
+1. 벡터 검색으로 찾은 카테고리 후보군에 대해 XGBoost 모델로 매출 예측 수행
 2. 각 카테고리별 예상 매출액 계산 (경쟁사 편성, 날씨, 시간대 등 고려)
 3. 유사도 점수 + 매출 예측값을 결합하여 **'유망 카테고리 TOP 3'** 최종 선정
 
 **Track B - 상품 직접 검색 (매출 예측 없음):**
-1. 상품 특정 키워드로 Qdrant에서 관련 상품들을 RAG 검색
-2. 벡터 유사도가 높은 **'특정 상품 리스트'** 추출
-3. ⚠️ Track B에서는 XGBoost 매출 예측을 수행하지 않음 (RAG 검색만)
+1. 상품 특정 키워드로 Qdrant에서 관련 상품들을 벡터 검색
+2. 벡터 유사도가 높은 **'특정 상품 리스트'** 추출 (방송테이프 존재하는 상품만)
+3. ⚠️ Track B에서는 XGBoost 매출 예측을 수행하지 않음 (벡터 검색만)
 
 **출력:** Track A 결과 (매출 예측된 카테고리 리스트) + Track B 결과 (상품 리스트)
 
@@ -179,6 +179,7 @@
 | **RDB** | PostgreSQL | 상품, 매출, 경쟁사 데이터 등 핵심 정형 데이터를 안정적으로 관리 |
 | **Vector DB** | Qdrant | 고성능 벡터 검색 엔진. Rust 기반으로 빠르고 가벼워 초기 구축에 유리 |
 | **배치 서버** | n8n | 주기적인 데이터 수집 워크플로우를 시각적으로 쉽게 구축하고 관리 |
+| **외부 API** | 네이버 DataLab, Google Trends, 기상청 API | 실시간 트렌드 및 날씨 데이터 수집 |
 | **DevOps** | Docker, GitHub Actions | 개발 환경 통일 및 CI/CD 자동화 (권장) |
 
 ---
@@ -255,19 +256,12 @@ Final_Score = (Category_Score * W1) + Individual_Score - (Competition_Penalty * 
 
 ### 4.4. RAG 검색 파라미터 설정
 
-Qdrant(Vector DB) 검색 시 사용할 구체적인 파라미터
-
-**검색 대상:** 카테고리 인덱스, 상품 인덱스
-
-**top_k (반환할 결과 수):**
-- 카테고리 검색 시: `k = 5`
-- 상품 검색 시: `k = 20`
-
-**score_threshold (최소 유사도 임계값):**
-- `threshold = 0.7` (코사인 유사도 기준, 이 값보다 낮으면 결과에서 제외)
-
-**필터링 조건 (Metadata Filtering):**
-- 모든 상품 검색 시 `is_active = true`, `stock_level > 0` 과 같은 필터를 기본으로 적용하여 판매 불가능한 상품을 사전에 제외
+#### **Vector Search (벡터 검색)**
+- **검색 대상**: Qdrant 벡터 DB의 상품 임베딩 (OpenAI text-embedding-3-small, 1536차원)
+- **카테고리 검색**: k=50, score_threshold=0.3
+- **상품 검색**: k=30, score_threshold=0.5
+- **필터링 조건**: 방송테이프 존재 여부 (TPGMTAPE 테이블 INNER JOIN)
+- **유사도 계산**: 코사인 유사도 기반 벡터 검색
 
 ---
 
@@ -491,10 +485,31 @@ OPENAI_API_KEY=your_openai_api_key_here
 docker exec -i trnAi_postgres psql -U TRN_AI -d TRNAI_DB < init_database.sql
 ```
 
-#### 5. XGBoost 모델 학습
+#### 5. 상품 임베딩 초기화
+```bash
+cd backend/app
+python setup_product_embeddings.py
+```
+
+#### 6. XGBoost 모델 학습
 ```bash
 cd backend
 python train.py
+```
+
+#### 7. 외부 API 설정 (선택사항)
+트렌드 수집을 위한 외부 API 키 설정:
+```env
+# .env 파일에 추가
+NAVER_CLIENT_ID=your_naver_client_id
+NAVER_CLIENT_SECRET=your_naver_client_secret
+WEATHER_API_KEY=your_weather_api_key
+```
+
+#### 8. n8n 워크플로우 배포 (선택사항)
+```bash
+# n8n 워크플로우 JSON 파일을 n8n 서버에 import
+# 파일 위치: n8n_workflows/trend_collection_workflow.json
 ```
 
 ---

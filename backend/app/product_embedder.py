@@ -144,8 +144,8 @@ class ProductEmbedder:
             query = f"""
             SELECT DISTINCT p.product_code, p.product_name, p.category_main, p.category_middle, p.category_sub,
                    p.search_keywords, t.tape_code, t.tape_name, t.duration_minutes
-            FROM products p
-            INNER JOIN TPGMTAPE t ON p.product_code = t.product_code
+            FROM TAIGOODS p
+            INNER JOIN TAIPGMTAPE t ON p.product_code = t.product_code
             WHERE p.product_code IN ({placeholders})
               AND t.production_status = 'ready'
             """

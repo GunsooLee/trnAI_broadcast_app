@@ -17,7 +17,7 @@ from langchain.schema import HumanMessage, SystemMessage
 from langchain.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 
-from .trend_collector import TrendCollector, TrendProcessor
+from .trend_collector import TrendProcessor, TrendKeyword
 from .product_embedder import ProductEmbedder
 from . import broadcast_recommender as br
 from .schemas import BroadcastResponse, RecommendedCategory, BroadcastRecommendation, ProductInfo, Reasoning, BusinessMetrics
@@ -106,9 +106,8 @@ class BroadcastWorkflow:
         weather_info = br.get_weather_by_date(broadcast_dt.date())
         context["weather"] = weather_info
         
-        # 트렌드 키워드 수집
-        async with TrendCollector() as collector:
-            trends = await collector.collect_all_trends()
+        # 트렌드 키워드 수집 (DB에서)
+        trends = await self._get_trends_from_db()
         context["trends"] = trends
         
         # 시간대 정보
@@ -142,6 +141,42 @@ class BroadcastWorkflow:
         else:
             return "새벽"
     
+    async def _get_trends_from_db(self, date_limit: int = 2) -> List[TrendKeyword]:
+        """DB에서 최신 트렌드 데이터를 조회"""
+        logger.info("DB에서 최신 트렌드 데이터 조회 중...")
+        try:
+            query = text("""
+                SELECT keyword, source, score, trend_date, category
+                FROM TAITRENDS
+                WHERE trend_date BETWEEN :start_date AND :end_date
+                ORDER BY score DESC
+                LIMIT 100
+            """)
+            
+            start_date = datetime.now().date() - timedelta(days=date_limit)
+            end_date = datetime.now().date()
+            
+            with self.engine.connect() as conn:
+                results = conn.execute(query, {"start_date": start_date, "end_date": end_date}).fetchall()
+                
+            trends = []
+            for row in results:
+                row_data = row._mapping
+                trends.append(TrendKeyword(
+                    keyword=row_data['keyword'],
+                    source=row_data['source'],
+                    score=float(row_data['score']),
+                    timestamp=datetime.combine(row_data['trend_date'], datetime.min.time()),
+                    category=row_data['category']
+                ))
+            
+            logger.info(f"DB에서 {len(trends)}개의 트렌드 조회 완료.")
+            return trends
+            
+        except Exception as e:
+            logger.error(f"DB 트렌드 조회 실패: {e}")
+            return []
+
     async def _classify_keywords_with_langchain(self, context: Dict[str, Any]) -> Dict[str, List[str]]:
         """LangChain을 사용한 키워드 분류"""
         
@@ -170,7 +205,7 @@ class BroadcastWorkflow:
 JSON 형식으로 응답해주세요."""),
             ("human", "키워드 목록: {keywords}")
         ])
-        
+         
         chain = classification_prompt | self.llm | JsonOutputParser()
         
         try:

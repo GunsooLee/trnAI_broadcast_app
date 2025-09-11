@@ -45,7 +45,7 @@ def main():
             product_name,
             product_mgroup,
             keyword
-        FROM products
+        FROM TAIGOODS
         ORDER BY product_code
         """
         

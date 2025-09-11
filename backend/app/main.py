@@ -15,6 +15,7 @@ from . import broadcast_recommender as br # broadcast_recommender 임포트
 from .product_embedder import ProductEmbedder
 from .trend_collector import TrendCollector, TrendProcessor
 from .broadcast_workflow import BroadcastWorkflow
+from .trend_db_manager import trend_db_manager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -141,32 +142,39 @@ async def recommend_candidates(payload: RecommendRequest, request: Request, top_
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"detail": str(e)})
 
-@app.get("/api/v1/trends/collect", response_model=TrendCollectionResponse)
-async def collect_trends():
-    """실시간 트렌드 데이터를 수집합니다."""
+@app.post("/api/v1/trends/collect", response_model=TrendCollectionResponse)
+async def collect_trends(request: Request):
+    """트렌드 데이터 수집 (배치 처리 - DB 저장)"""
+    print("--- API Endpoint /api/v1/trends/collect received a request ---")
     try:
-        async with TrendCollector() as collector:
-            trends = await collector.collect_all_trends()
-            
-            # 스키마에 맞게 변환
-            trend_schemas = []
-            for trend in trends:
-                trend_schemas.append({
-                    "keyword": trend.keyword,
-                    "source": trend.source,
-                    "score": trend.score,
-                    "timestamp": trend.timestamp.isoformat(),
-                    "category": trend.category,
-                    "related_keywords": trend.related_keywords,
-                    "metadata": trend.metadata
-                })
-            
-            return TrendCollectionResponse(
-                trends=trend_schemas,
-                collection_timestamp=trends[0].timestamp.isoformat() if trends else "",
-                total_count=len(trends)
-            )
-            
+        # 외부 API에서 트렌드 수집 후 DB 저장
+        result = await trend_db_manager.collect_and_save_trends()
+        
+        if not result["success"]:
+            raise HTTPException(status_code=500, detail=f"트렌드 수집 실패: {result['error']}")
+        
+        # DB에서 최신 트렌드 조회
+        latest_trends = await trend_db_manager.get_latest_trends(limit=50, hours_back=1)
+        
+        # 스키마에 맞게 변환
+        trend_schemas = []
+        for trend in latest_trends:
+            trend_schemas.append({
+                "keyword": trend["keyword"],
+                "source": trend["source"],
+                "score": trend["score"],
+                "timestamp": trend["collected_at"],
+                "category": trend["category"],
+                "related_keywords": trend["related_keywords"] or [],
+                "metadata": trend["metadata"] or {}
+            })
+        
+        return TrendCollectionResponse(
+            trends=trend_schemas,
+            collection_timestamp=result["timestamp"],
+            total_count=result["saved_count"]
+        )
+        
     except Exception as e:
         print(f"--- ERROR IN /api/v1/trends/collect ---")
         import traceback
@@ -175,47 +183,60 @@ async def collect_trends():
 
 @app.get("/api/v1/trends/analyze", response_model=TrendAnalysisResponse)
 async def analyze_trends(request: Request):
-    """트렌드를 분석하고 상품과 매칭합니다."""
+    """트렌드를 분석하고 상품과 매칭합니다. (DB에서 조회)"""
     try:
         trend_processor = request.app.state.trend_processor
+        
         if not trend_processor:
             raise HTTPException(status_code=503, detail="TrendProcessor가 초기화되지 않았습니다.")
         
-        # 트렌드 수집
-        async with TrendCollector() as collector:
-            trends = await collector.collect_all_trends()
+        # DB에서 최신 트렌드 조회
+        latest_trends = await trend_db_manager.get_latest_trends(limit=30, hours_back=6)
+        
+        if not latest_trends:
+            return TrendAnalysisResponse(
+                trends=[],
+                matched_results={},
+                analysis_timestamp=datetime.now().isoformat()
+            )
         
         # 상품 매칭
-        matched_results = await trend_processor.match_trends_to_products(trends)
+        matched_results = {}
+        for trend_data in latest_trends:
+            keyword = trend_data["keyword"]
+            matching_result = await trend_processor.match_trend_to_products(keyword)
+            if matching_result["matched_products"]:
+                matched_results[keyword] = matching_result
         
-        # 응답 데이터 구성
+        # 스키마에 맞게 변환
         trend_schemas = []
         matching_responses = {}
         
-        for trend in trends:
+        for trend_data in latest_trends:
             trend_schemas.append({
-                "keyword": trend.keyword,
-                "source": trend.source,
-                "score": trend.score,
-                "timestamp": trend.timestamp.isoformat(),
-                "category": trend.category,
-                "related_keywords": trend.related_keywords,
-                "metadata": trend.metadata
+                "keyword": trend_data["keyword"],
+                "source": trend_data["source"],
+                "score": trend_data["score"],
+                "timestamp": trend_data["collected_at"],
+                "category": trend_data["category"],
+                "related_keywords": trend_data["related_keywords"] or [],
+                "metadata": trend_data["metadata"] or {}
             })
             
-            if trend.keyword in matched_results:
-                boost_factor = trend_processor.calculate_trend_boost_factor(trend.score)
-                matching_responses[trend.keyword] = {
-                    "trend_keyword": trend.keyword,
-                    "trend_info": matched_results[trend.keyword]["trend_info"],
-                    "matched_products": matched_results[trend.keyword]["matched_products"],
+            keyword = trend_data["keyword"]
+            if keyword in matched_results:
+                boost_factor = trend_processor.calculate_trend_boost_factor(trend_data["score"])
+                matching_responses[keyword] = {
+                    "trend_keyword": keyword,
+                    "trend_info": matched_results[keyword]["trend_info"],
+                    "matched_products": matched_results[keyword]["matched_products"],
                     "boost_factor": boost_factor
                 }
         
         return TrendAnalysisResponse(
             trends=trend_schemas,
             matched_results=matching_responses,
-            analysis_timestamp=trends[0].timestamp.isoformat() if trends else ""
+            analysis_timestamp=datetime.now().isoformat()
         )
         
     except Exception as e:

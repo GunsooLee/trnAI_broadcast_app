@@ -87,7 +87,7 @@ def search_product_codes_by_keywords(keywords: list[str], engine: Engine | None 
         params[f"kw{i}"] = f"%{kw}%"
 
     query = text(
-        f"SELECT DISTINCT product_code FROM {TABLE_NAME} WHERE {' OR '.join(clauses)} LIMIT 200"
+        f"SELECT DISTINCT product_code FROM TAI_{TABLE_NAME} WHERE {' OR '.join(clauses)} LIMIT 200"
     )
 
     with engine.connect() as conn:
@@ -129,7 +129,7 @@ def load_data() -> pd.DataFrame:
             sales_amount,
             order_count,
             product_price
-        FROM {TABLE_NAME}
+        FROM TAI_{TABLE_NAME}
         WHERE sales_amount IS NOT NULL
     ),
     -- 2) 상품별 통계 (전체 기간)
@@ -138,7 +138,7 @@ def load_data() -> pd.DataFrame:
             product_code,
             AVG(sales_amount) AS product_avg_sales,
             COUNT(*) AS product_broadcast_count
-        FROM {TABLE_NAME}
+        FROM TAI_{TABLE_NAME}
         GROUP BY product_code
     ),
     -- 3) 카테고리-시간대별 통계 (전체 기간)
@@ -147,7 +147,7 @@ def load_data() -> pd.DataFrame:
             product_mgroup,
             time_slot,
             AVG(sales_amount) AS category_timeslot_avg_sales
-        FROM {TABLE_NAME}
+        FROM TAI_{TABLE_NAME}
         GROUP BY product_mgroup, time_slot
     ),
     -- 4) 카테고리 전체 평균 통계 (신규 추가)
@@ -155,7 +155,7 @@ def load_data() -> pd.DataFrame:
         SELECT
             product_mgroup,
             AVG(sales_amount) AS category_overall_avg_sales
-        FROM {TABLE_NAME}
+        FROM TAI_{TABLE_NAME}
         GROUP BY product_mgroup
     )
     -- 최종 학습 데이터셋 구성
@@ -171,7 +171,7 @@ def load_data() -> pd.DataFrame:
         COALESCE(c.category_timeslot_avg_sales / NULLIF(co.category_overall_avg_sales, 0), 1) AS timeslot_specialty_score,
         b.time_slot || '_' || b.product_mgroup AS time_category_interaction
     FROM base b
-    LEFT JOIN weather_daily w ON b.broadcast_date = w.weather_date
+    LEFT JOIN taiweather_daily w ON b.broadcast_date = w.weather_date
     LEFT JOIN product_stats p ON b.product_code = p.product_code
     LEFT JOIN category_timeslot_stats c ON b.product_mgroup = c.product_mgroup AND b.time_slot = c.time_slot
     LEFT JOIN category_overall_stats co ON b.product_mgroup = co.product_mgroup -- 신규 조인
@@ -320,7 +320,7 @@ def fetch_product_info(product_codes: List[str], engine: Engine | None = None) -
             COALESCE(AVG(product_price), 0) AS product_price,
             COALESCE(AVG(sales_amount), 0) AS product_avg_sales,
             COUNT(*) AS product_broadcast_count
-        FROM {TABLE_NAME}
+        FROM TAI_{TABLE_NAME}
         WHERE product_code IN {code_tuple}
         GROUP BY product_code
     """
@@ -353,9 +353,9 @@ def fetch_category_info(engine: Engine | None = None) -> pd.DataFrame:
             COALESCE(AVG(p.product_price), 0) AS product_price,
             COALESCE(AVG(s.sales_amount), 0) AS product_avg_sales,
             COUNT(s.broadcast_id) AS product_broadcast_count
-        FROM {TABLE_NAME} p
+        FROM TAI_{TABLE_NAME} p
         -- 자기 자신과 조인하여 상품별 통계를 계산합니다.
-        LEFT JOIN {TABLE_NAME} s ON p.product_code = s.product_code
+        LEFT JOIN TAI_{TABLE_NAME} s ON p.product_code = s.product_code
         GROUP BY p.product_code
     """
     df = pd.read_sql(query, engine)
@@ -377,7 +377,7 @@ def fetch_category_timeslot_sales(engine: Engine | None = None) -> pd.DataFrame:
             product_mgroup,
             time_slot,
             COALESCE(AVG(sales_amount), 0) AS category_timeslot_avg_sales
-        FROM {TABLE_NAME}
+        FROM TAI_{TABLE_NAME}
         WHERE sales_amount IS NOT NULL
         GROUP BY product_mgroup, time_slot
     """
@@ -393,7 +393,7 @@ def get_category_overall_avg_sales(engine: Engine | None = None) -> Dict[str, fl
 
     query = f"""
         SELECT product_mgroup, AVG(sales_amount) as avg_sales
-        FROM {TABLE_NAME}
+        FROM TAI_{TABLE_NAME}
         GROUP BY product_mgroup
     """
     df = pd.read_sql(query, engine)
@@ -521,7 +521,7 @@ def get_weather_by_date(date: dt.date, engine: Engine | None = None) -> Dict[str
     query = text(
         """
         SELECT weather, temperature, precipitation
-        FROM weather_daily
+        FROM taiweather_daily
         WHERE weather_date = :d
         LIMIT 1
         """

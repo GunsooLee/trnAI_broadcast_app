@@ -69,8 +69,8 @@ def load_data(engine: Engine) -> pd.DataFrame:
             0 as order_count,
             p.price as product_price,
             b.broadcast_date
-        FROM broadcasts b
-        JOIN products p ON b.product_code = p.product_code
+        FROM TAIBROADCASTS b
+        JOIN TAIGOODS p ON b.product_code = p.product_code
         WHERE b.sales_amount IS NOT NULL
     ),
     product_stats AS (
