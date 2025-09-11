@@ -662,9 +662,9 @@ JSON 형식으로 응답해주세요."""),
         
         # 임시 카테고리 데이터
         mock_categories = [
-            RecommendedCategory(name="건강식품", score=0.9, reason="트렌드 급상승"),
-            RecommendedCategory(name="스포츠용품", score=0.8, reason="시즌 적합성"),
-            RecommendedCategory(name="가전제품", score=0.7, reason="날씨 연관성")
+            RecommendedCategory(rank=1, name="건강식품", reason="트렌드 급상승", predictedSales="높음"),
+            RecommendedCategory(rank=2, name="스포츠용품", reason="시즌 적합성", predictedSales="안정적"),
+            RecommendedCategory(rank=3, name="가전제품", reason="날씨 연관성", predictedSales="보통")
         ]
         
         # 컨텍스트 생성

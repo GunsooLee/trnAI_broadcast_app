@@ -74,11 +74,52 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ========================================
+# 🎯 핵심 API 엔드포인트
+# ========================================
+
+@app.post("/api/v1/broadcast/recommendations", response_model=BroadcastResponse)
+async def broadcast_recommendations(payload: BroadcastRequest, request: Request):
+    """🚀 메인 방송 편성 AI 추천 API - LangChain 기반 2단계 워크플로우
+    
+    실시간 트렌드 분석 + XGBoost 매출 예측 + 방송테이프 필터링을 통한
+    최적의 홈쇼핑 방송 편성을 추천합니다.
+    """
+    print(f"--- API Endpoint /api/v1/broadcast/recommendations received a request: {payload.broadcastTime} ---")
+    try:
+        broadcast_workflow = request.app.state.broadcast_workflow
+        
+        if not broadcast_workflow:
+            raise HTTPException(status_code=503, detail="BroadcastWorkflow가 초기화되지 않았습니다.")
+        
+        response_data = await broadcast_workflow.process_broadcast_recommendation(
+            payload.broadcastTime, 
+            payload.recommendationCount
+        )
+        return response_data
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"--- ERROR IN /api/v1/broadcast/recommendations ---")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+@app.get("/api/v1/health", summary="Health Check")
+def health_check():
+    """API 서버의 상태를 확인합니다."""
+    return {"status": "ok"}
+
+# ========================================
+# 🔧 개발/디버깅용 레거시 API
+# ========================================
+
 @app.post("/api/v1/recommend", response_model=RecommendResponse)
 async def recommend_broadcast(payload: RecommendRequest, request: Request):
     print("--- API Endpoint /api/v1/recommend received a request ---")
     """
-    사용자 질문에 기반해 방송 편성을 추천합니다.
+    [레거시] 사용자 질문에 기반해 방송 편성을 추천합니다.
     - 시작 시 로드된 모델을 app.state에서 가져와 사용합니다.
     """
     try:
@@ -97,7 +138,7 @@ async def recommend_broadcast(payload: RecommendRequest, request: Request):
 @app.post("/api/v1/extract-params")
 async def extract_params(payload: RecommendRequest):
     """
-    사용자 질문에서 파라미터만 추출합니다.
+    [레거시] 사용자 질문에서 파라미터만 추출합니다.
     """
     try:
         extracted_params = await services.extract_and_enrich_params(payload.user_query)
@@ -113,7 +154,7 @@ async def extract_params(payload: RecommendRequest):
 @app.post("/api/v1/recommend-with-params")
 async def recommend_with_params(payload: dict, request: Request):
     """
-    수정된 파라미터로 방송 편성을 추천합니다.
+    [레거시] 수정된 파라미터로 방송 편성을 추천합니다.
     """
     try:
         model = request.app.state.model
@@ -129,7 +170,7 @@ async def recommend_with_params(payload: dict, request: Request):
 
 @app.post("/api/v1/recommend-candidates", response_model=CandidatesResponse)
 async def recommend_candidates(payload: RecommendRequest, request: Request, top_k: int = 5):
-    """시간대별 Top-k 후보 리스트를 반환합니다. 기본 k=5"""
+    """[레거시] 시간대별 Top-k 후보 리스트를 반환합니다. 기본 k=5"""
     try:
         model = request.app.state.model
         response_data = await services.get_candidates(payload.user_query, model, top_k=top_k)
@@ -144,7 +185,7 @@ async def recommend_candidates(payload: RecommendRequest, request: Request, top_
 
 @app.post("/api/v1/trends/collect", response_model=TrendCollectionResponse)
 async def collect_trends(request: Request):
-    """트렌드 데이터 수집 (배치 처리 - DB 저장)"""
+    """[배치용] 트렌드 데이터 수집 (배치 처리 - DB 저장)"""
     print("--- API Endpoint /api/v1/trends/collect received a request ---")
     try:
         # 외부 API에서 트렌드 수집 후 DB 저장
@@ -183,7 +224,7 @@ async def collect_trends(request: Request):
 
 @app.get("/api/v1/trends/analyze", response_model=TrendAnalysisResponse)
 async def analyze_trends(request: Request):
-    """트렌드를 분석하고 상품과 매칭합니다. (DB에서 조회)"""
+    """[개발용] 트렌드를 분석하고 상품과 매칭합니다. (DB에서 조회)"""
     try:
         trend_processor = request.app.state.trend_processor
         
@@ -247,7 +288,7 @@ async def analyze_trends(request: Request):
 
 @app.post("/api/v1/recommend-with-trends", response_model=RecommendResponse)
 async def recommend_with_trends(payload: RecommendRequest, request: Request):
-    """트렌드 데이터를 반영한 강화된 방송 편성 추천"""
+    """[레거시] 트렌드 데이터를 반영한 강화된 방송 편성 추천"""
     print("--- API Endpoint /api/v1/recommend-with-trends received a request ---")
     try:
         model = request.app.state.model
@@ -268,31 +309,3 @@ async def recommend_with_trends(payload: RecommendRequest, request: Request):
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"detail": str(e)})
 
-@app.post("/api/v1/broadcast/recommendations", response_model=BroadcastResponse)
-async def broadcast_recommendations(payload: BroadcastRequest, request: Request):
-    """새로운 방송 편성 AI 추천 API - LangChain 기반 2단계 워크플로우"""
-    print(f"--- API Endpoint /api/v1/broadcast/recommendations received a request: {payload.broadcastTime} ---")
-    try:
-        broadcast_workflow = request.app.state.broadcast_workflow
-        
-        if not broadcast_workflow:
-            raise HTTPException(status_code=503, detail="BroadcastWorkflow가 초기화되지 않았습니다.")
-        
-        response_data = await broadcast_workflow.process_broadcast_recommendation(
-            payload.broadcastTime, 
-            payload.recommendationCount
-        )
-        return response_data
-        
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        print(f"--- ERROR IN /api/v1/broadcast/recommendations ---")
-        import traceback
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"detail": str(e)})
-
-@app.get("/api/v1/health", summary="Health Check")
-def health_check():
-    """API 서버의 상태를 확인합니다."""
-    return {"status": "ok"}
