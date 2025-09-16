@@ -48,6 +48,7 @@ pytest_cache/
 # OS & misc
 .DS_Store
 Thumbs.db
+qdrant_storage/
 
 # Docker
 *.log
