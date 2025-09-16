@@ -85,8 +85,11 @@ class BroadcastWorkflow:
             
         except Exception as e:
             logger.error(f"방송 추천 워크플로우 오류: {e}")
-            # API 할당량 소진 시 임시 데이터로 테스트
-            return await self._generate_fallback_response(request_time, recommendation_count)
+            # OpenAI API 관련 오류는 상위로 전파 (503 에러 반환용)
+            if "AI 서비스" in str(e) or "OpenAI" in str(e) or "할당량" in str(e):
+                raise e
+            # 기타 내부 오류는 500 에러로 처리
+            raise Exception(f"내부 서버 오류: {e}")
     
     async def _collect_context(self, broadcast_time: str) -> Dict[str, Any]:
         """컨텍스트 수집: 날씨, 트렌드, 시간 정보"""
@@ -214,10 +217,17 @@ JSON 형식으로 응답해주세요."""),
             return result
         except Exception as e:
             logger.error(f"키워드 분류 오류: {e}")
-            return {
-                "category_keywords": all_keywords[:10],
-                "product_keywords": trend_keywords[:5]
-            }
+            # OpenAI API 할당량 소진 또는 API 오류 시 예외 발생
+            if "insufficient_quota" in str(e) or "429" in str(e):
+                raise Exception(f"AI 서비스 일시 중단 - OpenAI API 할당량 소진: {e}")
+            elif "api" in str(e).lower() or "openai" in str(e).lower():
+                raise Exception(f"AI 서비스 연결 오류: {e}")
+            else:
+                # 기타 오류는 폴백 로직 사용
+                return {
+                    "category_keywords": all_keywords[:10],
+                    "product_keywords": trend_keywords[:5]
+                }
     
     async def _execute_track_a(self, context: Dict[str, Any], category_keywords: List[str]) -> Dict[str, Any]:
         """Track A: 유망 카테고리 찾기"""

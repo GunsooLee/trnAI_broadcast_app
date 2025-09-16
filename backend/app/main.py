@@ -88,23 +88,47 @@ async def broadcast_recommendations(payload: BroadcastRequest, request: Request)
     print(f"--- API Endpoint /api/v1/broadcast/recommendations received a request: {payload.broadcastTime} ---")
     try:
         broadcast_workflow = request.app.state.broadcast_workflow
-        
+
         if not broadcast_workflow:
             raise HTTPException(status_code=503, detail="BroadcastWorkflow가 초기화되지 않았습니다.")
-        
+
         response_data = await broadcast_workflow.process_broadcast_recommendation(
-            payload.broadcastTime, 
+            payload.broadcastTime,
             payload.recommendationCount
         )
+
+        # 빈 추천 결과 체크
+        has_recommendations = response_data.recommendations and len(response_data.recommendations) > 0
+        has_categories = response_data.recommendedCategories and len(response_data.recommendedCategories) > 0
+
+        if not has_recommendations and not has_categories:
+            print(f"--- 빈 결과 감지: recommendations={len(response_data.recommendations) if response_data.recommendations else 0}, categories={len(response_data.recommendedCategories) if response_data.recommendedCategories else 0} ---")
+            raise HTTPException(
+                status_code=503,
+                detail="추천 결과를 생성할 수 없습니다. AI 서비스가 일시적으로 이용 불가능합니다."
+            )
+
         return response_data
-        
+
+    except HTTPException:
+        # HTTPException은 그대로 재발생
+        raise
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=f"잘못된 요청 데이터: {str(e)}")
     except Exception as e:
         print(f"--- ERROR IN /api/v1/broadcast/recommendations ---")
         import traceback
         traceback.print_exc()
-        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+        # OpenAI API 관련 오류는 503으로 처리
+        if any(keyword in str(e) for keyword in ["AI 서비스", "OpenAI", "할당량", "insufficient_quota", "429"]):
+            raise HTTPException(
+                status_code=503,
+                detail="AI 서비스 일시 중단 - 잠시 후 다시 시도해주세요."
+            )
+
+        # 기타 내부 오류는 500으로 처리
+        raise HTTPException(status_code=500, detail="내부 서버 오류가 발생했습니다.")
 
 @app.get("/api/v1/health", summary="Health Check")
 def health_check():

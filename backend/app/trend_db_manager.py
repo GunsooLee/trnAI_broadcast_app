@@ -12,7 +12,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor, execute_values
 import json
 from .trend_collector import TrendKeyword
-from .external_apis import external_api_manager
+# from .external_apis import external_api_manager  # n8n이 API 호출 담당하므로 불필요
 
 
 class TrendDatabaseManager:
@@ -260,51 +260,34 @@ class TrendDatabaseManager:
                 conn.close()
     
     async def collect_and_save_trends(self) -> Dict[str, Any]:
-        """외부 API에서 트렌드 수집 후 DB 저장"""
-        print("--- 배치 트렌드 수집 시작 ---")
-        
+        """n8n 배치가 수집한 트렌드 데이터 처리 (DB에서 최신 데이터 조회)"""
+        print("--- 트렌드 데이터 처리 시작 (DB 기반) ---")
+
         try:
-            # 외부 API에서 트렌드 수집
-            trend_data_list = await external_api_manager.collect_all_trends()
-            
-            # TrendKeyword 객체로 변환
-            trends = []
-            for trend_data in trend_data_list:
-                trend = TrendKeyword(
-                    keyword=trend_data["keyword"],
-                    source=trend_data["source"],
-                    score=trend_data["score"],
-                    timestamp=datetime.fromisoformat(trend_data["timestamp"].replace('Z', '+00:00')),
-                    category=trend_data.get("category"),
-                    related_keywords=trend_data.get("related_keywords", []),
-                    metadata=trend_data.get("metadata", {})
-                )
-                trends.append(trend)
-            
-            # DB에 저장
-            saved_count = await self.save_trends_batch(trends)
-            
+            # DB에서 최신 트렌드 데이터 조회 (n8n이 이미 저장한 데이터)
+            latest_trends = await self.get_latest_trends(limit=100, hours_back=1)
+
             # 오래된 데이터 정리
             cleaned_count = await self.cleanup_old_trends()
-            
+
             result = {
                 "success": True,
-                "collected_count": len(trend_data_list),
-                "saved_count": saved_count,
+                "collected_count": len(latest_trends),
+                "saved_count": len(latest_trends),  # 이미 저장된 데이터 개수
                 "cleaned_count": cleaned_count,
                 "timestamp": datetime.now().isoformat()
             }
-            
-            print(f"--- 배치 트렌드 수집 완료: {result} ---")
+
+            print(f"--- 트렌드 데이터 처리 완료: {result} ---")
             return result
-            
+
         except Exception as e:
             error_result = {
                 "success": False,
                 "error": str(e),
                 "timestamp": datetime.now().isoformat()
             }
-            print(f"--- 배치 트렌드 수집 실패: {error_result} ---")
+            print(f"--- 트렌드 데이터 처리 실패: {error_result} ---")
             return error_result
 
 

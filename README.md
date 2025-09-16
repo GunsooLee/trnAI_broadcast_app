@@ -513,3 +513,103 @@ WEATHER_API_KEY=your_weather_api_key
 ```
 
 ---
+
+## 📋 **API 명세서**
+
+### **메인 추천 API**
+
+#### **POST `/api/v1/broadcast/recommendations`**
+홈쇼핑 방송 편성을 위한 AI 상품 추천 API
+
+**요청 (Request)**
+```json
+{
+  "broadcastTime": "2025-09-15T22:40:00+09:00",
+  "recommendationCount": 5
+}
+```
+
+**요청 필드**
+- `broadcastTime` (string, required): 방송 시간 (ISO 8601 형식)
+- `recommendationCount` (integer, required): 추천받을 상품 개수 (1-10)
+
+**정상 응답 (200 OK)**
+```json
+{
+  "requestTime": "2025-09-16T01:38:25.905184",
+  "recommendedCategories": [
+    {
+      "rank": 1,
+      "name": "주방용품",
+      "reason": "트렌드 급상승 및 동시간대 경쟁사 부재",
+      "predictedSales": "9.8억"
+    }
+  ],
+  "recommendations": [
+    {
+      "rank": 1,
+      "productInfo": {
+        "productId": "P300123",
+        "productName": "[해피콜] 다이아몬드 프라이팬 3종 세트",
+        "category": "생활 > 주방용품"
+      },
+      "reasoning": {
+        "summary": "주방용품 카테고리의 예상 매출이 높고, 동시간대 경쟁이 없어 독점 방송이 가능합니다.",
+        "linkedCategories": ["주방용품"],
+        "matchedKeywords": ["주말 저녁", "요리"]
+      },
+      "businessMetrics": {
+        "pastAverageSales": "8.5억",
+        "marginRate": 0.35,
+        "stockLevel": "Good"
+      }
+    }
+  ]
+}
+```
+
+**에러 응답**
+
+| HTTP 코드 | 상황 | 응답 메시지 |
+|-----------|------|-------------|
+| **400** | 잘못된 요청 형식 | `{"detail": "잘못된 요청 데이터: [상세 메시지]"}` |
+| **503** | AI 서비스 일시 중단 | `{"detail": "AI 서비스 일시 중단 - 잠시 후 다시 시도해주세요."}` |
+| **503** | 빈 추천 결과 | `{"detail": "추천 결과를 생성할 수 없습니다. AI 서비스가 일시적으로 이용 불가능합니다."}` |
+| **500** | 내부 서버 오류 | `{"detail": "내부 서버 오류가 발생했습니다."}` |
+
+**사용 예시**
+```bash
+# cURL 예시
+curl -X POST http://localhost:8501/api/v1/broadcast/recommendations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "broadcastTime": "2025-09-15T22:40:00+09:00",
+    "recommendationCount": 3
+  }'
+
+# Python 예시
+import requests
+
+response = requests.post(
+    "http://localhost:8501/api/v1/broadcast/recommendations",
+    json={
+        "broadcastTime": "2025-09-15T22:40:00+09:00",
+        "recommendationCount": 3
+    }
+)
+print(response.json())
+```
+
+### **보조 API**
+
+#### **GET `/api/v1/health`**
+API 서버 상태 확인
+
+**응답 (200 OK)**
+```json
+{
+  "status": "ok"
+}
+```
+
+---

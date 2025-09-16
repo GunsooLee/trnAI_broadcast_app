@@ -26,25 +26,40 @@ class TrendEnhancedRecommender:
         self.cache_expiry = timedelta(hours=1)  # 트렌드 캐시 유효시간
     
     async def get_cached_trends(self) -> List[TrendKeyword]:
-        """캐시된 트렌드 데이터 반환 (만료시 새로 수집)"""
+        """캐시된 트렌드 데이터 반환 (DB에서 조회)"""
         now = datetime.now()
-        
-        if (self.trend_cache.get('timestamp') and 
+
+        if (self.trend_cache.get('timestamp') and
             now - self.trend_cache['timestamp'] < self.cache_expiry and
             self.trend_cache.get('trends')):
             logger.info("캐시된 트렌드 데이터 사용")
             return self.trend_cache['trends']
-        
-        # 새로운 트렌드 데이터 수집
-        logger.info("새로운 트렌드 데이터 수집 중...")
-        async with TrendCollector() as collector:
-            trends = await collector.collect_all_trends()
-        
+
+        # DB에서 트렌드 데이터 조회 (n8n이 수집한 데이터)
+        logger.info("DB에서 트렌드 데이터 조회 중...")
+        from .trend_db_manager import trend_db_manager
+
+        trend_data_list = await trend_db_manager.get_latest_trends(limit=50, hours_back=6)
+
+        # TrendKeyword 객체로 변환
+        trends = []
+        for trend_data in trend_data_list:
+            trend = TrendKeyword(
+                keyword=trend_data["keyword"],
+                source=trend_data["source"],
+                score=trend_data["score"],
+                timestamp=datetime.fromisoformat(trend_data["collected_at"]),
+                category=trend_data.get("category"),
+                related_keywords=trend_data.get("related_keywords", []),
+                metadata=trend_data.get("metadata", {})
+            )
+            trends.append(trend)
+
         self.trend_cache = {
             'trends': trends,
             'timestamp': now
         }
-        
+
         return trends
     
     async def enhance_recommendations_with_trends(
