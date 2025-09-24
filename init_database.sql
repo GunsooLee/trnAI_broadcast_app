@@ -3,7 +3,7 @@
 
 -- 1. 날씨 데이터 테이블
 CREATE TABLE IF NOT EXISTS taiweather_daily (
-    weather_date DATE PRIMARY KEY,
+    weather_date TIMESTAMP PRIMARY KEY,
     weather VARCHAR(50),
     temperature DECIMAL(5,2),
     precipitation DECIMAL(5,2),
@@ -159,7 +159,7 @@ CREATE TABLE IF NOT EXISTS TAITRENDS (
     trend_date DATE NOT NULL,
     keyword VARCHAR(255) NOT NULL,
     source VARCHAR(50) NOT NULL, -- 'NAVER', 'GOOGLE'
-    score INTEGER DEFAULT 0,
+    score DECIMAL(8,5) DEFAULT 0,
     category VARCHAR(100),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(trend_date, keyword, source)
@@ -183,7 +183,6 @@ INSERT INTO TAITRENDS (trend_date, keyword, source, score, category) VALUES
 ('2025-09-08', '원피스', 'GOOGLE', 82, '의류'),
 ('2025-09-07', '마사지', 'NAVER', 75, '건강용품')
 ON CONFLICT (trend_date, keyword, source) DO NOTHING;
-
 
 -- XGBoost 모델 학습용 방송 데이터셋 테이블
 CREATE TABLE IF NOT EXISTS broadcast_training_dataset (
@@ -210,11 +209,45 @@ CREATE TABLE IF NOT EXISTS broadcast_training_dataset (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 통합 시장 데이터 테이블 (n8n 크롤링용 - 홈쇼핑 랭킹 + 검색 트렌드)
+CREATE TABLE IF NOT EXISTS market_data (
+    id SERIAL PRIMARY KEY,
+    data_type VARCHAR(50) NOT NULL,  -- 'homeshopping_ranking' 또는 'search_trend'
+    source VARCHAR(100) NOT NULL,    -- 'CJ온스타일', 'GS샵', 'naver_shopping', 'google_trends' 등
+    
+    -- 홈쇼핑 랭킹 데이터
+    product_name TEXT,
+    rank_position INTEGER,
+    price INTEGER,
+    discount_rate DECIMAL(5,2),
+    
+    -- 검색 트렌드 데이터  
+    keyword VARCHAR(200),
+    trend_score INTEGER,  -- 1-100 점수
+    search_volume BIGINT,
+    
+    -- 공통 필드
+    category VARCHAR(100),
+    related_keywords TEXT[],  -- 연관 키워드 배열
+    metadata JSONB,  -- 추가 메타데이터
+    original_url TEXT,
+    collected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    -- 중복 방지를 위한 유니크 제약
+    UNIQUE(data_type, source, COALESCE(product_name, keyword), collected_at)
+);
+
 -- 인덱스 생성 (성능 최적화)
-CREATE INDEX IF NOT EXISTS idx_broadcast_training_date ON broadcast_training_dataset(broadcast_date);
-CREATE INDEX IF NOT EXISTS idx_broadcast_training_timeslot ON broadcast_training_dataset(time_slot);
+CREATE INDEX IF NOT EXISTS idx_broadcast_training_date ON broadcast_training_dataset(broadcast_time);
 CREATE INDEX IF NOT EXISTS idx_broadcast_training_product ON broadcast_training_dataset(product_code);
 CREATE INDEX IF NOT EXISTS idx_broadcast_training_category ON broadcast_training_dataset(category_main);
 
+-- 시장 데이터 인덱스 생성
+CREATE INDEX IF NOT EXISTS idx_market_data_collected_at ON market_data(collected_at);
+CREATE INDEX IF NOT EXISTS idx_market_data_type_source ON market_data(data_type, source);
+CREATE INDEX IF NOT EXISTS idx_market_data_trend_score ON market_data(trend_score DESC) WHERE data_type = 'search_trend';
+CREATE INDEX IF NOT EXISTS idx_market_data_rank ON market_data(rank_position) WHERE data_type = 'homeshopping_ranking';
+
 -- 테이블 코멘트
 COMMENT ON TABLE broadcast_training_dataset IS 'XGBoost 모델 학습을 위한 방송 매출 데이터셋';
+COMMENT ON TABLE market_data IS 'n8n에서 크롤링한 통합 시장 데이터 (홈쇼핑 랭킹 + 검색 트렌드)';

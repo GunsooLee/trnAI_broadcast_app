@@ -1,7 +1,7 @@
 """
 실제 외부 API 연동 모듈
 - 네이버 데이터랩 API
-- 구글 트렌드 API  
+- LLM 기반 트렌드 생성 API
 - 기상청 날씨 API
 """
 
@@ -12,8 +12,6 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import asyncio
 import aiohttp
-from pytrends.request import TrendReq
-import pandas as pd
 
 
 class NaverTrendAPI:
@@ -82,55 +80,73 @@ class NaverTrendAPI:
             return {"results": []}
 
 
-class GoogleTrendAPI:
-    """구글 트렌드 API 클라이언트 (pytrends 사용)"""
-    
-    def __init__(self):
-        self.pytrends = TrendReq(hl='ko', tz=540)  # 한국 시간대
-        
-    def get_trending_searches(self, geo: str = 'KR') -> List[Dict[str, Any]]:
-        """실시간 트렌딩 검색어 조회"""
+class LLMTrendAPI:
+    """LLM 기반 트렌드 키워드 생성 API"""
+
+    def __init__(self, openai_api_key: str):
+        self.openai_api_key = openai_api_key
+
+    async def get_trending_searches(self, geo: str = 'KR') -> List[Dict[str, Any]]:
+        """LLM을 사용한 트렌딩 검색어 생성"""
         try:
-            trending_searches = self.pytrends.trending_searches(pn=geo)
-            
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(api_key=self.openai_api_key)
+
+            current_date = datetime.now().strftime("%Y년 %m월 %d일")
+
+            prompt = f"""
+한국에서 {current_date} 현재 홈쇼핑과 관련하여 인기가 높거나 트렌딩될 것으로 예상되는 키워드 20개를 생성해주세요.
+
+고려 요소:
+- 계절적 요인 (현재 9월 중순)
+- 한국의 소비 트렌드
+- 홈쇼핑 특성상 인기 있는 카테고리들
+- 최근 이슈나 관심사
+
+각 키워드에 대해 1-100 사이의 트렌드 점수도 함께 제공해주세요.
+
+응답 형식은 정확히 다음과 같이 해주세요:
+키워드1,점수1
+키워드2,점수2
+...
+키워드20,점수20
+"""
+
+            response = await client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=600,
+                temperature=0.7
+            )
+
+            llm_response = response.choices[0].message.content.strip()
+
             trends = []
-            for idx, keyword in enumerate(trending_searches[0].head(20)):  # 상위 20개
-                trends.append({
-                    "keyword": keyword,
-                    "rank": idx + 1,
-                    "source": "google_trending",
-                    "timestamp": datetime.now().isoformat(),
-                    "geo": geo
-                })
-            
-            return trends
-        except Exception as e:
-            print(f"구글 트렌딩 검색어 API 오류: {e}")
-            return []
-    
-    def get_interest_over_time(self, keywords: List[str], timeframe: str = 'today 7-d') -> List[Dict[str, Any]]:
-        """키워드별 관심도 변화 조회"""
-        try:
-            self.pytrends.build_payload(keywords, cat=0, timeframe=timeframe, geo='KR')
-            interest_over_time = self.pytrends.interest_over_time()
-            
-            trends = []
-            if not interest_over_time.empty:
-                latest_data = interest_over_time.iloc[-1]  # 최신 데이터
-                
-                for keyword in keywords:
-                    if keyword in latest_data:
+            lines = llm_response.split('\n')
+
+            for idx, line in enumerate(lines):
+                line = line.strip()
+                if ',' in line:
+                    try:
+                        keyword, score_str = line.split(',', 1)
+                        keyword = keyword.strip()
+                        score = int(float(score_str.strip()))
+
                         trends.append({
                             "keyword": keyword,
-                            "interest_score": int(latest_data[keyword]),
-                            "source": "google_interest",
+                            "rank": idx + 1,
+                            "source": "llm_trending",
                             "timestamp": datetime.now().isoformat(),
-                            "timeframe": timeframe
+                            "geo": geo,
+                            "score": score
                         })
-            
-            return trends
+                    except (ValueError, IndexError):
+                        continue
+
+            return trends[:20]  # 상위 20개
+
         except Exception as e:
-            print(f"구글 관심도 API 오류: {e}")
+            print(f"LLM 트렌딩 검색어 API 오류: {e}")
             return []
 
 
@@ -212,56 +228,59 @@ class WeatherAPI:
 
 class ExternalAPIManager:
     """외부 API 통합 관리 클래스"""
-    
+
     def __init__(self):
         # 환경변수에서 API 키 로드
         self.naver_client_id = os.getenv("NAVER_CLIENT_ID")
         self.naver_client_secret = os.getenv("NAVER_CLIENT_SECRET")
         self.weather_api_key = os.getenv("WEATHER_API_KEY")
-        
+        self.openai_api_key = os.getenv("OPENAI_API_KEY")
+
         # API 클라이언트 초기화
         self.naver_api = None
-        self.google_api = None
+        self.llm_trend_api = None
         self.weather_api = None
-        
+
         if self.naver_client_id and self.naver_client_secret:
             self.naver_api = NaverTrendAPI(self.naver_client_id, self.naver_client_secret)
-            
-        self.google_api = GoogleTrendAPI()
-        
+
+        if self.openai_api_key:
+            self.llm_trend_api = LLMTrendAPI(self.openai_api_key)
+
         if self.weather_api_key:
             self.weather_api = WeatherAPI(self.weather_api_key)
-    
+
     async def collect_all_trends(self) -> List[Dict[str, Any]]:
         """모든 소스에서 트렌드 데이터 수집"""
         all_trends = []
-        
-        # 구글 트렌딩 검색어 수집
-        try:
-            google_trends = self.google_api.get_trending_searches()
-            for trend in google_trends:
-                all_trends.append({
-                    "keyword": trend["keyword"],
-                    "source": "google",
-                    "score": 100 - trend["rank"],  # 순위를 점수로 변환
-                    "timestamp": trend["timestamp"],
-                    "category": self._categorize_keyword(trend["keyword"]),
-                    "related_keywords": [],
-                    "metadata": {"rank": trend["rank"]}
-                })
-        except Exception as e:
-            print(f"구글 트렌드 수집 오류: {e}")
-        
+
+        # LLM 기반 트렌딩 검색어 수집
+        if self.llm_trend_api:
+            try:
+                llm_trends = await self.llm_trend_api.get_trending_searches()
+                for trend in llm_trends:
+                    all_trends.append({
+                        "keyword": trend["keyword"],
+                        "source": "llm",
+                        "score": trend.get("score", 100 - trend["rank"]),
+                        "timestamp": trend["timestamp"],
+                        "category": self._categorize_keyword(trend["keyword"]),
+                        "related_keywords": [],
+                        "metadata": {"rank": trend["rank"], "llm_generated": True}
+                    })
+            except Exception as e:
+                print(f"LLM 트렌드 수집 오류: {e}")
+
         # 네이버 트렌드 수집 (API 키가 있는 경우)
         if self.naver_api:
             try:
                 end_date = datetime.now().strftime("%Y-%m-%d")
                 start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-                
+
                 # 홈쇼핑 관련 키워드로 검색
                 shopping_keywords = ["건강식품", "의류", "가전제품", "뷰티", "생활용품"]
                 naver_data = self.naver_api.get_search_trends(shopping_keywords, start_date, end_date)
-                
+
                 for result in naver_data.get("results", []):
                     keyword = result.get("title", "")
                     if keyword and result.get("data"):
@@ -277,7 +296,7 @@ class ExternalAPIManager:
                         })
             except Exception as e:
                 print(f"네이버 트렌드 수집 오류: {e}")
-        
+
         return all_trends
     
     def get_current_weather(self) -> Dict[str, Any]:

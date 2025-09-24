@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import os
+import asyncio
+from datetime import datetime, timedelta
 
 # .env 파일에서 환경 변수를 로드합니다.
 load_dotenv()
@@ -16,6 +18,7 @@ from .product_embedder import ProductEmbedder
 from .trend_collector import TrendCollector, TrendProcessor
 from .broadcast_workflow import BroadcastWorkflow
 from .trend_db_manager import trend_db_manager
+from .market_data_analyzer import MarketDataAnalyzer
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -40,11 +43,16 @@ async def lifespan(app: FastAPI):
         # BroadcastWorkflow 초기화
         app.state.broadcast_workflow = BroadcastWorkflow(model, app.state.product_embedder)
         print("--- BroadcastWorkflow initialized ---")
+        
+        # MarketDataAnalyzer 초기화
+        app.state.market_analyzer = MarketDataAnalyzer(openai_api_key)
+        print("--- MarketDataAnalyzer initialized ---")
     else:
         print("--- Warning: OPENAI_API_KEY not found, ProductEmbedder not initialized ---")
         app.state.product_embedder = None
         app.state.trend_processor = None
         app.state.broadcast_workflow = None
+        app.state.market_analyzer = None
     
     print("--- Model loaded successfully. ---")
     yield
@@ -53,6 +61,7 @@ async def lifespan(app: FastAPI):
     app.state.product_embedder = None
     app.state.trend_processor = None
     app.state.broadcast_workflow = None
+    app.state.market_analyzer = None
 
 app = FastAPI(
     title="Home Shopping Broadcast Recommender API",
@@ -333,3 +342,70 @@ async def recommend_with_trends(payload: RecommendRequest, request: Request):
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"detail": str(e)})
 
+@app.get("/api/v1/trends/popular")
+async def get_popular_keywords(request: Request, hours_back: int = 24):
+    """
+    🚀 새로운 시장 데이터 기반 트렌드 분석 API
+    
+    n8n에서 크롤링한 홈쇼핑 사이트 랭킹과 검색 트렌드 데이터를 
+    LLM이 분석하여 방송 편성에 최적화된 키워드를 추천합니다.
+    
+    Args:
+        hours_back: 분석할 데이터의 시간 범위 (기본 24시간)
+    """
+    print(f"--- API Endpoint /api/v1/trends/popular received request (hours_back={hours_back}) ---")
+    
+    try:
+        market_analyzer = request.app.state.market_analyzer
+        
+        if not market_analyzer:
+            raise HTTPException(status_code=503, detail="MarketDataAnalyzer가 초기화되지 않았습니다.")
+        
+        # 시장 데이터 분석 실행
+        analysis_result = await market_analyzer.analyze_market_trends(hours_back=hours_back)
+        
+        if not analysis_result.get("success", False):
+            # 분석 실패 시 에러 응답
+            return JSONResponse(
+                status_code=503 if "데이터가 없습니다" in analysis_result.get("error", "") else 500,
+                content=analysis_result
+            )
+        
+        # 성공 시 기존 API 형식에 맞게 변환
+        trending_keywords = []
+        for i, item in enumerate(analysis_result.get("recommended_keywords", []), 1):
+            trending_keywords.append({
+                "keyword": item["keyword"],
+                "current_value": item.get("trend_score", 85),
+                "trend_score": item.get("trend_score", 85),
+                "rank": i,
+                "source": "market_data_analysis",
+                "reason": item.get("reason", "시장 데이터 기반 추천")
+            })
+        
+        return {
+            "success": True,
+            "method": "market_data_analysis",
+            "trending_keywords": trending_keywords,
+            "total_found": len(trending_keywords),
+            "trend_summary": analysis_result.get("trend_summary", []),
+            "data_sources": analysis_result.get("data_sources", {}),
+            "generated_at": analysis_result.get("analysis_timestamp", datetime.now().isoformat())
+        }
+        
+    except HTTPException:
+        # HTTPException은 그대로 재발생
+        raise
+    except Exception as e:
+        print(f"--- ERROR IN /api/v1/trends/popular ---")
+        import traceback
+        traceback.print_exc()
+        
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": f"시장 데이터 분석 중 오류 발생: {str(e)}",
+                "generated_at": datetime.now().isoformat()
+            }
+        )

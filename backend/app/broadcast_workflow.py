@@ -112,13 +112,18 @@ class BroadcastWorkflow:
         # 트렌드 키워드 수집 (DB에서)
         trends = await self._get_trends_from_db()
         context["trends"] = trends
-        
+
         # 시간대 정보
         time_slot = self._get_time_slot(broadcast_dt)
         day_type = "주말" if broadcast_dt.weekday() >= 5 else "평일"
         context["time_slot"] = time_slot
         context["day_type"] = day_type
-        
+
+        # 컨텍스트 로그 출력
+        trend_keywords = [t.keyword for t in trends]
+        logger.info(f"컨텍스트 수집 완료 - 계절: {context['season']}, 시간대: {time_slot}, 요일: {day_type}")
+        logger.info(f"날씨: {weather_info.get('weather', 'N/A')}, 트렌드 키워드: {trend_keywords}")
+
         return context
     
     def _get_season(self, month: int) -> str:
@@ -145,7 +150,7 @@ class BroadcastWorkflow:
             return "새벽"
     
     async def _get_trends_from_db(self, date_limit: int = 2) -> List[TrendKeyword]:
-        """DB에서 최신 트렌드 데이터를 조회"""
+        """DB에서 최신 트렌드 데이터를 조회. 데이터 없으면 계절 기반 기본 키워드 반환"""
         logger.info("DB에서 최신 트렌드 데이터 조회 중...")
         try:
             query = text("""
@@ -155,13 +160,13 @@ class BroadcastWorkflow:
                 ORDER BY score DESC
                 LIMIT 100
             """)
-            
+
             start_date = datetime.now().date() - timedelta(days=date_limit)
             end_date = datetime.now().date()
-            
+
             with self.engine.connect() as conn:
                 results = conn.execute(query, {"start_date": start_date, "end_date": end_date}).fetchall()
-                
+
             trends = []
             for row in results:
                 row_data = row._mapping
@@ -172,13 +177,69 @@ class BroadcastWorkflow:
                     timestamp=datetime.combine(row_data['trend_date'], datetime.min.time()),
                     category=row_data['category']
                 ))
-            
-            logger.info(f"DB에서 {len(trends)}개의 트렌드 조회 완료.")
-            return trends
-            
+
+            if trends:
+                logger.info(f"DB에서 {len(trends)}개의 트렌드 조회 완료.")
+                return trends
+            else:
+                logger.info("DB에 트렌드 데이터가 없어 기본 키워드 사용")
+                return self._get_default_seasonal_trends()
+
         except Exception as e:
             logger.error(f"DB 트렌드 조회 실패: {e}")
-            return []
+            logger.info("DB 조회 실패로 기본 키워드 사용")
+            return self._get_default_seasonal_trends()
+
+    def _get_default_seasonal_trends(self) -> List[TrendKeyword]:
+        """계절 기반 기본 트렌드 키워드 반환"""
+        current_month = datetime.now().month
+        current_date = datetime.now()
+
+        if current_month in [12, 1, 2]:  # 겨울
+            keywords = [
+                ("난방용품", "건강용품", 90),
+                ("겨울 의류", "의류", 88),
+                ("온열기", "가전제품", 85),
+                ("보온 제품", "생활용품", 82),
+                ("건강식품", "건강식품", 80)
+            ]
+        elif current_month in [3, 4, 5]:  # 봄
+            keywords = [
+                ("봄 의류", "의류", 90),
+                ("알레르기 케어", "건강용품", 88),
+                ("운동용품", "운동용품", 85),
+                ("다이어트 제품", "건강식품", 82),
+                ("공기청정기", "가전제품", 80)
+            ]
+        elif current_month in [6, 7, 8]:  # 여름
+            keywords = [
+                ("냉방용품", "가전제품", 90),
+                ("여름 의류", "의류", 88),
+                ("선풍기", "가전제품", 85),
+                ("쿨매트", "생활용품", 82),
+                ("여름 음료", "식품", 80)
+            ]
+        else:  # 가을 (9, 10, 11)
+            keywords = [
+                ("가을 의류", "의류", 90),
+                ("건강식품", "건강식품", 88),
+                ("면역력 강화", "건강용품", 85),
+                ("환절기 케어", "건강용품", 82),
+                ("추석 선물", "식품", 80)
+            ]
+
+        trends = []
+        for keyword, category, score in keywords:
+            trends.append(TrendKeyword(
+                keyword=keyword,
+                source="seasonal_default",
+                score=float(score),
+                timestamp=current_date,
+                category=category
+            ))
+
+        logger.info(f"계절 기반 기본 키워드 {len(trends)}개 생성")
+        return trends
 
     async def _classify_keywords_with_langchain(self, context: Dict[str, Any]) -> Dict[str, List[str]]:
         """LangChain을 사용한 키워드 분류"""
@@ -196,7 +257,10 @@ class BroadcastWorkflow:
         # 트렌드 키워드
         trend_keywords = [t.keyword for t in context["trends"]]
         all_keywords.extend(trend_keywords)
-        
+
+        # 수집된 키워드들 로그 출력
+        logger.info(f"키워드 분류 시작 - 총 {len(all_keywords)}개 키워드: {all_keywords}")
+
         # LangChain 프롬프트
         classification_prompt = ChatPromptTemplate.from_messages([
             ("system", """당신은 홈쇼핑 방송 편성 전문가입니다. 
@@ -214,6 +278,8 @@ JSON 형식으로 응답해주세요."""),
         try:
             result = await chain.ainvoke({"keywords": ", ".join(all_keywords)})
             logger.info(f"키워드 분류 완료: 카테고리 {len(result.get('category_keywords', []))}개, 상품 {len(result.get('product_keywords', []))}개")
+            logger.info(f"분류된 카테고리 키워드: {result.get('category_keywords', [])}")
+            logger.info(f"분류된 상품 키워드: {result.get('product_keywords', [])}")
             return result
         except Exception as e:
             logger.error(f"키워드 분류 오류: {e}")
