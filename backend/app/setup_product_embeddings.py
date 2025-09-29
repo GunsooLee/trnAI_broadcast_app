@@ -6,6 +6,7 @@ PostgreSQL의 신규/수정된 상품 데이터만 OpenAI로 임베딩하여 Qdr
 
 import os
 import sys
+import uuid
 import pandas as pd
 from sqlalchemy import create_engine, text
 import logging
@@ -26,37 +27,46 @@ def get_products_to_embed(engine, force_all=False):
     if force_all:
         # 전체 재처리 모드
         query = """
-        SELECT 
-            product_code,
-            product_name,
-            category_main,
-            category_middle,
-            category_sub,
-            search_keywords,
-            created_at,
-            updated_at,
-            embedded_at
-        FROM TAIGOODS
-        ORDER BY product_code
+        SELECT
+            g.product_code,
+            g.product_name,
+            g.category_main,
+            g.category_middle,
+            g.category_sub,
+            t.tape_code,
+            t.tape_name,
+            g.created_at,
+            g.updated_at,
+            g.embedded_at
+        FROM
+            TAIGOODS g
+        LEFT JOIN
+            taipgmtape t ON g.product_code = t.product_code
+        ORDER BY
+            g.product_code
         """
         print("🔄 전체 상품 재처리 모드")
     else:
         # 증분 처리 모드: 신규 또는 수정된 상품만
         query = """
-        SELECT 
-            product_code,
-            product_name,
-            category_main,
-            category_middle,
-            category_sub,
-            search_keywords,
-            created_at,
-            updated_at,
-            embedded_at
-        FROM TAIGOODS
-        WHERE embedded_at IS NULL 
-           OR updated_at > embedded_at
-        ORDER BY product_code
+        SELECT
+            g.product_code,
+            g.product_name,
+            g.category_main,
+            g.category_middle,
+            g.category_sub,
+            t.tape_code,
+            t.tape_name,
+            g.created_at,
+            g.updated_at,
+            g.embedded_at
+        FROM
+            TAIGOODS g
+        LEFT JOIN
+            taipgmtape t ON g.product_code = t.product_code
+        WHERE g.embedded_at IS NULL 
+           OR g.updated_at > g.embedded_at
+        ORDER BY g.product_code
         """
         print("🔄 증분 처리 모드: 신규/수정 상품만")
     
@@ -162,18 +172,13 @@ def main():
             # 개별 상품 임베딩
             for idx, row in batch_df.iterrows():
                 try:
-                    # 상품 정보 결합 (search_keywords 우선 사용)
-                    search_keywords = str(row.get('search_keywords', ''))
+                    # 상품 정보 결합
                     product_name = str(row.get('product_name', ''))
                     category_main = str(row.get('category_main', ''))
                     category_middle = str(row.get('category_middle', ''))
                     category_sub = str(row.get('category_sub', ''))
                     
-                    # search_keywords가 있으면 우선 사용, 없으면 기본 조합
-                    if search_keywords and search_keywords != 'nan':
-                        text = search_keywords.strip()
-                    else:
-                        text = f"{product_name} {category_main} > {category_middle} > {category_sub}".strip()
+                    text = f"{product_name} {category_main} > {category_middle} > {category_sub}".strip()
                     
                     if not text:
                         print(f"     ⚠️  빈 텍스트 건너뜀: {row.get('product_code', 'Unknown')}")
@@ -182,8 +187,11 @@ def main():
                     # OpenAI 임베딩 생성
                     embedding = embedder.get_embedding(text)
                     
-                    # Qdrant에 저장/업데이트
-                    point_id = row['product_code']
+                    # Qdrant에 저장/업데이트 (상품코드를 UUID로 변환하여 ID로 사용)
+                    product_code = row['product_code']
+                    # 네임스페이스 기반 UUID 생성으로 항상 동일한 상품코드는 동일한 UUID를 갖도록 보장
+                    namespace_uuid = uuid.UUID('6ba7b810-9dad-11d1-80b4-00c04fd430c8')
+                    point_id = str(uuid.uuid5(namespace_uuid, product_code))
                     point = {
                         "id": point_id,
                         "vector": embedding,
@@ -193,7 +201,8 @@ def main():
                             "category_main": category_main,
                             "category_middle": category_middle,
                             "category_sub": category_sub,
-                            "search_keywords": search_keywords,
+                            "tape_code": str(row.get('tape_code', '')),
+                            "tape_name": str(row.get('tape_name', '')),
                             "text": text,
                             "updated_at": datetime.now().isoformat()
                         }

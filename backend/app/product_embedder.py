@@ -1,4 +1,5 @@
 import openai
+import uuid
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 import pandas as pd
@@ -72,8 +73,12 @@ class ProductEmbedder:
                 # OpenAI 임베딩 생성
                 embedding = self.get_embedding(text)
                 
+                product_code = str(row.get('product_code', ''))
+                namespace_uuid = uuid.UUID('6ba7b810-9dad-11d1-80b4-00c04fd430c8')
+                point_id = str(uuid.uuid5(namespace_uuid, product_code))
+
                 point = PointStruct(
-                    id=processed,
+                    id=point_id,
                     vector=embedding,
                     payload={
                         "product_code": str(row.get('product_code', '')),
@@ -119,62 +124,32 @@ class ProductEmbedder:
             query_text = " ".join(trend_keywords)
             query_embedding = self.get_embedding(query_text)
             
-            # Qdrant에서 벡터 검색 (필터링 없이)
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+            # Qdrant 필터 조건 생성 (방송테이프 코드가 있는 상품만)
+            qdrant_filter = None
+            if only_ready_products:
+                qdrant_filter = Filter(
+                    must_not=[
+                        FieldCondition(key="payload.tape_code", match=MatchValue(value=""))
+                    ]
+                )
+
+            # Qdrant에서 벡터 검색
             results = self.qdrant_client.search(
                 collection_name=self.collection_name,
                 query_vector=query_embedding,
-                limit=top_k * 3,  # 여유분 확보
+                query_filter=qdrant_filter,
+                limit=top_k,
                 score_threshold=score_threshold
             )
             
-            # 검색된 상품 코드들 추출
-            product_codes = [hit.payload.get('product_code') for hit in results if hit.payload.get('product_code')]
-            
-            if not product_codes or not only_ready_products:
-                # 방송테이프 필터링이 불필요한 경우
-                products = []
-                for hit in results[:top_k]:
-                    product = hit.payload.copy()
-                    product['similarity_score'] = hit.score
-                    products.append(product)
-                return products
-            
-            # TPGMTAPE 테이블과 조인하여 방송테이프 존재 여부 확인
-            placeholders = ','.join([f"'{code}'" for code in product_codes])
-            query = f"""
-            SELECT DISTINCT p.product_code, p.product_name, p.category_main, p.category_middle, p.category_sub,
-                   p.search_keywords, t.tape_code, t.tape_name, t.duration_minutes
-            FROM TAIGOODS p
-            INNER JOIN TAIPGMTAPE t ON p.product_code = t.product_code
-            WHERE p.product_code IN ({placeholders})
-              AND t.production_status = 'ready'
-            """
-            
-            with self.engine.connect() as conn:
-                db_results = conn.execute(text(query)).fetchall()
-            
-            # 방송테이프가 있는 상품 코드 세트
-            tape_product_codes = {row[0] for row in db_results}
-            
-            # 벡터 검색 결과를 방송테이프 존재 여부로 필터링
+            # 결과 포맷팅
             filtered_products = []
             for hit in results:
-                product_code = hit.payload.get('product_code')
-                if product_code in tape_product_codes:
-                    product = hit.payload.copy()
-                    product['similarity_score'] = hit.score
-                    
-                    # 방송테이프 정보 추가
-                    tape_info = next((row for row in db_results if row[0] == product_code), None)
-                    if tape_info:
-                        product['tape_code'] = tape_info[6]
-                        product['tape_name'] = tape_info[7]
-                        product['duration_minutes'] = tape_info[8]
-                    
-                    filtered_products.append(product)
-                    
-                if len(filtered_products) >= top_k:
-                    break
+                product = hit.payload.copy()
+                product['similarity_score'] = hit.score
+                filtered_products.append(product)
             
             filter_msg = "(방송테이프 존재)" if only_ready_products else ""
             logger.info(f"키워드 '{query_text}'로 {len(filtered_products)}개 상품 검색됨 {filter_msg}")

@@ -18,7 +18,7 @@ from langchain.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 
 from .trend_collector import TrendProcessor, TrendKeyword
-from .product_embedder import ProductEmbedder
+from .dependencies import get_product_embedder
 from . import broadcast_recommender as br
 from .schemas import BroadcastResponse, RecommendedCategory, BroadcastRecommendation, ProductInfo, Reasoning, BusinessMetrics
 
@@ -27,10 +27,10 @@ logger = logging.getLogger(__name__)
 class BroadcastWorkflow:
     """방송 편성 AI 추천 워크플로우"""
     
-    def __init__(self, model, product_embedder: ProductEmbedder):
+    def __init__(self, model):
         self.model = model  # XGBoost 모델
-        self.product_embedder = product_embedder
-        self.trend_processor = TrendProcessor(product_embedder)
+        self.product_embedder = get_product_embedder()
+        self.trend_processor = TrendProcessor(self.product_embedder)
         
         # LangChain LLM 초기화
         self.llm = ChatOpenAI(

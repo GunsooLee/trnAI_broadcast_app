@@ -56,13 +56,15 @@ def load_data(engine: Engine) -> pd.DataFrame:
     query = f"""
     WITH base AS (
         SELECT
-            b.product_code,
+            t.product_code, -- tape에서 상품코드 가져오기
             p.category_main as product_lgroup,
             p.category_middle as product_mgroup,
             p.category_sub as product_sgroup,
             '' as product_dgroup,
             '' as product_type,
             p.product_name,
+            b.tape_code, -- broadcast에서 tape_code 가져오기
+            t.tape_name,
             '' as keyword,
             b.time_slot,
             b.sales_amount,
@@ -70,7 +72,8 @@ def load_data(engine: Engine) -> pd.DataFrame:
             p.price as product_price,
             b.broadcast_date
         FROM TAIBROADCASTS b
-        JOIN TAIGOODS p ON b.product_code = p.product_code
+        JOIN TAIPGMTAPE t ON b.tape_code = t.tape_code
+        JOIN TAIGOODS p ON t.product_code = p.product_code
         WHERE b.sales_amount IS NOT NULL
     ),
     product_stats AS (
@@ -121,7 +124,7 @@ def build_pipeline() -> Pipeline:
         # "competitor_count_same_category",  # 테이블 존재하지 않음으로 제거
         "is_holiday"
     ]
-    categorical_features = ["product_lgroup", "product_mgroup", "time_slot"]
+    categorical_features = ["product_lgroup", "product_mgroup", "time_slot", "tape_code"]
     # text_features 제거 - 메인 API에서 실제로 사용되지 않음
 
     preprocessor = ColumnTransformer(

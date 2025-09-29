@@ -21,7 +21,7 @@ class LLMRAGSearcher:
         """상품 데이터베이스에서 컨텍스트 정보 조회"""
         query = """
         SELECT p.product_code, p.product_name, p.category_main, p.category_middle, 
-               p.category_sub, p.search_keywords, p.price,
+               p.category_sub, p.price,
                t.tape_code, t.tape_name, t.duration_minutes
         FROM TAIGOODS p
         LEFT JOIN TAIPGMTAPE t ON p.product_code = t.product_code 
@@ -41,8 +41,7 @@ class LLMRAGSearcher:
 상품코드: {row[0]}
 상품명: {row[1]}
 카테고리: {row[2]} > {row[3]} > {row[4]}
-키워드: {row[5]}
-가격: {row[6]:,}원
+가격: {row[5]:,}원
 방송상태: {tape_status}
 """
             products_text.append(product_info.strip())
@@ -59,8 +58,7 @@ class LLMRAGSearcher:
             product_info = f"""
 {i}. 상품코드: {product.get('product_code', 'N/A')}
    상품명: {product.get('product_name', 'N/A')}
-   카테고리: {product.get('category', 'N/A')}
-   키워드: {product.get('search_keywords', 'N/A')}
+   카테고리: {product.get('category_main', 'N/A')}
    방송상태: {tape_status}
    유사도: {similarity:.3f}
 """

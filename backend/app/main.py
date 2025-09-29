@@ -1,73 +1,27 @@
-from fastapi import FastAPI, HTTPException, Request
+import sys
+from pathlib import Path
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from fastapi.responses import JSONResponse
-from contextlib import asynccontextmanager
-import os
-import asyncio
-from datetime import datetime, timedelta
+
+# 모델 로드 시 'tokenizer_utils' 모듈을 찾을 수 있도록 경로 추가
+# train.py와 동일한 로직을 사용하여 app 폴더를 경로에 추가합니다.
+sys.path.append(str(Path(__file__).parent))
+print("--- sys.path updated ---")
+import pprint
+pprint.pprint(sys.path)
 
 # .env 파일에서 환경 변수를 로드합니다.
 load_dotenv()
-from fastapi.middleware.cors import CORSMiddleware
 
-from .schemas import RecommendRequest, RecommendResponse, CandidatesResponse, TrendCollectionResponse, TrendAnalysisResponse, BroadcastRequest, BroadcastResponse
-from . import services
-from . import broadcast_recommender as br # broadcast_recommender 임포트
-from .product_embedder import ProductEmbedder
-from .trend_collector import TrendCollector, TrendProcessor
+from .schemas import BroadcastRequest, BroadcastResponse
 from .broadcast_workflow import BroadcastWorkflow
-from .trend_db_manager import trend_db_manager
-from .market_data_analyzer import MarketDataAnalyzer
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # 애플리케이션 시작 시 모델을 비동기적으로 로드합니다.
-    print("--- Loading model on startup... ---")
-    model = await services.load_model_async()
-    app.state.model = model
-    
-    # ProductEmbedder 초기화
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    if openai_api_key:
-        app.state.product_embedder = ProductEmbedder(
-            openai_api_key=openai_api_key,
-            qdrant_host="qdrant_vector_db" if os.getenv("DOCKER_ENV") else "localhost"
-        )
-        print("--- ProductEmbedder initialized ---")
-        
-        # TrendProcessor 초기화
-        app.state.trend_processor = TrendProcessor(app.state.product_embedder)
-        print("--- TrendProcessor initialized ---")
-        
-        # BroadcastWorkflow 초기화
-        app.state.broadcast_workflow = BroadcastWorkflow(model, app.state.product_embedder)
-        print("--- BroadcastWorkflow initialized ---")
-        
-        # MarketDataAnalyzer 초기화
-        app.state.market_analyzer = MarketDataAnalyzer(openai_api_key)
-        print("--- MarketDataAnalyzer initialized ---")
-    else:
-        print("--- Warning: OPENAI_API_KEY not found, ProductEmbedder not initialized ---")
-        app.state.product_embedder = None
-        app.state.trend_processor = None
-        app.state.broadcast_workflow = None
-        app.state.market_analyzer = None
-    
-    print("--- Model loaded successfully. ---")
-    yield
-    # 애플리케이션 종료 시 정리 (필요 시)
-    app.state.model = None
-    app.state.product_embedder = None
-    app.state.trend_processor = None
-    app.state.broadcast_workflow = None
-    app.state.market_analyzer = None
+from .dependencies import get_broadcast_workflow
 
 app = FastAPI(
     title="Home Shopping Broadcast Recommender API",
     description="An API to get broadcast schedule recommendations based on user queries.",
-    version="1.0.0",
-    lifespan=lifespan # lifespan 이벤트 핸들러 다시 활성화
+    version="1.0.0"
 )
 
 # CORS 설정: Next.js 프론트엔드(기본 포트 3000)에서의 요청을 허용
@@ -88,7 +42,7 @@ app.add_middleware(
 # ========================================
 
 @app.post("/api/v1/broadcast/recommendations", response_model=BroadcastResponse)
-async def broadcast_recommendations(payload: BroadcastRequest, request: Request):
+async def broadcast_recommendations(payload: BroadcastRequest, workflow: BroadcastWorkflow = Depends(get_broadcast_workflow)):
     """🚀 메인 방송 편성 AI 추천 API - LangChain 기반 2단계 워크플로우
     
     실시간 트렌드 분석 + XGBoost 매출 예측 + 방송테이프 필터링을 통한
@@ -96,12 +50,7 @@ async def broadcast_recommendations(payload: BroadcastRequest, request: Request)
     """
     print(f"--- API Endpoint /api/v1/broadcast/recommendations received a request: {payload.broadcastTime} ---")
     try:
-        broadcast_workflow = request.app.state.broadcast_workflow
-
-        if not broadcast_workflow:
-            raise HTTPException(status_code=503, detail="BroadcastWorkflow가 초기화되지 않았습니다.")
-
-        response_data = await broadcast_workflow.process_broadcast_recommendation(
+        response_data = await workflow.process_broadcast_recommendation(
             payload.broadcastTime,
             payload.recommendationCount
         )
@@ -144,268 +93,3 @@ def health_check():
     """API 서버의 상태를 확인합니다."""
     return {"status": "ok"}
 
-# ========================================
-# 🔧 개발/디버깅용 레거시 API
-# ========================================
-
-@app.post("/api/v1/recommend", response_model=RecommendResponse)
-async def recommend_broadcast(payload: RecommendRequest, request: Request):
-    print("--- API Endpoint /api/v1/recommend received a request ---")
-    """
-    [레거시] 사용자 질문에 기반해 방송 편성을 추천합니다.
-    - 시작 시 로드된 모델을 app.state에서 가져와 사용합니다.
-    """
-    try:
-        # request.app.state에서 미리 로드된 모델을 가져옵니다.
-        model = request.app.state.model
-        response_data = await services.get_recommendations(payload.user_query, model)
-        return response_data
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        print(f"--- ERROR IN /api/v1/recommend ---")
-        import traceback
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"detail": str(e)})
-
-@app.post("/api/v1/extract-params")
-async def extract_params(payload: RecommendRequest):
-    """
-    [레거시] 사용자 질문에서 파라미터만 추출합니다.
-    """
-    try:
-        extracted_params = await services.extract_and_enrich_params(payload.user_query)
-        return {"extracted_params": extracted_params}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        print(f"--- ERROR IN /api/v1/extract-params ---")
-        import traceback
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"detail": str(e)})
-
-@app.post("/api/v1/recommend-with-params")
-async def recommend_with_params(payload: dict, request: Request):
-    """
-    [레거시] 수정된 파라미터로 방송 편성을 추천합니다.
-    """
-    try:
-        model = request.app.state.model
-        response_data = await services.get_recommendations_with_params(payload, model)
-        return response_data
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        print(f"--- ERROR IN /api/v1/recommend-with-params ---")
-        import traceback
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"detail": str(e)})
-
-@app.post("/api/v1/recommend-candidates", response_model=CandidatesResponse)
-async def recommend_candidates(payload: RecommendRequest, request: Request, top_k: int = 5):
-    """[레거시] 시간대별 Top-k 후보 리스트를 반환합니다. 기본 k=5"""
-    try:
-        model = request.app.state.model
-        response_data = await services.get_candidates(payload.user_query, model, top_k=top_k)
-        return response_data
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        print(f"--- ERROR IN /api/v1/recommend-candidates ---")
-        import traceback
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"detail": str(e)})
-
-@app.post("/api/v1/trends/collect", response_model=TrendCollectionResponse)
-async def collect_trends(request: Request):
-    """[배치용] 트렌드 데이터 수집 (배치 처리 - DB 저장)"""
-    print("--- API Endpoint /api/v1/trends/collect received a request ---")
-    try:
-        # 외부 API에서 트렌드 수집 후 DB 저장
-        result = await trend_db_manager.collect_and_save_trends()
-        
-        if not result["success"]:
-            raise HTTPException(status_code=500, detail=f"트렌드 수집 실패: {result['error']}")
-        
-        # DB에서 최신 트렌드 조회
-        latest_trends = await trend_db_manager.get_latest_trends(limit=50, hours_back=1)
-        
-        # 스키마에 맞게 변환
-        trend_schemas = []
-        for trend in latest_trends:
-            trend_schemas.append({
-                "keyword": trend["keyword"],
-                "source": trend["source"],
-                "score": trend["score"],
-                "timestamp": trend["collected_at"],
-                "category": trend["category"],
-                "related_keywords": trend["related_keywords"] or [],
-                "metadata": trend["metadata"] or {}
-            })
-        
-        return TrendCollectionResponse(
-            trends=trend_schemas,
-            collection_timestamp=result["timestamp"],
-            total_count=result["saved_count"]
-        )
-        
-    except Exception as e:
-        print(f"--- ERROR IN /api/v1/trends/collect ---")
-        import traceback
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"detail": str(e)})
-
-@app.get("/api/v1/trends/analyze", response_model=TrendAnalysisResponse)
-async def analyze_trends(request: Request):
-    """[개발용] 트렌드를 분석하고 상품과 매칭합니다. (DB에서 조회)"""
-    try:
-        trend_processor = request.app.state.trend_processor
-        
-        if not trend_processor:
-            raise HTTPException(status_code=503, detail="TrendProcessor가 초기화되지 않았습니다.")
-        
-        # DB에서 최신 트렌드 조회
-        latest_trends = await trend_db_manager.get_latest_trends(limit=30, hours_back=6)
-        
-        if not latest_trends:
-            return TrendAnalysisResponse(
-                trends=[],
-                matched_results={},
-                analysis_timestamp=datetime.now().isoformat()
-            )
-        
-        # 상품 매칭
-        matched_results = {}
-        for trend_data in latest_trends:
-            keyword = trend_data["keyword"]
-            matching_result = await trend_processor.match_trend_to_products(keyword)
-            if matching_result["matched_products"]:
-                matched_results[keyword] = matching_result
-        
-        # 스키마에 맞게 변환
-        trend_schemas = []
-        matching_responses = {}
-        
-        for trend_data in latest_trends:
-            trend_schemas.append({
-                "keyword": trend_data["keyword"],
-                "source": trend_data["source"],
-                "score": trend_data["score"],
-                "timestamp": trend_data["collected_at"],
-                "category": trend_data["category"],
-                "related_keywords": trend_data["related_keywords"] or [],
-                "metadata": trend_data["metadata"] or {}
-            })
-            
-            keyword = trend_data["keyword"]
-            if keyword in matched_results:
-                boost_factor = trend_processor.calculate_trend_boost_factor(trend_data["score"])
-                matching_responses[keyword] = {
-                    "trend_keyword": keyword,
-                    "trend_info": matched_results[keyword]["trend_info"],
-                    "matched_products": matched_results[keyword]["matched_products"],
-                    "boost_factor": boost_factor
-                }
-        
-        return TrendAnalysisResponse(
-            trends=trend_schemas,
-            matched_results=matching_responses,
-            analysis_timestamp=datetime.now().isoformat()
-        )
-        
-    except Exception as e:
-        print(f"--- ERROR IN /api/v1/trends/analyze ---")
-        import traceback
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"detail": str(e)})
-
-@app.post("/api/v1/recommend-with-trends", response_model=RecommendResponse)
-async def recommend_with_trends(payload: RecommendRequest, request: Request):
-    """[레거시] 트렌드 데이터를 반영한 강화된 방송 편성 추천"""
-    print("--- API Endpoint /api/v1/recommend-with-trends received a request ---")
-    try:
-        model = request.app.state.model
-        product_embedder = request.app.state.product_embedder
-        
-        if not product_embedder:
-            raise HTTPException(status_code=503, detail="ProductEmbedder가 초기화되지 않았습니다.")
-        
-        response_data = await services.get_trend_enhanced_recommendations(
-            payload.user_query, model, product_embedder
-        )
-        return response_data
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        print(f"--- ERROR IN /api/v1/recommend-with-trends ---")
-        import traceback
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"detail": str(e)})
-
-@app.get("/api/v1/trends/popular")
-async def get_popular_keywords(request: Request, hours_back: int = 24):
-    """
-    🚀 새로운 시장 데이터 기반 트렌드 분석 API
-    
-    n8n에서 크롤링한 홈쇼핑 사이트 랭킹과 검색 트렌드 데이터를 
-    LLM이 분석하여 방송 편성에 최적화된 키워드를 추천합니다.
-    
-    Args:
-        hours_back: 분석할 데이터의 시간 범위 (기본 24시간)
-    """
-    print(f"--- API Endpoint /api/v1/trends/popular received request (hours_back={hours_back}) ---")
-    
-    try:
-        market_analyzer = request.app.state.market_analyzer
-        
-        if not market_analyzer:
-            raise HTTPException(status_code=503, detail="MarketDataAnalyzer가 초기화되지 않았습니다.")
-        
-        # 시장 데이터 분석 실행
-        analysis_result = await market_analyzer.analyze_market_trends(hours_back=hours_back)
-        
-        if not analysis_result.get("success", False):
-            # 분석 실패 시 에러 응답
-            return JSONResponse(
-                status_code=503 if "데이터가 없습니다" in analysis_result.get("error", "") else 500,
-                content=analysis_result
-            )
-        
-        # 성공 시 기존 API 형식에 맞게 변환
-        trending_keywords = []
-        for i, item in enumerate(analysis_result.get("recommended_keywords", []), 1):
-            trending_keywords.append({
-                "keyword": item["keyword"],
-                "current_value": item.get("trend_score", 85),
-                "trend_score": item.get("trend_score", 85),
-                "rank": i,
-                "source": "market_data_analysis",
-                "reason": item.get("reason", "시장 데이터 기반 추천")
-            })
-        
-        return {
-            "success": True,
-            "method": "market_data_analysis",
-            "trending_keywords": trending_keywords,
-            "total_found": len(trending_keywords),
-            "trend_summary": analysis_result.get("trend_summary", []),
-            "data_sources": analysis_result.get("data_sources", {}),
-            "generated_at": analysis_result.get("analysis_timestamp", datetime.now().isoformat())
-        }
-        
-    except HTTPException:
-        # HTTPException은 그대로 재발생
-        raise
-    except Exception as e:
-        print(f"--- ERROR IN /api/v1/trends/popular ---")
-        import traceback
-        traceback.print_exc()
-        
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "error": f"시장 데이터 분석 중 오류 발생: {str(e)}",
-                "generated_at": datetime.now().isoformat()
-            }
-        )

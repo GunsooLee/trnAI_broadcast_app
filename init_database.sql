@@ -17,7 +17,6 @@ CREATE TABLE IF NOT EXISTS TAIGOODS (
     category_main VARCHAR(100),
     category_middle VARCHAR(100),
     category_sub VARCHAR(100),
-    search_keywords VARCHAR(500),
     price DECIMAL(10,2),
     embedded_at TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -41,11 +40,11 @@ CREATE TABLE IF NOT EXISTS TAIBROADCASTS (
     id SERIAL PRIMARY KEY,
     broadcast_date DATE,
     time_slot VARCHAR(20),
-    product_code VARCHAR(50),
+    tape_code VARCHAR(50),
     sales_amount DECIMAL(15,2),
     viewer_count INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (product_code) REFERENCES TAIGOODS(product_code)
+    FOREIGN KEY (tape_code) REFERENCES TAIPGMTAPE(tape_code)
 );
 
 -- 4. 공휴일 정보 테이블
@@ -77,17 +76,17 @@ INSERT INTO taiweather_daily (weather_date, weather, temperature, precipitation)
 ON CONFLICT (weather_date) DO NOTHING;
 
 -- 5. 모의 상품 데이터 삽입
-INSERT INTO TAIGOODS (product_code, product_name, category_main, category_middle, category_sub, search_keywords, price) VALUES
-('P001', '프리미엄 다이어트 보조제', '건강식품', '영양보조식품', '다이어트', '프리미엄 다이어트 보조제 건강식품 영양보조식품 다이어트 체중감량 건강', 89000),
-('P002', '홈트레이닝 세트', '운동용품', '헬스용품', '홈트레이닝', '홈트레이닝 세트 운동용품 헬스용품 홈트레이닝 운동 헬스', 150000),
-('P003', '비타민C 1000mg', '건강식품', '영양보조식품', '비타민', '비타민C 1000mg 건강식품 영양보조식품 비타민 면역력 건강', 45000),
-('P004', '프리미엄 스킨케어 세트', '화장품', '기초화장품', '스킨케어', '프리미엄 스킨케어 세트 화장품 기초화장품 스킨케어 미백 보습', 120000),
-('P005', '무선 선풍기', '가전제품', '생활가전', '선풍기', '무선 선풍기 가전제품 생활가전 선풍기 시원함 여름', 78000),
-('P006', '쿨매트 침대용', '생활용품', '침구류', '매트', '쿨매트 침대용 생활용품 침구류 매트 시원함 수면', 65000),
-('P007', '프리미엄 에어프라이어', '가전제품', '주방가전', '에어프라이어', '프리미엄 에어프라이어 가전제품 주방가전 에어프라이어 요리 간편', 180000),
-('P008', '여름 원피스', '의류', '여성의류', '원피스', '여름 원피스 의류 여성의류 원피스 여름 패션', 85000),
-('P009', '무선 이어폰', '전자제품', '음향기기', '이어폰', '무선 이어폰 전자제품 음향기기 이어폰 무선 음악', 95000),
-('P010', '마사지 건', '건강용품', '마사지용품', '마사지기', '마사지 건 건강용품 마사지용품 마사지기 마사지 근육 릴렉스', 135000)
+INSERT INTO TAIGOODS (product_code, product_name, category_main, category_middle, category_sub,  price) VALUES
+('P001', '프리미엄 다이어트 보조제', '건강식품', '영양보조식품', '다이어트', 89000),
+('P002', '홈트레이닝 세트', '운동용품', '헬스용품', '홈트레이닝', 150000),
+('P003', '비타민C 1000mg', '건강식품', '영양보조식품', '비타민', 45000),
+('P004', '프리미엄 스킨케어 세트', '화장품', '기초화장품', '스킨케어', 120000),
+('P005', '무선 선풍기', '가전제품', '생활가전', '선풍기', 78000),
+('P006', '쿨매트 침대용', '생활용품', '침구류', '매트', 65000),
+('P007', '프리미엄 에어프라이어', '가전제품', '주방가전', '에어프라이어', 180000),
+('P008', '여름 원피스', '의류', '여성의류', '원피스', 85000),
+('P009', '무선 이어폰', '전자제품', '음향기기', '이어폰', 95000),
+('P010', '마사지 건', '건강용품', '마사지용품', '마사지기', 135000)
 ON CONFLICT (product_code) DO NOTHING;
 
 -- 5-1. 모의 방송테이프 데이터 삽입 (일부 상품만 테이프 제작 완료)
@@ -134,17 +133,18 @@ INSERT INTO TAICOMPETITOR_BROADCASTS (broadcast_date, time_slot, competitor_name
 ('2025-08-14', '20:00-22:00', 'B몰', '전자제품', '음향기기');
 
 -- 8. 모의 방송 데이터 삽입
-INSERT INTO TAIBROADCASTS (broadcast_date, time_slot, product_code, sales_amount, viewer_count) VALUES
-('2025-08-18', '20:00-22:00', 'P001', 15000000, 25000),
-('2025-08-18', '22:00-24:00', 'P002', 8000000, 18000),
-('2025-08-17', '20:00-22:00', 'P003', 12000000, 22000),
-('2025-08-17', '18:00-20:00', 'P004', 20000000, 30000),
-('2025-08-16', '20:00-22:00', 'P005', 6000000, 15000),
-('2025-08-16', '22:00-24:00', 'P006', 4000000, 12000),
-('2025-08-15', '20:00-22:00', 'P007', 18000000, 28000),
-('2025-08-15', '18:00-20:00', 'P008', 9000000, 20000),
-('2025-08-14', '20:00-22:00', 'P009', 7000000, 16000),
-('2025-08-14', '22:00-24:00', 'P010', 11000000, 21000);
+-- P006, P008, P010은 방송테이프가 없으므로 방송 이력에서 제외
+INSERT INTO TAIBROADCASTS (broadcast_date, time_slot, tape_code, sales_amount, viewer_count) VALUES
+('2025-08-18', '20:00-22:00', 'T001', 15000000, 25000),
+('2025-08-18', '22:00-24:00', 'T002', 8000000, 18000),
+('2025-08-17', '20:00-22:00', 'T003', 12000000, 22000),
+('2025-08-17', '18:00-20:00', 'T004', 20000000, 30000),
+('2025-08-16', '20:00-22:00', 'T005', 6000000, 15000),
+-- ('2025-08-16', '22:00-24:00', 'T006', 4000000, 12000), -- T006은 없음
+('2025-08-15', '20:00-22:00', 'T007', 18000000, 28000),
+-- ('2025-08-15', '18:00-20:00', 'T008', 9000000, 20000), -- T008은 없음
+('2025-08-14', '20:00-22:00', 'T009', 7000000, 16000);
+-- ('2025-08-14', '22:00-24:00', 'T010', 11000000, 21000); -- T010은 없음
 
 -- 인덱스 생성
 CREATE INDEX IF NOT EXISTS idx_TAIBROADCASTS_date ON TAIBROADCASTS(broadcast_date);
