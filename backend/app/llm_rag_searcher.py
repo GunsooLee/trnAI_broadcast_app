@@ -20,11 +20,11 @@ class LLMRAGSearcher:
     def get_product_context(self, limit: int = 50) -> str:
         """상품 데이터베이스에서 컨텍스트 정보 조회"""
         query = """
-        SELECT p.product_code, p.product_name, p.category_main, p.category_middle, 
+        SELECT p.product_code, p.product_name, p.category_main, p.category_middle,
                p.category_sub, p.price,
-               t.tape_code, t.tape_name, t.duration_minutes
+               t.tape_code, t.tape_name
         FROM TAIGOODS p
-        LEFT JOIN TAIPGMTAPE t ON p.product_code = t.product_code 
+        LEFT JOIN TAIPGMTAPE t ON p.product_code = t.product_code
         WHERE t.production_status = 'ready' OR t.production_status IS NULL
         ORDER BY p.product_code
         LIMIT %s
@@ -36,7 +36,7 @@ class LLMRAGSearcher:
         # 상품 정보를 텍스트로 변환
         products_text = []
         for row in results:
-            tape_status = "방송테이프 준비완료" if row[7] else "방송테이프 없음"
+            tape_status = "방송테이프 준비완료" if row[6] else "방송테이프 없음"
             product_info = f"""
 상품코드: {row[0]}
 상품명: {row[1]}

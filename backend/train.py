@@ -51,30 +51,28 @@ def _time_slot(hour: int) -> str:
 def load_data(engine: Engine) -> pd.DataFrame:
     """DB에서 학습용 데이터를 로드하고 기본 전처리를 수행합니다."""
     print("데이터 로딩 시작...")
-    
-    # 새로운 피처들을 포함한 SQL 쿼리
+
+    # broadcast_training_dataset에서 직접 데이터 로드
     query = f"""
     WITH base AS (
         SELECT
-            t.product_code, -- tape에서 상품코드 가져오기
-            p.category_main as product_lgroup,
-            p.category_middle as product_mgroup,
-            p.category_sub as product_sgroup,
+            product_code,
+            category_main as product_lgroup,
+            category_middle as product_mgroup,
+            category_sub as product_sgroup,
             '' as product_dgroup,
             '' as product_type,
-            p.product_name,
-            b.tape_code, -- broadcast에서 tape_code 가져오기
-            t.tape_name,
+            product_name,
+            '' as tape_code,
+            '' as tape_name,
             '' as keyword,
-            b.time_slot,
-            b.sales_amount,
+            time_slot,
+            sales_amount,
             0 as order_count,
-            p.price as product_price,
-            b.broadcast_date
-        FROM TAIBROADCASTS b
-        JOIN TAIPGMTAPE t ON b.tape_code = t.tape_code
-        JOIN TAIGOODS p ON t.product_code = p.product_code
-        WHERE b.sales_amount IS NOT NULL
+            price as product_price,
+            broadcast_date
+        FROM broadcast_training_dataset
+        WHERE sales_amount IS NOT NULL
     ),
     product_stats AS (
         SELECT
@@ -92,21 +90,18 @@ def load_data(engine: Engine) -> pd.DataFrame:
         FROM base
         GROUP BY product_mgroup, time_slot
     )
-    -- competitor_counts 제거 - 테이블 존재하지 않음
-    -- holiday_info 제거 - 테이블 존재하지 않음
     SELECT
         b.*,
         ps.product_avg_sales,
         ps.product_broadcast_count,
         cts.category_timeslot_avg_sales,
-        0 as competitor_count_same_category,
-        0 as is_holiday
+        COALESCE(b.competitor_count, 0) as competitor_count_same_category,
+        CASE WHEN b.is_holiday THEN 1 ELSE 0 END as is_holiday
     FROM base b
     LEFT JOIN product_stats ps ON b.product_code = ps.product_code
     LEFT JOIN category_timeslot_stats cts ON b.product_mgroup = cts.product_mgroup AND b.time_slot = cts.time_slot
-    -- LEFT JOIN 제거됨
     """
-    
+
     df = pd.read_sql(query, engine)
     df.fillna(0, inplace=True) # 통계값 없는 경우 0으로 채움
     print(f"데이터 로딩 완료. 총 {len(df)}개 행")
@@ -117,14 +112,14 @@ def build_pipeline() -> Pipeline:
     """Scikit-learn 파이프라인을 구축합니다."""
     print("모델 파이프라인 생성...")
     numeric_features = [
-        "product_price", 
-        "product_avg_sales", 
-        "product_broadcast_count", 
+        "product_price",
+        "product_avg_sales",
+        "product_broadcast_count",
         "category_timeslot_avg_sales",
-        # "competitor_count_same_category",  # 테이블 존재하지 않음으로 제거
+        "competitor_count_same_category",
         "is_holiday"
     ]
-    categorical_features = ["product_lgroup", "product_mgroup", "time_slot", "tape_code"]
+    categorical_features = ["product_lgroup", "product_mgroup", "time_slot"]
     # text_features 제거 - 메인 API에서 실제로 사용되지 않음
 
     preprocessor = ColumnTransformer(

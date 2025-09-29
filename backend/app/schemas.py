@@ -78,7 +78,6 @@ class ProductInfo(BaseModel):
     category: str
     tapeCode: Optional[str] = Field(description="방송테이프 코드", example="T001")
     tapeName: Optional[str] = Field(description="방송테이프명", example="프리미엄 다이어트 보조제 방송테이프")
-    durationMinutes: Optional[int] = Field(description="방송 길이(분)", example=30)
 
 class Reasoning(BaseModel):
     """추천 근거 스키마"""

@@ -138,14 +138,34 @@
 {
   "recommendations": [
     {
-      "productId": "P001",
-      "productName": "프리미엄 다이어트 보조제",
-      "finalScore": 0.87,
-      "reasoning": "AI 생성 추천 근거",
-      "category": "건강식품"
+      "rank": 1,
+      "productInfo": {
+        "productId": "P001",
+        "productName": "프리미엄 다이어트 보조제",
+        "category": "건강식품",
+        "tapeCode": "T001",
+        "tapeName": "프리미엄 다이어트 보조제 방송테이프"
+      },
+      "reasoning": {
+        "summary": "AI 생성 추천 근거",
+        "linkedCategories": ["건강식품"],
+        "matchedKeywords": ["다이어트", "건강"]
+      },
+      "businessMetrics": {
+        "pastAverageSales": "8.5억",
+        "marginRate": 0.25,
+        "stockLevel": "High"
+      }
     }
   ],
-  "recommendedCategories": ["건강식품", "주방용품", "패션의류"]
+  "recommendedCategories": [
+    {
+      "rank": 1,
+      "name": "건강식품",
+      "reason": "트렌드 연관성 높음",
+      "predictedSales": "8.5억"
+    }
+  ]
 }
 ```
 
@@ -260,7 +280,7 @@ Final_Score = (Category_Score * W1) + Individual_Score - (Competition_Penalty * 
 - **검색 대상**: Qdrant 벡터 DB의 상품 임베딩 (OpenAI text-embedding-3-small, 1536차원)
 - **카테고리 검색**: k=50, score_threshold=0.3
 - **상품 검색**: k=30, score_threshold=0.5
-- **필터링 조건**: 방송테이프 존재 여부 (TPGMTAPE 테이블 INNER JOIN)
+- **필터링 조건**: 방송테이프 존재 여부 (TAIPGMTAPE 테이블 INNER JOIN)
 - **유사도 계산**: 코사인 유사도 기반 벡터 검색
 
 ---
@@ -428,7 +448,9 @@ classification_chain = prompt | model | parser
       "productInfo": {
         "productId": "P300123",
         "productName": "[해피콜] 다이아몬드 프라이팬 3종 세트",
-        "category": "생활 > 주방용품"
+        "category": "생활 > 주방용품",
+        "tapeCode": "T300123",
+        "tapeName": "다이아몬드 프라이팬 3종 세트 방송테이프"
       },
       "reasoning": {
         "summary": "'주방용품' 카테고리의 예상 매출이 높고, 동시간대 경쟁이 없어 독점 방송이 가능합니다.",
@@ -497,6 +519,11 @@ cd backend
 python train.py
 ```
 
+**주요 변경사항 (v2.1):**
+- TAIBROADCASTS 테이블 제거, broadcast_training_dataset 직접 사용
+- duration_minutes 컬럼 제거 (불필요한 데이터)
+- 추천 결과에 tapeCode, tapeName 포함 (편성용 필수 정보)
+
 #### 7. 외부 API 설정 (선택사항)
 트렌드 수집을 위한 외부 API 키 설정:
 ```env
@@ -551,7 +578,9 @@ WEATHER_API_KEY=your_weather_api_key
       "productInfo": {
         "productId": "P300123",
         "productName": "[해피콜] 다이아몬드 프라이팬 3종 세트",
-        "category": "생활 > 주방용품"
+        "category": "생활 > 주방용품",
+        "tapeCode": "T300123",
+        "tapeName": "다이아몬드 프라이팬 3종 세트 방송테이프"
       },
       "reasoning": {
         "summary": "주방용품 카테고리의 예상 매출이 높고, 동시간대 경쟁이 없어 독점 방송이 가능합니다.",

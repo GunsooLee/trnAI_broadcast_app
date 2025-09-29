@@ -38,8 +38,7 @@
         "productName": "프리미엄 다이어트 보조제",
         "category": "건강식품",
         "tapeCode": "T001",
-        "tapeName": "프리미엄 다이어트 보조제 방송테이프",
-        "durationMinutes": 30
+        "tapeName": "프리미엄 다이어트 보조제 방송테이프"
       },
       "reasoning": {
         "summary": "AI 예측 매출 85백만원으로 최고 수익 기대",
@@ -59,8 +58,7 @@
         "productName": "홈트레이닝 세트",
         "category": "스포츠용품",
         "tapeCode": "T002",
-        "tapeName": "홈트레이닝 세트 완전정복",
-        "durationMinutes": 45
+        "tapeName": "홈트레이닝 세트 완전정복"
       },
       "reasoning": {
         "summary": "트렌드 키워드 '운동'과 높은 연관성",

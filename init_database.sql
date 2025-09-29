@@ -27,7 +27,6 @@ CREATE TABLE IF NOT EXISTS TAIGOODS (
 CREATE TABLE IF NOT EXISTS TAIPGMTAPE (
     tape_code VARCHAR(50) PRIMARY KEY,
     tape_name VARCHAR(200),
-    duration_minutes INTEGER,
     product_code VARCHAR(50),
     production_status VARCHAR(20) DEFAULT 'ready', -- 'ready', 'in_production', 'archived'
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -90,14 +89,14 @@ INSERT INTO TAIGOODS (product_code, product_name, category_main, category_middle
 ON CONFLICT (product_code) DO NOTHING;
 
 -- 5-1. 모의 방송테이프 데이터 삽입 (일부 상품만 테이프 제작 완료)
-INSERT INTO TAIPGMTAPE (tape_code, tape_name, duration_minutes, product_code, production_status) VALUES
-('T001', '프리미엄 다이어트 보조제 방송테이프', 30, 'P001', 'ready'),
-('T002', '홈트레이닝 세트 완전정복', 45, 'P002', 'ready'),
-('T003', '비타민C 건강 특집', 25, 'P003', 'ready'),
-('T004', '스킨케어 뷰티 솔루션', 35, 'P004', 'ready'),
-('T005', '시원한 여름나기 선풍기', 20, 'P005', 'ready'),
-('T007', '에어프라이어 요리천국', 40, 'P007', 'ready'),
-('T009', '무선 이어폰 음악세상', 25, 'P009', 'ready')
+INSERT INTO TAIPGMTAPE (tape_code, tape_name, product_code, production_status) VALUES
+('T001', '프리미엄 다이어트 보조제 방송테이프', 'P001', 'ready'),
+('T002', '홈트레이닝 세트 완전정복', 'P002', 'ready'),
+('T003', '비타민C 건강 특집', 'P003', 'ready'),
+('T004', '스킨케어 뷰티 솔루션', 'P004', 'ready'),
+('T005', '시원한 여름나기 선풍기', 'P005', 'ready'),
+('T007', '에어프라이어 요리천국', 'P007', 'ready'),
+('T009', '무선 이어폰 음악세상', 'P009', 'ready')
 ON CONFLICT (tape_code) DO NOTHING;
 
 -- 6. 모의 공휴일 데이터 삽입

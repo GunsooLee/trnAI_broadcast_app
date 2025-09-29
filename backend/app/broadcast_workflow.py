@@ -507,8 +507,7 @@ JSON 형식으로 응답해주세요."""),
                     productName=product.get("product_name", "Unknown"),
                     category=product.get("category_main", "Unknown"),
                     tapeCode=product.get("tape_code"),
-                    tapeName=product.get("tape_name"),
-                    durationMinutes=product.get("duration_minutes")
+                    tapeName=product.get("tape_name")
                 ),
                 reasoning=Reasoning(
                     summary=reasoning_summary,
@@ -542,7 +541,6 @@ JSON 형식으로 응답해주세요."""),
         product_name = product.get("product_name", "")
         trend_keyword = candidate.get("trend_keyword", "")
         tape_name = product.get("tape_name", "")
-        duration = product.get("duration_minutes", 0)
         
         # 시간대 정보
         time_slot = context.get("time_slot", "") if context else ""
@@ -679,11 +677,9 @@ JSON 형식으로 응답해주세요."""),
         
         # 방송테이프 기반 템플릿들
         tape_name = product.get("tape_name", "")
-        duration = product.get("duration_minutes", 0)
-        if tape_name and duration:
+        if tape_name:
             tape_templates = [
                 f"전용 방송테이프 '{tape_name}' 완벽 준비 완료",
-                f"{duration}분 최적 방송 분량으로 충분한 상품 소개",
                 f"검증된 방송 콘텐츠로 시청자 몰입도 극대화",
                 f"전문 제작 방송테이프로 상품 매력 완벽 전달"
             ]
@@ -701,24 +697,21 @@ JSON 형식으로 응답해주세요."""),
                 "product_name": "프리미엄 다이어트 보조제",
                 "category_main": "건강식품",
                 "tape_code": "T001",
-                "tape_name": "프리미엄 다이어트 보조제",
-                "duration_minutes": 30
+                "tape_name": "프리미엄 다이어트 보조제"
             },
             {
                 "product_code": "P002", 
                 "product_name": "홈트레이닝 세트",
                 "category_main": "스포츠용품",
                 "tape_code": "T002",
-                "tape_name": "홈트레이닝 세트 완전정복",
-                "duration_minutes": 45
+                "tape_name": "홈트레이닝 세트 완전정복"
             },
             {
                 "product_code": "P005",
                 "product_name": "시원한 여름 선풍기",
-                "category_main": "가전제품", 
+                "category_main": "가전제품",
                 "tape_code": "T005",
-                "tape_name": "시원한 여름나기 선풍기",
-                "duration_minutes": 20
+                "tape_name": "시원한 여름나기 선풍기"
             }
         ]
         
@@ -770,7 +763,6 @@ JSON 형식으로 응답해주세요."""),
             product_name = product.get("product_name", "")
             trend_keyword = candidate.get("trend_keyword", "")
             tape_name = product.get("tape_name", "")
-            duration = product.get("duration_minutes", 0)
             
             # 컨텍스트 정보
             time_slot = context.get("time_slot", "") if context else ""
