@@ -1,25 +1,87 @@
-# AI 기반 홈쇼핑 방송 편성 추천 시스템 (v2.0 - 상세 구현 명세)
+# AI 기반 홈쇼핑 방송 편성 추천 시스템 (v2.1 - 2025-09-30 업데이트)
 
 데이터 기반의 AI 예측을 통해 방송 편성 효율을 극대화하는 백엔드 시스템
 
+> **최신 업데이트 (2025-09-30):** 방송테이프 기반 벡터 검색, XGBoost 직접 연동, 트렌드 기능 제거
+
 ## 목차
 
-1. [프로젝트 개요](#프로젝트-개요)
-2. [사용자 시나리오](#사용자-시나리오)
-3. [상세 워크플로우](#상세-워크플로우)
-4. [상세 알고리즘 명세](#상세-알고리즘-명세)
-   - 4.1. [메인 컨트롤러 의사코드](#41-메인-컨트롤러-의사코드)
-   - 4.2. [Track A/B 병렬 처리 및 결과 통합](#42-track-ab-병렬-처리-및-결과-통합)
-   - 4.3. [최종 상품 랭킹 점수 공식](#43-최종-상품-랭킹-점수-공식)
-   - 4.4. [RAG 검색 파라미터 설정](#44-rag-검색-파라미터-설정)
-5. [시스템 아키텍처](#시스템-아키텍처)
-6. [기술 스택](#기술-스택)
-7. [데이터 플로우 및 형식](#데이터-플로우-및-형식)
-8. [성능 기준 및 캐싱 전략](#성능-기준-및-캐싱-전략)
-9. [LangChain 워크플로우 상세](#langchain-워크플로우-상세)
-10. [XGBoost 모델 학습 데이터](#xgboost-모델-학습-데이터)
-11. [API 명세서](#api-명세서)
-12. [시작하기 (개발 환경 설정)](#시작하기-개발-환경-설정)
+1. [주요 변경사항 (2025-09-30)](#주요-변경사항-2025-09-30)
+2. [프로젝트 개요](#프로젝트-개요)
+3. [사용자 시나리오](#사용자-시나리오)
+4. [상세 워크플로우](#상세-워크플로우)
+5. [상세 알고리즘 명세](#상세-알고리즘-명세)
+   - 5.1. [메인 컨트롤러 의사코드](#51-메인-컨트롤러-의사코드)
+   - 5.2. [Track A/B 병렬 처리 및 결과 통합](#52-track-ab-병렬-처리-및-결과-통합)
+   - 5.3. [최종 상품 랭킹 점수 공식](#53-최종-상품-랭킹-점수-공식)
+   - 5.4. [RAG 검색 파라미터 설정](#54-rag-검색-파라미터-설정)
+6. [시스템 아키텍처](#시스템-아키텍처)
+7. [기술 스택](#기술-스택)
+8. [데이터 플로우 및 형식](#데이터-플로우-및-형식)
+9. [성능 기준 및 캐싱 전략](#성능-기준-및-캐싱-전략)
+10. [LangChain 워크플로우 상세](#langchain-워크플로우-상세)
+11. [XGBoost 모델 학습 데이터](#xgboost-모델-학습-데이터)
+12. [API 명세서](#api-명세서)
+13. [시작하기 (개발 환경 설정)](#시작하기-개발-환경-설정)
+
+---
+
+## 주요 변경사항 (2025-09-30)
+
+### 🔄 시스템 아키텍처 개선
+
+#### 1. **방송테이프 기반 벡터 검색으로 전환**
+- **변경 전**: 모든 상품을 대상으로 벡터 검색 → 방송테이프 필터링
+- **변경 후**: 방송테이프 있는 상품만 임베딩 및 검색 (TAIPGMTAPE INNER JOIN)
+- **임베딩 텍스트 개선**: `상품명 + 테이프명 + 카테고리` 포함
+- **이유**: 방송 불가능한 상품을 사전에 제외하여 검색 품질 및 성능 향상
+
+#### 2. **Qdrant 없이도 작동 가능 (Fallback 로직)**
+- **추가**: Qdrant 검색 결과가 0개일 경우 PostgreSQL에서 전체 카테고리 조회
+- **처리 플로우**:
+  ```
+  Qdrant 검색 → 결과 있으면: 해당 카테고리만 XGBoost 예측
+              → 결과 없으면: 전체 카테고리 조회 후 XGBoost 예측
+  ```
+- **효과**: 시스템 안정성 향상, 초기 데이터 부족 시에도 작동
+
+#### 3. **XGBoost 모델 직접 연동**
+- **변경 전**: `broadcast_recommender.predict_sales()` 호출 (미구현 함수)
+- **변경 후**: `self.model.predict()` 직접 호출
+- **데이터 준비**: 17개 feature를 DataFrame 형식으로 준비
+  - Numeric: product_price, product_avg_profit, hour, temperature 등
+  - Categorical: product_lgroup, time_slot, day_of_week, weather 등
+  - Boolean: is_weekend, is_holiday
+- **효과**: 실제 XGBoost 매출 예측 작동
+
+#### 4. **듀얼 모델 → 단일 모델 (Profit 모델만 사용)**
+- **학습 모델**: 
+  - ✅ `xgb_broadcast_profit.joblib` (매출총이익 예측) - 사용 중
+  - ❌ `xgb_broadcast_efficiency.joblib` (매출효율 예측) - 미사용
+- **이유**: 
+  - Efficiency 모델 성능 불량 (R² = -11.3, 학습 데이터 부족)
+  - Profit 모델만으로도 충분한 예측 가능
+  - 향후 데이터 확보 시 듀얼 모델 시스템 재활성화 예정
+
+#### 5. **Track B (트렌드 상품 검색) 비활성화**
+- **변경 사항**: Track B가 항상 빈 리스트 반환
+- **이유**: 실시간 트렌드 수집 API(네이버/구글) 미연동 상태
+- **현재 동작**: Track A (카테고리 기반 검색)만 활성화
+- **향후 계획**: n8n 배치 서버로 트렌드 수집 후 재활성화
+
+### 🐛 버그 수정
+
+- `duration` 변수 미정의 오류 수정 (기본값 30분 설정)
+- `br.predict_sales()` 미구현 함수 호출 제거
+- XGBoost 모델 파일 경로 수정 (`xgb_broadcast_sales.joblib` → `xgb_broadcast_profit.joblib`)
+- `tokenizer_utils` 모듈 경로 문제 해결 (dependencies.py)
+
+### 📊 현재 시스템 상태
+
+- ✅ **완전 작동**: API 요청 → 카테고리 추천 → XGBoost 예측 → 상품 추천
+- ✅ **안정성**: Qdrant 없어도 작동 (Fallback 로직)
+- ⚠️ **데이터 부족**: 학습 데이터 7건 (과적합 위험, 100건+ 권장)
+- ⚠️ **트렌드 비활성화**: Track B 미사용 (실시간 트렌드 미수집)
 
 ---
 
@@ -101,12 +163,13 @@
 2. 각 카테고리별 예상 매출액 계산 (경쟁사 편성, 날씨, 시간대 등 고려)
 3. 유사도 점수 + 매출 예측값을 결합하여 **'유망 카테고리 TOP 3'** 최종 선정
 
-**Track B - 상품 직접 검색 (매출 예측 없음):**
+**Track B - 상품 직접 검색 (현재 비활성화):**
 1. 상품 특정 키워드로 Qdrant에서 관련 상품들을 벡터 검색
 2. 벡터 유사도가 높은 **'특정 상품 리스트'** 추출 (방송테이프 존재하는 상품만)
-3. ⚠️ Track B에서는 XGBoost 매출 예측을 수행하지 않음 (벡터 검색만)
+3. ⚠️ **현재 비활성화 상태** - 실시간 트렌드 수집 API 미연동
+4. 현재는 항상 빈 리스트 반환
 
-**출력:** Track A 결과 (매출 예측된 카테고리 리스트) + Track B 결과 (상품 리스트)
+**출력:** Track A 결과 (매출 예측된 카테고리 리스트) + Track B 결과 (빈 리스트)
 
 ### 4단계: 후보군 통합 및 랭킹
 
@@ -274,14 +337,16 @@ Final_Score = (Category_Score * W1) + Individual_Score - (Competition_Penalty * 
 
 **정규화:** 모든 개별 지표(과거 매출, 마진율 등)는 후보군 내에서 Min-Max Scaling을 사용하여 0과 1 사이의 값으로 정규화 `(value - min) / (max - min)`
 
-### 4.4. RAG 검색 파라미터 설정
+### 5.4. RAG 검색 파라미터 설정
 
 #### **Vector Search (벡터 검색)**
-- **검색 대상**: Qdrant 벡터 DB의 상품 임베딩 (OpenAI text-embedding-3-small, 1536차원)
-- **카테고리 검색**: k=50, score_threshold=0.3
-- **상품 검색**: k=30, score_threshold=0.5
-- **필터링 조건**: 방송테이프 존재 여부 (TAIPGMTAPE 테이블 INNER JOIN)
+- **검색 대상**: Qdrant 벡터 DB의 **방송테이프 임베딩** (OpenAI text-embedding-3-small, 1536차원)
+- **임베딩 텍스트**: `상품명 + 테이프명 + 카테고리 (대/중분류)`
+- **데이터 소스**: `TAIGOODS INNER JOIN TAIPGMTAPE` (production_status='ready'만 포함)
+- **카테고리 검색**: top_k=50, score_threshold=0.3
+- **상품 검색**: top_k=30, score_threshold=0.5 (현재 비활성화)
 - **유사도 계산**: 코사인 유사도 기반 벡터 검색
+- **Fallback**: 검색 결과 0개 시 PostgreSQL에서 전체 카테고리 조회
 
 ---
 
@@ -397,7 +462,15 @@ classification_chain = prompt | model | parser
 
 ## XGBoost 모델 학습 데이터
 
-{{ ... }}
+### 모델 개요
+
+**학습된 모델:**
+- ✅ **xgb_broadcast_profit.joblib** - 매출총이익(gross_profit) 예측 모델 (사용 중)
+- ⚠️ **xgb_broadcast_efficiency.joblib** - 매출효율(sales_efficiency) 예측 모델 (미사용)
+
+**데이터 소스:** `broadcast_training_dataset` 테이블 (PostgreSQL)
+
+**현재 학습 데이터:** 7건 (최소 100건+ 권장)
 
 ### 주요 피처 (Features)
 
@@ -509,20 +582,33 @@ docker exec -i trnAi_postgres psql -U TRN_AI -d TRNAI_DB < init_database.sql
 
 #### 5. 상품 임베딩 초기화
 ```bash
-cd backend/app
-python setup_product_embeddings.py
+# 방송테이프 있는 상품만 임베딩 (INNER JOIN)
+docker exec -it fastapi_backend python app/setup_product_embeddings.py
 ```
+
+**임베딩 방식 (v2.1):**
+- **대상**: 방송테이프 있는 상품만 (TAIPGMTAPE INNER JOIN, production_status='ready')
+- **텍스트**: `상품명 + 테이프명 + 카테고리 (대/중분류)`
+- **효과**: 방송 불가능한 상품 제외, 검색 품질 향상
 
 #### 6. XGBoost 모델 학습
 ```bash
-cd backend
-python train.py
+# 2개 모델 학습 (profit, efficiency)
+docker exec -it fastapi_backend python train.py
 ```
 
-**주요 변경사항 (v2.1):**
-- TAIBROADCASTS 테이블 제거, broadcast_training_dataset 직접 사용
-- duration_minutes 컬럼 제거 (불필요한 데이터)
-- 추천 결과에 tapeCode, tapeName 포함 (편성용 필수 정보)
+**학습 결과:**
+- `xgb_broadcast_profit.joblib` - 매출총이익 예측 (사용 중)
+- `xgb_broadcast_efficiency.joblib` - 매출효율 예측 (미사용)
+
+**⚠️ 주의**: 현재 학습 데이터 7건으로 과적합 위험, 최소 100건+ 권장
+
+**주요 변경사항 (v2.1 - 2025-09-30):**
+- 방송테이프 기반 임베딩으로 전환
+- XGBoost 직접 연동 (self.model.predict)
+- Track B 비활성화 (트렌드 수집 미연동)
+- Fallback 로직 추가 (Qdrant 없이도 작동)
+- 듀얼 모델 중 profit 모델만 사용
 
 #### 7. 외부 API 설정 (선택사항)
 트렌드 수집을 위한 외부 API 키 설정:

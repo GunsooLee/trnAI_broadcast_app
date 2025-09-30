@@ -103,3 +103,24 @@ class BroadcastResponse(BaseModel):
     requestTime: str
     recommendedCategories: List[RecommendedCategory]
     recommendations: List[BroadcastRecommendation]
+
+# --- 방송테이프 관련 스키마 ---
+class BroadcastTapeInfo(BaseModel):
+    """방송테이프 정보 스키마"""
+    tape_id: str
+    product_code: str
+    product_name: str
+    category: str
+    broadcast_date: str
+    broadcast_time: Optional[str] = None
+    duration_minutes: Optional[int] = None
+    status: str
+    created_at: str
+    updated_at: str
+
+class TapeCollectionResponse(BaseModel):
+    """테이프 수집 응답 스키마"""
+    tapes: List[BroadcastTapeInfo]
+    collection_timestamp: str
+    total_count: int
+    upserted_count: int

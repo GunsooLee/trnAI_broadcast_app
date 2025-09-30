@@ -25,7 +25,7 @@ def get_products_to_embed(engine, force_all=False):
     """임베딩이 필요한 상품들을 조회"""
     
     if force_all:
-        # 전체 재처리 모드
+        # 전체 재처리 모드 (방송테이프 있는 상품만)
         query = """
         SELECT
             g.product_code,
@@ -40,14 +40,15 @@ def get_products_to_embed(engine, force_all=False):
             g.embedded_at
         FROM
             TAIGOODS g
-        LEFT JOIN
+        INNER JOIN
             taipgmtape t ON g.product_code = t.product_code
+        WHERE t.production_status = 'ready'
         ORDER BY
             g.product_code
         """
-        print("🔄 전체 상품 재처리 모드")
+        print("🔄 전체 방송테이프 재처리 모드 (방송테이프 있는 상품만)")
     else:
-        # 증분 처리 모드: 신규 또는 수정된 상품만
+        # 증분 처리 모드: 신규 또는 수정된 방송테이프만
         query = """
         SELECT
             g.product_code,
@@ -62,13 +63,13 @@ def get_products_to_embed(engine, force_all=False):
             g.embedded_at
         FROM
             TAIGOODS g
-        LEFT JOIN
+        INNER JOIN
             taipgmtape t ON g.product_code = t.product_code
-        WHERE g.embedded_at IS NULL 
-           OR g.updated_at > g.embedded_at
+        WHERE t.production_status = 'ready'
+          AND (g.embedded_at IS NULL OR g.updated_at > g.embedded_at)
         ORDER BY g.product_code
         """
-        print("🔄 증분 처리 모드: 신규/수정 상품만")
+        print("🔄 증분 처리 모드: 신규/수정 방송테이프만")
     
     return pd.read_sql(query, engine)
 
@@ -172,13 +173,13 @@ def main():
             # 개별 상품 임베딩
             for idx, row in batch_df.iterrows():
                 try:
-                    # 상품 정보 결합
+                    # 방송테이프 정보 결합 (상품명 + 테이프명 + 카테고리)
                     product_name = str(row.get('product_name', ''))
+                    tape_name = str(row.get('tape_name', ''))
                     category_main = str(row.get('category_main', ''))
                     category_middle = str(row.get('category_middle', ''))
-                    category_sub = str(row.get('category_sub', ''))
                     
-                    text = f"{product_name} {category_main} > {category_middle} > {category_sub}".strip()
+                    text = f"{product_name} {tape_name} {category_main} > {category_middle}".strip()
                     
                     if not text:
                         print(f"     ⚠️  빈 텍스트 건너뜀: {row.get('product_code', 'Unknown')}")

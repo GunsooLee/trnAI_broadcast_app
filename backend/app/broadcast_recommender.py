@@ -47,7 +47,8 @@ import sys
 # ---------------------------------------------------------------------------
 DB_URI = os.getenv("POSTGRES_URI", os.getenv("DB_URI", "postgresql://TIKITAKA:TIKITAKA@175.106.97.27:5432/TIKITAKA_DB"))
 TABLE_NAME = "broadcast_training_dataset"
-MODEL_FILE = "xgb_broadcast_sales.joblib"
+MODEL_FILE_PROFIT = "xgb_broadcast_profit.joblib"
+MODEL_FILE_EFFICIENCY = "xgb_broadcast_efficiency.joblib"
 
 # ---------------------------------------------------------------------------
 # 헬퍼: 키워드로 상품코드 조회 ---------------------------------------------
@@ -101,105 +102,85 @@ def search_product_codes_by_keywords(keywords: list[str], engine: Engine | None 
 
 def load_data() -> pd.DataFrame:
     """
-    단순 SELECT가 아닌, 윈도우 함수를 이용해 Feature Engineering이 적용된
-    학습 데이터를 DataFrame으로 가져온다.
+    broadcast_training_dataset에서 학습 데이터를 로드한다.
+    (주의: 이 함수는 레거시 코드로, 실제로는 train.py의 load_data를 사용해야 함)
     """
     engine = create_engine(DB_URI)
     
-    # 윈도우 함수를 사용한 SQL 쿼리
-    # 각 행(방송)에 대해, 그 방송이 있기 전까지의 과거 데이터를 기반으로 평균값을 계산
+    # broadcast_training_dataset에서 직접 데이터 로드
     query = f"""
-    WITH 
-    -- 1) 방송 데이터
-    base AS (
-        SELECT 
-            broadcast_id,
-            broadcast_datetime,
-            CAST(broadcast_datetime AS DATE) AS broadcast_date, -- <<< broadcast_datetime에서 날짜 추출
-            broadcast_duration,
+    WITH base AS (
+        SELECT
             product_code,
-            product_lgroup,
-            product_mgroup,
-            product_sgroup,
-            product_dgroup,
-            product_type,
+            category_main as product_lgroup,
+            category_middle as product_mgroup,
+            category_sub as product_sgroup,
             product_name,
-            keyword,
+            brand,
+            product_type,
             time_slot,
-            sales_amount,
-            order_count,
-            product_price
-        FROM TAI_{TABLE_NAME}
-        WHERE sales_amount IS NOT NULL
+            day_of_week,
+            season,
+            is_weekend,
+            hour,
+            weather,
+            temperature,
+            precipitation,
+            is_holiday,
+            gross_profit,
+            sales_efficiency,
+            price as product_price,
+            broadcast_date
+        FROM {TABLE_NAME}
+        WHERE gross_profit IS NOT NULL
     ),
-    -- 2) 상품별 통계 (전체 기간)
     product_stats AS (
         SELECT
             product_code,
-            AVG(sales_amount) AS product_avg_sales,
+            AVG(gross_profit) AS product_avg_profit,
             COUNT(*) AS product_broadcast_count
-        FROM TAI_{TABLE_NAME}
+        FROM base
         GROUP BY product_code
     ),
-    -- 3) 카테고리-시간대별 통계 (전체 기간)
     category_timeslot_stats AS (
         SELECT
             product_mgroup,
             time_slot,
-            AVG(sales_amount) AS category_timeslot_avg_sales
-        FROM TAI_{TABLE_NAME}
+            AVG(gross_profit) AS category_timeslot_avg_profit
+        FROM base
         GROUP BY product_mgroup, time_slot
     ),
-    -- 4) 카테고리 전체 평균 통계 (신규 추가)
     category_overall_stats AS (
         SELECT
             product_mgroup,
-            AVG(sales_amount) AS category_overall_avg_sales
-        FROM TAI_{TABLE_NAME}
+            AVG(gross_profit) AS category_overall_avg_profit
+        FROM base
         GROUP BY product_mgroup
     )
-    -- 최종 학습 데이터셋 구성
     SELECT 
         b.*,
-        w.temperature,
-        w.precipitation,
-        w.weather,
-        p.product_avg_sales,
-        p.product_broadcast_count,
-        c.category_timeslot_avg_sales,
-        -- 신규 특성: 시간대별 특화 점수 (division by zero 방지)
-        COALESCE(c.category_timeslot_avg_sales / NULLIF(co.category_overall_avg_sales, 0), 1) AS timeslot_specialty_score,
+        ps.product_avg_profit,
+        ps.product_broadcast_count,
+        cts.category_timeslot_avg_profit,
+        COALESCE(cts.category_timeslot_avg_profit / NULLIF(co.category_overall_avg_profit, 0), 1) AS timeslot_specialty_score,
         b.time_slot || '_' || b.product_mgroup AS time_category_interaction
     FROM base b
-    LEFT JOIN taiweather_daily w ON b.broadcast_date = w.weather_date
-    LEFT JOIN product_stats p ON b.product_code = p.product_code
-    LEFT JOIN category_timeslot_stats c ON b.product_mgroup = c.product_mgroup AND b.time_slot = c.time_slot
-    LEFT JOIN category_overall_stats co ON b.product_mgroup = co.product_mgroup -- 신규 조인
+    LEFT JOIN product_stats ps ON b.product_code = ps.product_code
+    LEFT JOIN category_timeslot_stats cts ON b.product_mgroup = cts.product_mgroup AND b.time_slot = cts.time_slot
+    LEFT JOIN category_overall_stats co ON b.product_mgroup = co.product_mgroup
     """
     
     df = pd.read_sql(query, engine)
 
-    # --- 모델 학습에 필요한 피처 엔지니어링 ---
-    # broadcast_datetime을 datetime 객체로 변환
-    df['broadcast_datetime'] = pd.to_datetime(df['broadcast_datetime'])
-
-    # 요일, 시즌, 시간대(숫자) 파생변수 생성
-    df["weekday"] = df["broadcast_datetime"].dt.day_name().map({
-        'Monday': '월', 'Tuesday': '화', 'Wednesday': '수', 'Thursday': '목', 'Friday': '금', 'Saturday': '토', 'Sunday': '일'
-    })
-    df["season"] = df["broadcast_datetime"].dt.month.apply(_season_kr)
-    slot_map = {
-        "심야": 2, "아침": 7, "오전": 10, "점심": 12, "오후": 15, "저녁": 18, "야간": 21
-    }
-    df["time_slot_int"] = df["time_slot"].map(slot_map)
-
-    # NULL 값을 채우기 (LEFT JOIN으로 인해 발생 가능)
-    df['product_avg_sales'] = df['product_avg_sales'].fillna(0)
-    df['category_timeslot_avg_sales'] = df['category_timeslot_avg_sales'].fillna(0)
+    # NULL 값 처리
+    df['product_avg_profit'] = df['product_avg_profit'].fillna(0)
+    df['category_timeslot_avg_profit'] = df['category_timeslot_avg_profit'].fillna(0)
     df['product_broadcast_count'] = df['product_broadcast_count'].fillna(0)
     df['temperature'] = df['temperature'].fillna(df['temperature'].mean())
     df['precipitation'] = df['precipitation'].fillna(0)
-    df['weather'] = df['weather'].fillna('정보없음') # 날씨 정보 없는 경우 대비
+    df['weather'] = df['weather'].fillna('Clear')
+    df['brand'] = df['brand'].fillna('Unknown')
+    df['product_type'] = df['product_type'].fillna('유형')
     
     return df
 
@@ -296,11 +277,7 @@ def _season_kr(month: int) -> str:
 
 # 추천할 상품의 '전체 기간' 평균 실적을 조회하도록 수정
 def fetch_product_info(product_codes: List[str], engine: Engine | None = None) -> pd.DataFrame:
-    """product_name / keyword 컬럼 전체에 부분 매칭.
-
-    - 입력 키워드를 공백·쉼표로 분할해 노멀라이즈.
-    - product_name / keyword ILIKE 모두 검사.
-    """
+    """broadcast_training_dataset에서 상품 정보를 조회한다."""
     if engine is None:
         engine = get_db_engine()
 
@@ -308,19 +285,16 @@ def fetch_product_info(product_codes: List[str], engine: Engine | None = None) -
     query = f"""
         SELECT 
             product_code,
-            -- 상품의 대표 카테고리 정보 (가장 마지막 값 사용)
-            MAX(product_lgroup) AS product_lgroup,
-            MAX(product_mgroup) AS product_mgroup,
-            MAX(product_sgroup) AS product_sgroup,
-            MAX(product_dgroup) AS product_dgroup,
+            MAX(category_main) AS product_lgroup,
+            MAX(category_middle) AS product_mgroup,
+            MAX(category_sub) AS product_sgroup,
+            MAX(brand) AS brand,
             MAX(product_type) AS product_type,
-            MAX(product_name)  AS product_name,   -- NEW
-            MAX(keyword)       AS keyword,        -- NEW
-            -- 모델에 필요한 피처들 (전체 기간 Groupby)
-            COALESCE(AVG(product_price), 0) AS product_price,
-            COALESCE(AVG(sales_amount), 0) AS product_avg_sales,
+            MAX(product_name) AS product_name,
+            COALESCE(AVG(price), 0) AS product_price,
+            COALESCE(AVG(gross_profit), 0) AS product_avg_profit,
             COUNT(*) AS product_broadcast_count
-        FROM TAI_{TABLE_NAME}
+        FROM {TABLE_NAME}
         WHERE product_code IN {code_tuple}
         GROUP BY product_code
     """
@@ -332,54 +306,44 @@ def fetch_product_info(product_codes: List[str], engine: Engine | None = None) -
 # 카테고리 모드일 때도 동일하게 '카테고리별 전체 기간' 평균 실적 조회
 @lru_cache(maxsize=5)
 def fetch_category_info(engine: Engine | None = None) -> pd.DataFrame:
-    """[수정됨] 카테고리 추천 모드에서 사용할 모든 상품 정보를 DB에서 조회한다."""
+    """카테고리 추천 모드에서 사용할 모든 상품 정보를 DB에서 조회한다."""
     if engine is None:
         engine = get_db_engine()
 
-    # KeyError 해결: 모델 예측에 필요한 모든 컬럼(product_code, name, keyword 등)을
-    # 포함하도록 쿼리를 수정합니다. 카테고리별 집계가 아닌, 개별 상품 정보를 가져옵니다.
     query = f"""
         SELECT 
-            p.product_code,
-            -- 집계를 위해 MAX를 사용하지만, product_code로 그룹화하므로 사실상 개별 값을 가져옵니다.
-            MAX(p.product_name) AS product_name,
-            MAX(p.keyword) AS keyword,
-            MAX(p.product_lgroup) AS product_lgroup,
-            MAX(p.product_mgroup) AS product_mgroup,
-            MAX(p.product_sgroup) AS product_sgroup,
-            MAX(p.product_dgroup) AS product_dgroup,
-            MAX(p.product_type) AS product_type,
-            -- 상품의 평균 가격 및 통계
-            COALESCE(AVG(p.product_price), 0) AS product_price,
-            COALESCE(AVG(s.sales_amount), 0) AS product_avg_sales,
-            COUNT(s.broadcast_id) AS product_broadcast_count
-        FROM TAI_{TABLE_NAME} p
-        -- 자기 자신과 조인하여 상품별 통계를 계산합니다.
-        LEFT JOIN TAI_{TABLE_NAME} s ON p.product_code = s.product_code
-        GROUP BY p.product_code
+            product_code,
+            MAX(product_name) AS product_name,
+            MAX(category_main) AS product_lgroup,
+            MAX(category_middle) AS product_mgroup,
+            MAX(category_sub) AS product_sgroup,
+            MAX(brand) AS brand,
+            MAX(product_type) AS product_type,
+            COALESCE(AVG(price), 0) AS product_price,
+            COALESCE(AVG(gross_profit), 0) AS product_avg_profit,
+            COUNT(*) AS product_broadcast_count
+        FROM {TABLE_NAME}
+        GROUP BY product_code
     """
     df = pd.read_sql(query, engine)
     
-    # 이 함수는 이제 사실상 모든 상품 정보를 가져오므로,
-    # 함수 이름을 좀 더 명확하게 바꾸는 것이 좋습니다. (예: fetch_all_product_info)
-    # 하지만 일단은 최소한의 변경으로 오류를 해결합니다.
     return df
 
 
 @lru_cache(maxsize=5)
 def fetch_category_timeslot_sales(engine: Engine | None = None) -> pd.DataFrame:
-    """카테고리(중분류)와 시간대별 평균 판매액 정보를 DB에서 조회한다."""
+    """카테고리(중분류)와 시간대별 평균 매출총이익 정보를 DB에서 조회한다."""
     if engine is None:
         engine = get_db_engine()
 
     query = f"""
         SELECT 
-            product_mgroup,
+            category_middle as product_mgroup,
             time_slot,
-            COALESCE(AVG(sales_amount), 0) AS category_timeslot_avg_sales
-        FROM TAI_{TABLE_NAME}
-        WHERE sales_amount IS NOT NULL
-        GROUP BY product_mgroup, time_slot
+            COALESCE(AVG(gross_profit), 0) AS category_timeslot_avg_profit
+        FROM {TABLE_NAME}
+        WHERE gross_profit IS NOT NULL
+        GROUP BY category_middle, time_slot
     """
     df = pd.read_sql(query, engine)
     return df
@@ -387,17 +351,18 @@ def fetch_category_timeslot_sales(engine: Engine | None = None) -> pd.DataFrame:
 
 @lru_cache(maxsize=5)
 def get_category_overall_avg_sales(engine: Engine | None = None) -> Dict[str, float]:
-    """카테고리(mgroup)별 전체 시간대 평균 매출액 조회"""
+    """카테고리(mgroup)별 전체 시간대 평균 매출총이익 조회"""
     if engine is None:
         engine = get_db_engine()
 
     query = f"""
-        SELECT product_mgroup, AVG(sales_amount) as avg_sales
-        FROM TAI_{TABLE_NAME}
-        GROUP BY product_mgroup
+        SELECT category_middle as product_mgroup, AVG(gross_profit) as avg_profit
+        FROM {TABLE_NAME}
+        WHERE gross_profit IS NOT NULL
+        GROUP BY category_middle
     """
     df = pd.read_sql(query, engine)
-    return pd.Series(df.avg_sales.values, index=df.product_mgroup).to_dict()
+    return pd.Series(df.avg_profit.values, index=df.product_mgroup).to_dict()
 
 
 def get_db_engine():
@@ -510,9 +475,9 @@ def is_holiday_date(date: dt.date, engine: Engine | None = None) -> int:
 
 
 def get_weather_by_date(date: dt.date, engine: Engine | None = None) -> Dict[str, float]:
-    """weather_daily 테이블에서 주어진 날짜의 날씨 정보를 반환한다.
+    """taiweather_daily 테이블에서 주어진 날짜의 날씨 정보를 반환한다.
 
-    반환 형식: {"weather": "맑음", "temperature": 23.4, "precipitation": 0.0}
+    반환 형식: {"weather": "Clear", "temperature": 23.4, "precipitation": 0.0}
     값이 없으면 기본값을 반환한다.
     """
     if engine is None:
@@ -529,7 +494,7 @@ def get_weather_by_date(date: dt.date, engine: Engine | None = None) -> Dict[str
 
     df = pd.read_sql(query, engine, params={"d": date})
     if df.empty:
-        return {"weather": "맑음", "temperature": 20.0, "precipitation": 0.0}
+        return {"weather": "Clear", "temperature": 20.0, "precipitation": 0.0}
     row = df.iloc[0]
     return {
         "weather": row["weather"],
@@ -539,7 +504,7 @@ def get_weather_by_date(date: dt.date, engine: Engine | None = None) -> Dict[str
 
 
 def recommend(
-    model: Pipeline, 
+    model: Pipeline | tuple[Pipeline, Pipeline], 
     target_date: dt.date,
     time_slots: List[str],
     product_codes: List[str] | None = None,
@@ -550,25 +515,38 @@ def recommend(
     top_k_sample: int = 5,
     temp: float = 0.5,
     top_n: int | None = None,
+    profit_weight: float = 0.7,  # gross_profit 가중치 (0~1)
 ) -> "pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]":
     """시간대별 최적 상품(또는 카테고리)을 추천한다.
 
     category_mode=True 이면 product_codes를 무시하고 카테고리 단위로 추천한다.
+    
+    Args:
+        model: Pipeline 또는 (profit_model, efficiency_model) 튜플
+        profit_weight: gross_profit 가중치 (0~1). efficiency_weight = 1 - profit_weight
     """
     print("  [br.recommend] 2.1. recommend 함수 시작")
     # 스레드 내에서 새로운 DB 엔진 생성
     engine = get_db_engine()
     print("  [br.recommend] 2.2. DB 엔진 생성 완료")
 
-    # 모델은 더 이상 여기서 로드하지 않습니다.
-    pipe = model
+    # 모델 처리: 튜플이면 두 모델, 아니면 단일 모델 (하위 호환성)
+    if isinstance(model, tuple):
+        profit_model, efficiency_model = model
+        use_dual_models = True
+        print(f"  [br.recommend] 듀얼 모델 모드 (profit_weight={profit_weight:.2f})")
+    else:
+        profit_model = model
+        efficiency_model = None
+        use_dual_models = False
+        print("  [br.recommend] 단일 모델 모드 (profit만 사용)")
 
     print("  [br.recommend] 2.3. 카테고리 정보 조회 시작...")
     all_categories_info = fetch_category_info(engine)
     print("  [br.recommend] 2.4. 카테고리 정보 조회 완료")
 
     category_timeslot_sales_df = fetch_category_timeslot_sales(engine)
-    category_timeslot_sales_map = category_timeslot_sales_df.set_index(['product_mgroup', 'time_slot'])['category_timeslot_avg_sales'].to_dict()
+    category_timeslot_sales_map = category_timeslot_sales_df.set_index(['product_mgroup', 'time_slot'])['category_timeslot_avg_profit'].to_dict()
     
     print("  [br.recommend] 2.5. 카테고리 평균 판매액 조회 시작...")
     category_overall_sales_map = get_category_overall_avg_sales(engine)
@@ -671,9 +649,32 @@ def recommend(
 
     print(f"  [br.recommend] 2.13. 예측 후보 데이터 {len(cand_df)}개 생성 완료")
 
-    print("  [br.recommend] 2.14. 모델 예측(pipe.predict) 시작...")
-    # pipe.predict에 필요한 feature만 전달
-    predictions = pipe.predict(cand_df[pipe.feature_names_in_])
+    print("  [br.recommend] 2.14. 모델 예측 시작...")
+    
+    if use_dual_models:
+        # 듀얼 모델: profit과 efficiency 모두 예측 후 가중 평균
+        print("  [br.recommend] 2.14.1. profit 모델 예측...")
+        profit_predictions = profit_model.predict(cand_df[profit_model.feature_names_in_])
+        
+        print("  [br.recommend] 2.14.2. efficiency 모델 예측...")
+        efficiency_predictions = efficiency_model.predict(cand_df[efficiency_model.feature_names_in_])
+        
+        # 정규화: 두 예측값의 스케일이 다르므로 0~1로 정규화
+        profit_norm = (profit_predictions - profit_predictions.min()) / (profit_predictions.max() - profit_predictions.min() + 1e-8)
+        efficiency_norm = (efficiency_predictions - efficiency_predictions.min()) / (efficiency_predictions.max() - efficiency_predictions.min() + 1e-8)
+        
+        # 가중 평균
+        efficiency_weight = 1 - profit_weight
+        predictions = profit_weight * profit_norm + efficiency_weight * efficiency_norm
+        
+        # 원래 스케일로 복원 (profit 기준)
+        predictions = predictions * (profit_predictions.max() - profit_predictions.min()) + profit_predictions.min()
+        
+        print(f"  [br.recommend] 2.14.3. 가중 평균 완료 (profit: {profit_weight:.2f}, efficiency: {efficiency_weight:.2f})")
+    else:
+        # 단일 모델: profit만 예측
+        predictions = profit_model.predict(cand_df[profit_model.feature_names_in_])
+    
     print("  [br.recommend] 2.15. 모델 예측 완료")
 
     cand_df["predicted_sales"] = predictions
@@ -731,22 +732,35 @@ def recommend(
     return result_df
 
 
-def _load_model() -> Pipeline:
-    """XGBoost 모델 파이프라인을 로드한다."""
+def _load_models() -> tuple[Pipeline, Pipeline]:
+    """XGBoost 모델 파이프라인을 로드한다. (profit, efficiency 2개)"""
     # Pickle이 모델을 로드할 때 'tokenizer_utils' 모듈을 찾을 수 있도록 임시 조치
     # 현재 프로젝트 구조(app.tokenizer_utils)를 pickle이 기억하는 경로(tokenizer_utils)에 연결
     import sys
     from . import tokenizer_utils
     sys.modules['tokenizer_utils'] = tokenizer_utils
 
-    MODEL_PATH = os.path.join(os.path.dirname(__file__), "xgb_broadcast_sales.joblib")
-    print(f"--- Loading model from: {MODEL_PATH} ---")
-    if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(f"Model file not found at {MODEL_PATH}")
+    # 모델 1: gross_profit 예측
+    MODEL_PATH_PROFIT = os.path.join(os.path.dirname(__file__), MODEL_FILE_PROFIT)
+    print(f"--- Loading profit model from: {MODEL_PATH_PROFIT} ---")
+    if not os.path.exists(MODEL_PATH_PROFIT):
+        raise FileNotFoundError(f"Profit model file not found at {MODEL_PATH_PROFIT}")
+    profit_model = joblib.load(MODEL_PATH_PROFIT)
     
-    # joblib.load는 동기 함수이므로, run_in_threadpool을 통해 호출되어야 합니다.
-    pipe = joblib.load(MODEL_PATH)
-    return pipe
+    # 모델 2: sales_efficiency 예측
+    MODEL_PATH_EFFICIENCY = os.path.join(os.path.dirname(__file__), MODEL_FILE_EFFICIENCY)
+    print(f"--- Loading efficiency model from: {MODEL_PATH_EFFICIENCY} ---")
+    if not os.path.exists(MODEL_PATH_EFFICIENCY):
+        raise FileNotFoundError(f"Efficiency model file not found at {MODEL_PATH_EFFICIENCY}")
+    efficiency_model = joblib.load(MODEL_PATH_EFFICIENCY)
+    
+    return profit_model, efficiency_model
+
+# 하위 호환성을 위한 레거시 함수 (profit 모델만 반환)
+def _load_model() -> Pipeline:
+    """XGBoost 모델 파이프라인을 로드한다. (하위 호환성용 - profit 모델만 반환)"""
+    profit_model, _ = _load_models()
+    return profit_model
 
 class BroadcastRecommender:
     """방송 편성 추천 관련 비즈니스 로직을 담당하는 클래스"""
@@ -796,9 +810,10 @@ def main() -> None:
             "temperature": args.temp,
             "precipitation": args.precip,
         }
-        model = _load_model()
+        # 두 모델 로드
+        models = _load_models()
         rec_df = recommend(
-            model,
+            models,  # (profit_model, efficiency_model) 튜플 전달
             date,
             slots,
             products,
@@ -808,6 +823,7 @@ def main() -> None:
             top_k_sample=args.top_k_sample,
             temp=args.diversity_temp,
             top_n=args.top_n,
+            profit_weight=0.7,  # 기본값: profit 70%, efficiency 30%
         )
         if isinstance(rec_df, tuple):
             print("\n=== 추천 편성표 ===")

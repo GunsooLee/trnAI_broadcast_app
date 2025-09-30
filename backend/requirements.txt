@@ -12,6 +12,7 @@ langchain-community
 # Database
 SQLAlchemy
 psycopg2-binary
+asyncpg
 python-dotenv
 pandas
 
@@ -21,3 +22,8 @@ qdrant-client==1.7.0
 # Additional dependencies for RAG
 aiohttp
 beautifulsoup4
+
+# Netezza connection
+pyodbc
+nzpy
+# Netezza ODBC 드라이버는 별도 시스템 설치 필요

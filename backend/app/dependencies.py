@@ -1,7 +1,11 @@
 import os
+import sys
 import joblib
 from functools import lru_cache
 from pathlib import Path
+
+# tokenizer_utils 모듈을 찾을 수 있도록 경로 추가 (main.py와 동일)
+sys.path.append(str(Path(__file__).parent))
 
 from .product_embedder import ProductEmbedder
 
@@ -21,7 +25,7 @@ def get_product_embedder() -> ProductEmbedder:
 def get_xgboost_model():
     """XGBoost 모델 싱글턴 인스턴스를 반환합니다."""
     print("--- Loading XGBoost model... ---")
-    model_path = Path(__file__).parent / "xgb_broadcast_sales.joblib"
+    model_path = Path(__file__).parent / "xgb_broadcast_profit.joblib"
     if not model_path.exists():
         raise FileNotFoundError(f"Model file not found at {model_path}")
     return joblib.load(model_path)

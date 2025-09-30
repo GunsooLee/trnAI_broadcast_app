@@ -61,10 +61,14 @@ class ProductEmbedder:
             try:
                 # 상품 정보 결합 (None 값 처리)
                 product_name = str(row.get('product_name', ''))
-                keyword = str(row.get('keyword', ''))
-                category = str(row.get('product_mgroup', ''))
+                category_main = str(row.get('category_main', ''))
+                category_middle = str(row.get('category_middle', ''))
+                category_sub = str(row.get('category_sub', ''))
+                brand = str(row.get('brand', ''))
                 
-                text = f"{product_name} {keyword} {category}".strip()
+                # 임베딩 텍스트: 상품명 + 카테고리 + 브랜드
+                text_parts = [product_name, category_main, category_middle, category_sub, brand]
+                text = " ".join([part for part in text_parts if part and part != 'nan']).strip()
                 
                 if not text:
                     logger.warning(f"빈 텍스트 건너뜀: {row.get('product_code', 'Unknown')}")
@@ -81,10 +85,12 @@ class ProductEmbedder:
                     id=point_id,
                     vector=embedding,
                     payload={
-                        "product_code": str(row.get('product_code', '')),
+                        "product_code": product_code,
                         "product_name": product_name,
-                        "category": category,
-                        "keyword": keyword,
+                        "category_main": category_main,
+                        "category_middle": category_middle,
+                        "category_sub": category_sub,
+                        "brand": brand,
                         "text": text,
                         "created_at": datetime.now().isoformat()
                     }

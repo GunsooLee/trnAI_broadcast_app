@@ -115,11 +115,11 @@ def process_and_enrich_params(params: Dict[str, Any], user_query: str):
 
 
 async def load_model_async():
-    """서버 시작 시 모델을 비동기적으로 로드하기 위한 함수"""
-    return await run_in_threadpool(br._load_model)
+    """서버 시작 시 두 모델을 비동기적으로 로드하기 위한 함수 (profit, efficiency)"""
+    return await run_in_threadpool(br._load_models)
 
 
-async def get_recommendations(user_query: str, model: br.Pipeline) -> RecommendResponse:
+async def get_recommendations(user_query: str, model) -> RecommendResponse:
     print("--- 1. Recommendation service started ---")
     """
     Main service function to get recommendations from a user query.
@@ -178,7 +178,7 @@ async def extract_and_enrich_params(user_query: str) -> Dict[str, Any]:
     print("--- 2. Parameter extraction completed ---")
     return enriched_params
 
-async def get_recommendations_with_params(params: Dict[str, Any], model: br.Pipeline) -> RecommendResponse:
+async def get_recommendations_with_params(params: Dict[str, Any], model) -> RecommendResponse:
     """
     수정된 파라미터로 추천을 생성합니다.
     """
@@ -218,7 +218,7 @@ async def get_recommendations_with_params(params: Dict[str, Any], model: br.Pipe
         recommendations=recommendations
     )
 
-async def get_candidates(user_query: str, model: br.Pipeline, top_k: int = 5) -> CandidatesResponse:
+async def get_candidates(user_query: str, model, top_k: int = 5) -> CandidatesResponse:
     """사용자 질문 기반 시간대별 Top-k 후보를 반환합니다 (카테고리/상품 모드 지원, 기본은 카테고리 모드)."""
     print("--- 1. Candidate service started ---")
 

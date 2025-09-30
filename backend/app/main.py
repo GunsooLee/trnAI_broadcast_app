@@ -14,9 +14,10 @@ pprint.pprint(sys.path)
 # .env 파일에서 환경 변수를 로드합니다.
 load_dotenv()
 
-from .schemas import BroadcastRequest, BroadcastResponse
+from .schemas import BroadcastRequest, BroadcastResponse, TapeCollectionResponse, BroadcastTapeInfo
 from .broadcast_workflow import BroadcastWorkflow
 from .dependencies import get_broadcast_workflow
+from .netezza_config import netezza_conn
 
 app = FastAPI(
     title="Home Shopping Broadcast Recommender API",
@@ -92,4 +93,73 @@ async def broadcast_recommendations(payload: BroadcastRequest, workflow: Broadca
 def health_check():
     """API 서버의 상태를 확인합니다."""
     return {"status": "ok"}
+
+# ========================================
+# 🎬 방송테이프 수집 API 엔드포인트
+# ========================================
+
+@app.post("/api/v1/tapes/sync", response_model=TapeCollectionResponse)
+async def sync_broadcast_tapes():
+    """📺 Netezza DB에서 방송테이프 정보를 동기화합니다 (Upsert 방식)
+
+    n8n에서 주기적으로 호출하여 방송테이프 정보를 PostgreSQL DB에 동기화합니다.
+    """
+    from datetime import datetime
+
+    print(f"--- API Endpoint /api/v1/tapes/sync received request ---")
+
+    try:
+        collection_timestamp = datetime.now().isoformat()
+
+        # Netezza에서 모든 방송테이프 정보 가져오기
+        print(f"--- Fetching all broadcast tapes from Netezza ---")
+        raw_tapes = await netezza_conn.get_all_broadcast_tapes()
+
+        # 결과를 스키마에 맞게 변환
+        tapes = []
+        for tape_data in raw_tapes:
+            tape_info = BroadcastTapeInfo(
+                tape_id=str(tape_data.get('tape_id', '')),
+                product_code=str(tape_data.get('product_code', '')),
+                product_name=str(tape_data.get('product_name', '')),
+                category=str(tape_data.get('category', '')),
+                broadcast_date=str(tape_data.get('broadcast_date', '')),
+                broadcast_time=str(tape_data.get('broadcast_time', '')) if tape_data.get('broadcast_time') else None,
+                duration_minutes=tape_data.get('duration_minutes'),
+                status=str(tape_data.get('status', '')),
+                created_at=str(tape_data.get('created_at', '')),
+                updated_at=str(tape_data.get('updated_at', ''))
+            )
+            tapes.append(tape_info)
+
+        # PostgreSQL에 Upsert 수행
+        upserted_count = await netezza_conn.upsert_tapes_to_postgres(tapes)
+
+        response = TapeCollectionResponse(
+            tapes=tapes,
+            collection_timestamp=collection_timestamp,
+            total_count=len(tapes),
+            upserted_count=upserted_count
+        )
+
+        print(f"--- Successfully synced {len(tapes)} tapes, upserted {upserted_count} records ---")
+        return response
+
+    except Exception as e:
+        print(f"--- ERROR IN /api/v1/tapes/sync ---")
+        import traceback
+        traceback.print_exc()
+
+        # Netezza 연결 오류는 503으로 처리
+        if "Netezza" in str(e) or "connection" in str(e).lower():
+            raise HTTPException(
+                status_code=503,
+                detail=f"Netezza 데이터베이스 연결 오류: {str(e)}"
+            )
+
+        # 기타 내부 오류는 500으로 처리
+        raise HTTPException(
+            status_code=500,
+            detail=f"방송테이프 동기화 중 오류가 발생했습니다: {str(e)}"
+        )
 

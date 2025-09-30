@@ -3,7 +3,7 @@
 
 -- 1. 날씨 데이터 테이블
 CREATE TABLE IF NOT EXISTS taiweather_daily (
-    weather_date TIMESTAMP PRIMARY KEY,
+    weather_date DATE PRIMARY KEY,
     weather VARCHAR(50),
     temperature DECIMAL(5,2),
     precipitation DECIMAL(5,2),
@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS TAIGOODS (
     category_middle VARCHAR(100),
     category_sub VARCHAR(100),
     price DECIMAL(10,2),
+    brand VARCHAR(100),
+    product_type VARCHAR(10), -- 유형/무형
     embedded_at TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -37,11 +39,11 @@ CREATE TABLE IF NOT EXISTS TAIPGMTAPE (
 -- 3. 방송 데이터 테이블
 CREATE TABLE IF NOT EXISTS TAIBROADCASTS (
     id SERIAL PRIMARY KEY,
-    broadcast_date DATE,
-    time_slot VARCHAR(20),
     tape_code VARCHAR(50),
-    sales_amount DECIMAL(15,2),
-    viewer_count INTEGER,
+    broadcast_start_timestamp TIMESTAMP,  -- 방송 시작 시간
+    product_is_new BOOLEAN,              -- 신상품 여부 (True: 첫 방송, False: 재방송)
+    gross_profit DECIMAL(15,2),          -- 매출 총이익
+    sales_efficiency DECIMAL(10,2),      -- 매출 효율 (분당 매출 총이익)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (tape_code) REFERENCES TAIPGMTAPE(tape_code)
 );
@@ -67,25 +69,25 @@ CREATE TABLE IF NOT EXISTS TAICOMPETITOR_BROADCASTS (
 
 -- 4. 모의 날씨 데이터 삽입
 INSERT INTO taiweather_daily (weather_date, weather, temperature, precipitation) VALUES
-('2025-08-18', '폭염', 35.5, 0.0),
-('2025-08-17', '맑음', 32.0, 0.0),
-('2025-08-16', '구름많음', 28.5, 2.5),
-('2025-08-15', '비', 25.0, 15.8),
-('2025-08-14', '맑음', 30.2, 0.0)
+('2025-08-18', 'Clear', 35.5, 0.0),
+('2025-08-17', 'Clear', 32.0, 0.0),
+('2025-08-16', 'Clouds', 28.5, 2.5),
+('2025-08-15', 'Rain', 25.0, 15.8),
+('2025-08-14', 'Clear', 30.2, 0.0)
 ON CONFLICT (weather_date) DO NOTHING;
 
 -- 5. 모의 상품 데이터 삽입
-INSERT INTO TAIGOODS (product_code, product_name, category_main, category_middle, category_sub,  price) VALUES
-('P001', '프리미엄 다이어트 보조제', '건강식품', '영양보조식품', '다이어트', 89000),
-('P002', '홈트레이닝 세트', '운동용품', '헬스용품', '홈트레이닝', 150000),
-('P003', '비타민C 1000mg', '건강식품', '영양보조식품', '비타민', 45000),
-('P004', '프리미엄 스킨케어 세트', '화장품', '기초화장품', '스킨케어', 120000),
-('P005', '무선 선풍기', '가전제품', '생활가전', '선풍기', 78000),
-('P006', '쿨매트 침대용', '생활용품', '침구류', '매트', 65000),
-('P007', '프리미엄 에어프라이어', '가전제품', '주방가전', '에어프라이어', 180000),
-('P008', '여름 원피스', '의류', '여성의류', '원피스', 85000),
-('P009', '무선 이어폰', '전자제품', '음향기기', '이어폰', 95000),
-('P010', '마사지 건', '건강용품', '마사지용품', '마사지기', 135000)
+INSERT INTO TAIGOODS (product_code, product_name, category_main, category_middle, category_sub, price, brand, product_type) VALUES
+('P001', '프리미엄 다이어트 보조제', '건강식품', '영양보조식품', '다이어트', 89000, '헬씨라이프', '유형'),
+('P002', '홈트레이닝 세트', '운동용품', '헬스용품', '홈트레이닝', 150000, '피트니스코리아', '유형'),
+('P003', '비타민C 1000mg', '건강식품', '영양보조식품', '비타민', 45000, '데일리뉴트리', '유형'),
+('P004', '프리미엄 스킨케어 세트', '화장품', '기초화장품', '스킨케어', 120000, '뷰티랩', '유형'),
+('P005', '무선 선풍기', '가전제품', '생활가전', '선풍기', 78000, '쿨윈드', '유형'),
+('P006', '쿨매트 침대용', '생활용품', '침구류', '매트', 65000, '슬립웰', '유형'),
+('P007', '프리미엄 에어프라이어', '가전제품', '주방가전', '에어프라이어', 180000, '이지쿡', '유형'),
+('P008', '여름 원피스', '의류', '여성의류', '원피스', 85000, '썸머패션', '유형'),
+('P009', '무선 이어폰', '전자제품', '음향기기', '이어폰', 95000, '사운드마스터', '유형'),
+('P010', '마사지 건', '건강용품', '마사지용품', '마사지기', 135000, '릴렉스프로', '유형')
 ON CONFLICT (product_code) DO NOTHING;
 
 -- 5-1. 모의 방송테이프 데이터 삽입 (일부 상품만 테이프 제작 완료)
@@ -133,21 +135,18 @@ INSERT INTO TAICOMPETITOR_BROADCASTS (broadcast_date, time_slot, competitor_name
 
 -- 8. 모의 방송 데이터 삽입
 -- P006, P008, P010은 방송테이프가 없으므로 방송 이력에서 제외
-INSERT INTO TAIBROADCASTS (broadcast_date, time_slot, tape_code, sales_amount, viewer_count) VALUES
-('2025-08-18', '20:00-22:00', 'T001', 15000000, 25000),
-('2025-08-18', '22:00-24:00', 'T002', 8000000, 18000),
-('2025-08-17', '20:00-22:00', 'T003', 12000000, 22000),
-('2025-08-17', '18:00-20:00', 'T004', 20000000, 30000),
-('2025-08-16', '20:00-22:00', 'T005', 6000000, 15000),
--- ('2025-08-16', '22:00-24:00', 'T006', 4000000, 12000), -- T006은 없음
-('2025-08-15', '20:00-22:00', 'T007', 18000000, 28000),
--- ('2025-08-15', '18:00-20:00', 'T008', 9000000, 20000), -- T008은 없음
-('2025-08-14', '20:00-22:00', 'T009', 7000000, 16000);
+INSERT INTO TAIBROADCASTS (tape_code, broadcast_start_timestamp, product_is_new, gross_profit, sales_efficiency) VALUES
+('T001', '2025-08-18 20:00:00', FALSE, 12000000, 100000.00),
+('T002', '2025-08-18 22:00:00', TRUE, 6400000, 71111.11),
+('T003', '2025-08-17 20:00:00', FALSE, 9600000, 128000.00),
+('T004', '2025-08-17 18:00:00', TRUE, 16000000, 190476.19),
+('T005', '2025-08-16 20:00:00', FALSE, 4800000, 120000.00),
+('T007', '2025-08-15 20:00:00', TRUE, 14400000, 180000.00),
+('T009', '2025-08-14 20:00:00', FALSE, 5600000, 140000.00);
 -- ('2025-08-14', '22:00-24:00', 'T010', 11000000, 21000); -- T010은 없음
 
 -- 인덱스 생성
-CREATE INDEX IF NOT EXISTS idx_TAIBROADCASTS_date ON TAIBROADCASTS(broadcast_date);
-CREATE INDEX IF NOT EXISTS idx_TAIBROADCASTS_timeslot ON TAIBROADCASTS(time_slot);
+CREATE INDEX IF NOT EXISTS idx_TAIBROADCASTS_timestamp ON TAIBROADCASTS(broadcast_start_timestamp);
 CREATE INDEX IF NOT EXISTS idx_TAIGOODS_category_main ON TAIGOODS(category_main);
 CREATE INDEX IF NOT EXISTS idx_TAIHOLIDAYS_date ON TAIHOLIDAYS(holiday_date);
 CREATE INDEX IF NOT EXISTS idx_TAICOMPETITOR_BROADCASTS_date_slot ON TAICOMPETITOR_BROADCASTS(broadcast_date, time_slot);
@@ -182,71 +181,127 @@ INSERT INTO TAITRENDS (trend_date, keyword, source, score, category) VALUES
 ('2025-09-08', '원피스', 'GOOGLE', 82, '의류'),
 ('2025-09-07', '마사지', 'NAVER', 75, '건강용품')
 ON CONFLICT (trend_date, keyword, source) DO NOTHING;
+-- ============================================
+-- 테이블: broadcast_training_dataset
+-- 설명: XGBoost 매출 예측 모델 학습용 데이터셋
+--       과거 방송 데이터를 기반으로 매출총이익을 예측하기 위한 피처와 타겟 변수를 저장
+-- 작성일: 2025-09-30
+-- ============================================
 
--- XGBoost 모델 학습용 방송 데이터셋 테이블
-CREATE TABLE IF NOT EXISTS broadcast_training_dataset (
+CREATE TABLE broadcast_training_dataset (
+    -- ===== Primary Key =====
     id SERIAL PRIMARY KEY,
+    
+    -- ===== 시간 정보 =====
     broadcast_date DATE NOT NULL,
-    time_slot VARCHAR(20) NOT NULL,
+    hour INTEGER NOT NULL,
+    day_of_week VARCHAR(10) NOT NULL,
+    time_slot VARCHAR(20),
+    season VARCHAR(10),
+    is_weekend BOOLEAN,
+    
+    -- ===== 상품 정보 =====
     product_code VARCHAR(50) NOT NULL,
     product_name VARCHAR(200),
-    category_main VARCHAR(100),
-    category_middle VARCHAR(100),
-    category_sub VARCHAR(100),
-    price DECIMAL(10,2),
-    sales_amount DECIMAL(15,2) NOT NULL,
-    viewer_count INTEGER,
-    weather VARCHAR(50),
-    temperature DECIMAL(5,2),
-    precipitation DECIMAL(5,2),
-    is_holiday BOOLEAN DEFAULT FALSE,
-    competitor_count INTEGER DEFAULT 0,
-    season VARCHAR(10),
-    day_of_week INTEGER,
-    hour INTEGER,
+    category_main VARCHAR(50) NOT NULL,
+    category_middle VARCHAR(50),
+    category_sub VARCHAR(50),
+    price NUMERIC(12, 2),
+    brand VARCHAR(100),
+    product_type VARCHAR(10),
+    product_is_new BOOLEAN,
+    
+    -- ===== 날씨 정보 =====
+    weather VARCHAR(20),
+    temperature FLOAT,
+    precipitation FLOAT,
+    
+    -- ===== 외부 요인 =====
+    is_holiday BOOLEAN NOT NULL,
+    holiday_name VARCHAR(100),
+    
+    -- ===== 타겟 변수 =====
+    gross_profit NUMERIC(15, 2) NOT NULL,
+    sales_efficiency NUMERIC(10, 2),
+    
+    -- ===== 메타 정보 =====
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    -- ===== 제약 조건 =====
+    CONSTRAINT check_hour CHECK (hour >= 0 AND hour < 24),
+    CONSTRAINT check_price CHECK (price >= 0),
+    CONSTRAINT check_gross_profit CHECK (gross_profit >= 0)
 );
 
--- 통합 시장 데이터 테이블 (n8n 크롤링용 - 홈쇼핑 랭킹 + 검색 트렌드)
-CREATE TABLE IF NOT EXISTS market_data (
-    id SERIAL PRIMARY KEY,
-    data_type VARCHAR(50) NOT NULL,  -- 'homeshopping_ranking' 또는 'search_trend'
-    source VARCHAR(100) NOT NULL,    -- 'CJ온스타일', 'GS샵', 'naver_shopping', 'google_trends' 등
-    
-    -- 홈쇼핑 랭킹 데이터
-    product_name TEXT,
-    rank_position INTEGER,
-    price INTEGER,
-    discount_rate DECIMAL(5,2),
-    
-    -- 검색 트렌드 데이터  
-    keyword VARCHAR(200),
-    trend_score INTEGER,  -- 1-100 점수
-    search_volume BIGINT,
-    
-    -- 공통 필드
-    category VARCHAR(100),
-    related_keywords TEXT[],  -- 연관 키워드 배열
-    metadata JSONB,  -- 추가 메타데이터
-    original_url TEXT,
-    collected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
-    -- 중복 방지를 위한 유니크 제약
-    UNIQUE(data_type, source, COALESCE(product_name, keyword), collected_at)
-);
+-- ============================================
+-- 테이블 및 컬럼 코멘트
+-- ============================================
+COMMENT ON TABLE broadcast_training_dataset IS 'XGBoost 매출 예측 모델 학습용 데이터셋';
 
--- 인덱스 생성 (성능 최적화)
-CREATE INDEX IF NOT EXISTS idx_broadcast_training_date ON broadcast_training_dataset(broadcast_time);
-CREATE INDEX IF NOT EXISTS idx_broadcast_training_product ON broadcast_training_dataset(product_code);
-CREATE INDEX IF NOT EXISTS idx_broadcast_training_category ON broadcast_training_dataset(category_main);
+-- Primary Key
+COMMENT ON COLUMN broadcast_training_dataset.id IS '자동 증가 Primary Key';
 
--- 시장 데이터 인덱스 생성
-CREATE INDEX IF NOT EXISTS idx_market_data_collected_at ON market_data(collected_at);
-CREATE INDEX IF NOT EXISTS idx_market_data_type_source ON market_data(data_type, source);
-CREATE INDEX IF NOT EXISTS idx_market_data_trend_score ON market_data(trend_score DESC) WHERE data_type = 'search_trend';
-CREATE INDEX IF NOT EXISTS idx_market_data_rank ON market_data(rank_position) WHERE data_type = 'homeshopping_ranking';
+-- 시간 정보
+COMMENT ON COLUMN broadcast_training_dataset.broadcast_date IS '방송 날짜';
+COMMENT ON COLUMN broadcast_training_dataset.hour IS '방송 시작 시간 (0-23)';
+COMMENT ON COLUMN broadcast_training_dataset.day_of_week IS '요일 (월/화/수/목/금/토/일)';
+COMMENT ON COLUMN broadcast_training_dataset.time_slot IS '시간대 구분 (새벽/오전/오후/저녁/심야)';
+COMMENT ON COLUMN broadcast_training_dataset.season IS '계절 (봄/여름/가을/겨울)';
+COMMENT ON COLUMN broadcast_training_dataset.is_weekend IS '주말 여부';
 
--- 테이블 코멘트
-COMMENT ON TABLE broadcast_training_dataset IS 'XGBoost 모델 학습을 위한 방송 매출 데이터셋';
-COMMENT ON TABLE market_data IS 'n8n에서 크롤링한 통합 시장 데이터 (홈쇼핑 랭킹 + 검색 트렌드)';
+-- 상품 정보
+COMMENT ON COLUMN broadcast_training_dataset.product_code IS '상품 고유 코드';
+COMMENT ON COLUMN broadcast_training_dataset.product_name IS '상품명';
+COMMENT ON COLUMN broadcast_training_dataset.category_main IS '상품 대분류';
+COMMENT ON COLUMN broadcast_training_dataset.category_middle IS '상품 중분류';
+COMMENT ON COLUMN broadcast_training_dataset.category_sub IS '상품 소분류';
+COMMENT ON COLUMN broadcast_training_dataset.price IS '상품 판매 가격 (원)';
+COMMENT ON COLUMN broadcast_training_dataset.brand IS '브랜드명. 브랜드 파워에 따른 매출 차이 반영';
+COMMENT ON COLUMN broadcast_training_dataset.product_type IS '상품 유형 (유형: 실물 상품, 무형: 상품권/여행권 등)';
+COMMENT ON COLUMN broadcast_training_dataset.product_is_new IS '신상품 여부 (True: 첫 방송, False: 재방송)';
+
+-- 날씨 정보
+COMMENT ON COLUMN broadcast_training_dataset.weather IS '날씨 상태 (맑음/흐림/비/눈)';
+COMMENT ON COLUMN broadcast_training_dataset.temperature IS '기온 (℃)';
+COMMENT ON COLUMN broadcast_training_dataset.precipitation IS '강수량 (mm)';
+
+-- 외부 요인
+COMMENT ON COLUMN broadcast_training_dataset.is_holiday IS '공휴일 여부';
+
+-- 타겟 변수
+COMMENT ON COLUMN broadcast_training_dataset.gross_profit IS '매출총이익 (원). 예측 목표';
+COMMENT ON COLUMN broadcast_training_dataset.sales_efficiency IS '매출효율 (원/분). 매출총이익 / 방송시간';
+
+-- 메타 정보
+COMMENT ON COLUMN broadcast_training_dataset.created_at IS '레코드 생성 시각';
+COMMENT ON COLUMN broadcast_training_dataset.updated_at IS '레코드 최종 수정 시각';
+
+-- ============================================
+-- 인덱스 생성
+-- ============================================
+CREATE INDEX idx_broadcast_date ON broadcast_training_dataset(broadcast_date);
+COMMENT ON INDEX idx_broadcast_date IS '날짜 기준 조회 성능 향상 (시계열 분석, 기간별 집계)';
+
+CREATE INDEX idx_category_main ON broadcast_training_dataset(category_main);
+COMMENT ON INDEX idx_category_main IS '대분류 카테고리 기준 조회 성능 향상 (카테고리별 매출 분석)';
+
+CREATE INDEX idx_product_code ON broadcast_training_dataset(product_code);
+COMMENT ON INDEX idx_product_code IS '상품 코드 기준 조회 성능 향상 (상품별 과거 성과 조회)';
+
+CREATE INDEX idx_date_hour ON broadcast_training_dataset(broadcast_date, hour);
+COMMENT ON INDEX idx_date_hour IS '날짜+시간 복합 인덱스. 특정 시간대의 과거 데이터 조회 성능 향상';
+
+CREATE INDEX idx_brand ON broadcast_training_dataset(brand);
+COMMENT ON INDEX idx_brand IS '브랜드별 성과 분석 및 조회 성능 향상';
+
+CREATE INDEX idx_product_type ON broadcast_training_dataset(product_type);
+COMMENT ON INDEX idx_product_type IS '유형/무형 상품별 매출 패턴 분석 성능 향상';
+
+-- ============================================
+-- 제약 조건 설명
+-- ============================================
+-- check_hour: 시간은 0~23 범위 내여야 함
+-- check_price: 가격은 0 이상이어야 함
+-- check_duration: 방송 시간은 양수여야 함
+-- check_gross_profit: 매출총이익은 0 이상이어야 함
