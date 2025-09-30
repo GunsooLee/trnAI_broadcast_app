@@ -413,7 +413,6 @@ JSON 형식으로 응답해주세요."""),
         product_name = product.get("product_name", "")
         trend_keyword = candidate.get("trend_keyword", "")
         tape_name = product.get("tape_name", "")
-        duration = product.get("duration", 30)  # 방송 시간 (분), 기본값 30분
         
         # 시간대 정보
         time_slot = context.get("time_slot", "") if context else ""
@@ -451,11 +450,8 @@ JSON 형식으로 응답해주세요."""),
                 reasons.append("폭염 날씨 최적 상품")
         
         # 5. 방송테이프 정보
-        if tape_name and duration:
-            if duration >= 40:
-                reasons.append("충분한 방송 분량 확보")
-            elif duration >= 25:
-                reasons.append("적정 방송 분량")
+        if tape_name:
+            reasons.append("방송테이프 준비 완료")
         
         # 6. AI 신뢰도
         if final_score > 0.8:
@@ -670,7 +666,7 @@ JSON 형식으로 응답해주세요."""),
 트렌드 키워드: {trend_keyword}
 트렌드 부스트: {trend_boost}
 예측 매출: {predicted_sales}만원
-방송테이프: {tape_name} ({duration}분)
+방송테이프: {tape_name}
 시간대: {time_slot}
 날씨: {weather}
 경쟁 상황: {competition_status}
@@ -689,7 +685,6 @@ JSON 형식으로 응답해주세요."""),
                 "trend_boost": f"{trend_boost:.1f}배",
                 "predicted_sales": int(predicted_sales / 10000),  # 만원 단위
                 "tape_name": tape_name or "미준비",
-                "duration": duration,
                 "time_slot": time_slot or "미지정",
                 "weather": weather or "보통",
                 "competition_status": "경쟁 없음" if not has_competition else "경쟁 있음"
