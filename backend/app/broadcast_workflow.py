@@ -5,17 +5,17 @@ LangChain 기반 2단계 워크플로우: AI 방향 탐색 + 고속 랭킹
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
-import logging
 import pandas as pd
 from sqlalchemy import create_engine, text
 import os
 
 from langchain_openai import ChatOpenAI
-from langchain.schema import HumanMessage, SystemMessage
-from langchain.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from .external_apis import ExternalAPIManager
 
 from .dependencies import get_product_embedder
 from . import broadcast_recommender as br
@@ -131,6 +131,22 @@ class BroadcastWorkflow:
         context["time_slot"] = time_slot
         context["day_type"] = day_type
 
+        # AI 기반 트렌드 생성 (LLM API)
+        api_manager = ExternalAPIManager()
+        if api_manager.llm_trend_api:
+            try:
+                llm_trends = await api_manager.llm_trend_api.get_trending_searches()
+                # AI가 생성한 트렌드 키워드 추가
+                context["ai_trends"] = [t["keyword"] for t in llm_trends]
+                logger.info(f"AI 트렌드 생성 완료: {len(llm_trends)}개 키워드")
+                logger.info(f"AI 트렌드: {context['ai_trends'][:5]}...")  # 상위 5개만 로그
+            except Exception as e:
+                logger.error(f"AI 트렌드 생성 실패: {e}")
+                context["ai_trends"] = []
+        else:
+            logger.warning("OpenAI API 키 없음 - AI 트렌드 생성 건너뜀")
+            context["ai_trends"] = []
+
         # 컨텍스트 로그 출력
         logger.info(f"컨텍스트 수집 완료 - 계절: {context['season']}, 시간대: {time_slot}, 요일: {day_type}")
         logger.info(f"날씨: {weather_info.get('weather', 'N/A')}")
@@ -172,6 +188,11 @@ class BroadcastWorkflow:
         
         # 시간/날짜 키워드
         all_keywords.extend([context["time_slot"], context["day_type"], context["season"]])
+        
+        # 🎉 AI 생성 트렌드 추가! (날씨/시간 기반 트렌드)
+        if "ai_trends" in context and context["ai_trends"]:
+            all_keywords.extend(context["ai_trends"][:10])  # 상위 10개만 포함
+            logger.info(f"AI 트렌드 키워드 {len(context['ai_trends'][:10])}개 추가됨")
 
         # 수집된 키워드들 로그 출력
         logger.info(f"키워드 분류 시작 - 총 {len(all_keywords)}개 키워드: {all_keywords}")
