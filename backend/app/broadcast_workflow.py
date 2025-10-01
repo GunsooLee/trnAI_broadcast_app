@@ -74,6 +74,7 @@ class BroadcastWorkflow:
             context["category_keywords"] = classified_keywords.get("category_keywords", [])
             context["product_keywords"] = classified_keywords.get("product_keywords", [])
             context["generated_keywords"] = track_b_result.get("generated_keywords", [])  # Track B에서 생성된 키워드
+            print(f"=== [DEBUG] context에 키워드 저장 완료, generated_keywords: {context['generated_keywords']} ===")
             
             # 3. 후보군 생성 및 통합 (문서 명세 준수)
             candidate_products = await self._generate_candidates(
@@ -89,7 +90,7 @@ class BroadcastWorkflow:
             )
             
             # 5. API 응답 생성 (문서 명세 준수)
-            response = await self._format_response(ranked_products[:recommendation_count], track_a_result["categories"][:3])
+            response = await self._format_response(ranked_products[:recommendation_count], track_a_result["categories"][:3], context)
             response.requestTime = request_time
             
             logger.info(f"방송 추천 완료: {len(ranked_products)}개 추천")
@@ -303,12 +304,23 @@ JSON 형식으로 응답해주세요."""),
     async def _generate_context_keywords(self, context: Dict[str, Any]) -> List[str]:
         """컨텍스트 정보를 기반으로 LangChain으로 검색 키워드 생성"""
         
-        # 컨텍스트 정보 추출
-        weather = context["weather"].get("weather", "맑음")
-        temperature = context["weather"].get("temperature", 20)
+        # 컨텍스트 정보 추출 (안전하게)
+        weather_info = context.get("weather", {})
+        logger.info(f"weather_info type: {type(weather_info)}, value: {weather_info}")
+        
+        if isinstance(weather_info, dict):
+            weather = weather_info.get("weather", "맑음")
+            temperature = weather_info.get("temperature", 20)
+        else:
+            logger.warning(f"weather_info is not dict: {weather_info}")
+            weather = "맑음"
+            temperature = 20
+        
         time_slot = context.get("time_slot", "저녁")
         season = context.get("season", "봄")
         day_type = context.get("day_type", "평일")
+        
+        logger.info(f"추출된 정보 - weather: {weather}, temp: {temperature}, time_slot: {time_slot}, season: {season}, day_type: {day_type}")
         
         # LangChain 프롬프트
         keyword_prompt = ChatPromptTemplate.from_messages([
@@ -345,8 +357,29 @@ JSON 형식으로 응답해주세요."""),
             return keywords
         except Exception as e:
             logger.error(f"컨텍스트 키워드 생성 오류: {e}")
-            # 폴백: 기본 키워드 사용
-            fallback_keywords = [weather, season, time_slot, day_type]
+            # 폴백: 시간대/계절 기반 실용적 키워드
+            fallback_keywords = []
+            
+            # 시간대별 키워드
+            if time_slot == "저녁":
+                fallback_keywords.extend(["저녁식사", "실내활동", "휴식", "가족시간"])
+            elif time_slot == "오전":
+                fallback_keywords.extend(["아침", "출근", "활력", "건강"])
+            elif time_slot == "오후":
+                fallback_keywords.extend(["점심", "야외활동", "운동", "쇼핑"])
+            else:
+                fallback_keywords.extend(["밤", "수면", "휴식"])
+            
+            # 계절별 키워드
+            if season == "겨울":
+                fallback_keywords.extend(["따뜻한", "보온", "난방"])
+            elif season == "여름":
+                fallback_keywords.extend(["시원한", "냉방", "휴가"])
+            elif season == "봄":
+                fallback_keywords.extend(["신선한", "야외", "꽃"])
+            else:
+                fallback_keywords.extend(["가을", "건강", "환절기"])
+            
             logger.info(f"폴백 키워드 사용: {fallback_keywords}")
             return fallback_keywords
     
@@ -455,6 +488,9 @@ JSON 형식으로 응답해주세요."""),
     
     async def _format_response(self, ranked_products: List[Dict[str, Any]], top_categories: List[RecommendedCategory], context: Dict[str, Any] = None) -> BroadcastResponse:
         """API 응답 생성 (비동기)"""
+        print(f"=== [DEBUG _format_response] context keys: {context.keys() if context else 'None'} ===")
+        if context:
+            print(f"=== [DEBUG _format_response] generated_keywords: {context.get('generated_keywords', [])} ===")
         recommendations = []
         
         for i, candidate in enumerate(ranked_products):
@@ -478,7 +514,7 @@ JSON 형식으로 응답해주세요."""),
                 reasoning=Reasoning(
                     summary=reasoning_summary,
                     linkedCategories=[product.get("category_main", "Unknown")],
-                    matchedKeywords=[candidate.get("trend_keyword", "")]
+                    matchedKeywords=context.get("generated_keywords", []) if context else []
                 ),
                 businessMetrics=BusinessMetrics(
                     pastAverageSales=f"{candidate['predicted_sales']/100000000:.1f}억",
