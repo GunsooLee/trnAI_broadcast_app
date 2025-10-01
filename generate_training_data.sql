@@ -25,6 +25,10 @@ INSERT INTO broadcast_training_dataset (
     product_type,
     product_is_new,
     
+    -- 방송테이프 정보
+    tape_code,
+    tape_name,
+    
     -- 날씨 정보
     weather,
     temperature,
@@ -86,6 +90,10 @@ SELECT
     g.brand,
     g.product_type,
     b.product_is_new,
+    
+    -- ===== 방송테이프 정보 =====
+    t.tape_code,
+    t.tape_name,
     
     -- ===== 날씨 정보 =====
     w.weather,

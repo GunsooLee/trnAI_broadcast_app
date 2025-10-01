@@ -70,6 +70,11 @@ class BroadcastWorkflow:
             )
             print(f"=== [DEBUG] Track A/B 완료, categories: {len(track_a_result.get('categories', []))}, products: {len(track_b_result.get('products', []))} ===")
             
+            # 생성된 키워드를 context에 저장 (추천 근거에 사용)
+            context["category_keywords"] = classified_keywords.get("category_keywords", [])
+            context["product_keywords"] = classified_keywords.get("product_keywords", [])
+            context["generated_keywords"] = track_b_result.get("generated_keywords", [])  # Track B에서 생성된 키워드
+            
             # 3. 후보군 생성 및 통합 (문서 명세 준수)
             candidate_products = await self._generate_candidates(
                 promising_categories=track_a_result["categories"],
@@ -295,10 +300,99 @@ JSON 형식으로 응답해주세요."""),
             logger.error(f"Track A 오류: {e}")
             return {"categories": [], "scores": {}}
     
+    async def _generate_context_keywords(self, context: Dict[str, Any]) -> List[str]:
+        """컨텍스트 정보를 기반으로 LangChain으로 검색 키워드 생성"""
+        
+        # 컨텍스트 정보 추출
+        weather = context["weather"].get("weather", "맑음")
+        temperature = context["weather"].get("temperature", 20)
+        time_slot = context.get("time_slot", "저녁")
+        season = context.get("season", "봄")
+        day_type = context.get("day_type", "평일")
+        
+        # LangChain 프롬프트
+        keyword_prompt = ChatPromptTemplate.from_messages([
+            ("system", """당신은 홈쇼핑 방송 편성 전문가입니다. 
+주어진 컨텍스트 정보를 분석하여, 해당 시간/날씨/상황에 적합한 상품 검색 키워드를 생성해주세요.
+
+예시:
+- 날씨가 '비'이고 저녁 시간 → "우산", "방수", "실내활동", "따뜻한음식", "집콕", "요리도구"
+- 날씨가 '맑음'이고 오후 시간 → "야외활동", "운동", "캠핑", "레저", "자외선차단"
+- 겨울철 저녁 시간 → "난방", "보온", "따뜻한", "겨울의류", "온열", "찜질"
+
+5-10개의 키워드를 JSON 배열로 반환해주세요."""),
+            ("human", """날씨: {weather}
+기온: {temperature}도
+시간대: {time_slot}
+계절: {season}
+요일 타입: {day_type}
+
+위 상황에 적합한 상품 검색 키워드를 생성해주세요.""")
+        ])
+        
+        chain = keyword_prompt | self.llm | JsonOutputParser()
+        
+        try:
+            result = await chain.ainvoke({
+                "weather": weather,
+                "temperature": temperature,
+                "time_slot": time_slot,
+                "season": season,
+                "day_type": day_type
+            })
+            keywords = result.get("keywords", [])
+            logger.info(f"컨텍스트 기반 키워드 생성 완료: {keywords}")
+            return keywords
+        except Exception as e:
+            logger.error(f"컨텍스트 키워드 생성 오류: {e}")
+            # 폴백: 기본 키워드 사용
+            fallback_keywords = [weather, season, time_slot, day_type]
+            logger.info(f"폴백 키워드 사용: {fallback_keywords}")
+            return fallback_keywords
+    
     async def _execute_track_b(self, context: Dict[str, Any], product_keywords: List[str]) -> Dict[str, Any]:
-        """Track B: 트렌드 상품 찾기 (트렌드 기능 비활성화)"""
-        logger.info("Track B: 트렌드 기능 비활성화됨")
-        return {"products": [], "trend_scores": {}}
+        """Track B: 컨텍스트 기반 상품 찾기 (날씨/시간대 기반)"""
+        
+        print(f"=== [DEBUG Track B] 시작, product_keywords: {product_keywords} ===")
+        
+        generated_keywords = []  # 생성된 키워드 저장
+        
+        # 1. 트렌드 키워드가 없으면 컨텍스트에서 키워드 생성
+        if not product_keywords:
+            logger.info("Track B: 트렌드 키워드 없음 → 컨텍스트 기반 키워드 생성")
+            product_keywords = await self._generate_context_keywords(context)
+            generated_keywords = product_keywords  # 생성된 키워드 보관
+            print(f"=== [DEBUG Track B] 생성된 컨텍스트 키워드: {product_keywords} ===")
+        
+        if not product_keywords:
+            logger.info("Track B: 키워드 없음 → 빈 결과 반환")
+            return {"products": [], "trend_scores": {}, "generated_keywords": []}
+        
+        # 2. 생성된 키워드로 상품 검색
+        query = " ".join(product_keywords)
+        print(f"=== [DEBUG Track B] Qdrant 검색 쿼리: '{query}' ===")
+        
+        try:
+            # Qdrant에서 상품 검색 (방송 테이프 준비 완료 상품만)
+            similar_products = self.product_embedder.search_products(
+                trend_keywords=[query],
+                top_k=20,
+                score_threshold=0.3
+            )
+            
+            print(f"=== [DEBUG Track B] Qdrant 검색 결과: {len(similar_products)}개 ===")
+            
+            if similar_products:
+                trend_scores = {p["product_code"]: p.get("score", 0.5) for p in similar_products}
+                logger.info(f"Track B 완료: {len(similar_products)}개 상품 발견")
+                return {"products": similar_products, "trend_scores": trend_scores, "generated_keywords": generated_keywords}
+            else:
+                logger.info("Track B: 검색 결과 없음")
+                return {"products": [], "trend_scores": {}, "generated_keywords": generated_keywords}
+                
+        except Exception as e:
+            logger.error(f"Track B 오류: {e}")
+            return {"products": [], "trend_scores": {}, "generated_keywords": []}
     
     async def _generate_candidates(self, promising_categories: List[RecommendedCategory], trend_products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """후보군 생성 및 통합"""
@@ -914,10 +1008,12 @@ JSON 형식으로 응답해주세요."""),
         try:
             query = text("""
                 SELECT product_code, product_name, category_main, category_middle, 
-                       AVG(gross_profit) as avg_sales, COUNT(*) as broadcast_count
+                       AVG(gross_profit) as avg_sales, COUNT(*) as broadcast_count,
+                       tape_code, tape_name
                 FROM broadcast_training_dataset 
                 WHERE category_main = :category
-                GROUP BY product_code, product_name, category_main, category_middle
+                GROUP BY product_code, product_name, category_main, category_middle,
+                         tape_code, tape_name
                 ORDER BY avg_sales DESC 
                 LIMIT :limit
             """)
@@ -933,7 +1029,9 @@ JSON 형식으로 응답해주세요."""),
                     "category_main": row[2],
                     "category_middle": row[3],
                     "avg_sales": float(row[4]),
-                    "broadcast_count": int(row[5])
+                    "broadcast_count": int(row[5]),
+                    "tape_code": row[6],
+                    "tape_name": row[7]
                 })
             
             return products
@@ -1021,7 +1119,10 @@ JSON 형식으로 응답해주세요."""),
                 summary = await self._generate_detailed_summary(product, source_type, context)
             else:
                 linked_categories = [product.get("category_main", "")]
+                # context에서 생성된 키워드 가져오기
                 matched_keywords = []
+                if context:
+                    matched_keywords = context.get("generated_keywords", []) or context.get("category_keywords", [])
                 summary = await self._generate_detailed_summary(product, source_type, context)
             
             return {

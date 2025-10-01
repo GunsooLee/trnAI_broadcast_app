@@ -211,6 +211,10 @@ CREATE TABLE broadcast_training_dataset (
     product_type VARCHAR(10),
     product_is_new BOOLEAN,
     
+    -- ===== 방송테이프 정보 =====
+    tape_code VARCHAR(50),
+    tape_name VARCHAR(200),
+    
     -- ===== 날씨 정보 =====
     weather VARCHAR(20),
     temperature FLOAT,
