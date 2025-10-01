@@ -189,7 +189,7 @@ class BroadcastWorkflow:
         # 시간/날짜 키워드
         all_keywords.extend([context["time_slot"], context["day_type"], context["season"]])
         
-        # 🎉 AI 생성 트렌드 추가! (날씨/시간 기반 트렌드)
+        # AI 생성 트렌드 추가! (날씨/시간 기반 트렌드)
         if "ai_trends" in context and context["ai_trends"]:
             all_keywords.extend(context["ai_trends"][:10])  # 상위 10개만 포함
             logger.info(f"AI 트렌드 키워드 {len(context['ai_trends'][:10])}개 추가됨")
@@ -535,7 +535,7 @@ JSON 형식으로 응답해주세요."""),
                 reasoning=Reasoning(
                     summary=reasoning_summary,
                     linkedCategories=[product.get("category_main", "Unknown")],
-                    matchedKeywords=context.get("generated_keywords", []) if context else []
+                    matchedKeywords=(context.get("generated_keywords", []) or context.get("ai_trends", [])[:5]) if context else []
                 ),
                 businessMetrics=BusinessMetrics(
                     pastAverageSales=f"{candidate['predicted_sales']/100000000:.1f}억",
