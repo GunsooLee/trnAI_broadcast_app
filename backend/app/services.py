@@ -2,11 +2,14 @@ import datetime as dt
 import zoneinfo
 import json
 import os
+import logging
 from typing import Dict, Any, List
 
 from fastapi.concurrency import run_in_threadpool
 from openai import OpenAI
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 # broadcast_recommender 모듈을 br로 임포트
 from . import broadcast_recommender as br
@@ -58,6 +61,11 @@ def extract_params_from_llm(user_msg: str) -> dict | None:
         "}"
     )
     try:
+        # 프롬프트 로깅
+        logger.info(f"=== LLM 파라미터 추출 프롬프트 ===")
+        logger.info(f"System: {system_prompt}")
+        logger.info(f"User: {user_msg}")
+        
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -67,6 +75,8 @@ def extract_params_from_llm(user_msg: str) -> dict | None:
             temperature=0,
         )
         content = resp.choices[0].message.content
+        logger.info(f"=== LLM 파라미터 추출 응답 ===")
+        logger.info(f"\n{content}\n")
         return json.loads(content)
     except Exception:
         return None

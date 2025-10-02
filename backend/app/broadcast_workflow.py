@@ -315,7 +315,7 @@ JSON 형식으로 응답해주세요."""),
                     rank=i+1,
                     name=cat["category"],
                     reason=cat["reason"],
-                    predictedSales=f"{cat['predicted_sales']/100000000:.1f}억"
+                    predictedSales=f"{int(cat['predicted_sales']/10000)}만원"  # 만원 단위
                 ))
             
             print(f"=== [DEBUG Track A] 최종 결과: {len(result)} 카테고리 ===")
@@ -545,7 +545,7 @@ JSON 형식으로 응답해주세요."""),
                     ) if context else []
                 ),
                 businessMetrics=BusinessMetrics(
-                    pastAverageSales=f"{candidate['predicted_sales']/100000000:.1f}억",
+                    pastAverageSales=f"{int(candidate['predicted_sales']/10000)}만원",  # 만원 단위
                     marginRate=0.25,
                     stockLevel="High"
                 )
@@ -887,13 +887,21 @@ JSON 형식으로 응답해주세요."""),
                 "is_holiday": 0
             }])
             
+            logger.info(f"=== 카테고리 매출 예측 입력 ===")
+            logger.info(f"카테고리: {category}, 시간: {broadcast_dt.hour}시")
+            
             # XGBoost 파이프라인으로 예측 (전처리 포함)
             predicted_sales = self.model.predict(dummy_data)[0]
+            logger.info(f"=== 카테고리 예측 결과 ===")
+            logger.info(f"{category}: {predicted_sales:,.0f}원 ({predicted_sales/100000000:.2f}억)")
+            
             return float(predicted_sales)
             
         except Exception as e:
             logger.error(f"카테고리 매출 예측 오류 ({category}): {e}")
-            return 50000000  # 기본값
+            import traceback
+            logger.error(f"상세 에러:\n{traceback.format_exc()}")
+            return 50000000  # 기본값 (0.5억)
     
     async def _predict_product_sales(self, product: Dict[str, Any], context: Dict[str, Any]) -> float:
         """개별 상품 XGBoost 매출 예측"""
@@ -929,13 +937,27 @@ JSON 형식으로 응답해주세요."""),
                 "is_holiday": 0
             }])
             
+            logger.info(f"=== XGBoost 매출 예측 입력 데이터 ===")
+            logger.info(f"상품: {product.get('product_name', 'Unknown')}")
+            logger.info(f"카테고리: {product.get('category_main', 'Unknown')}")
+            logger.info(f"가격: {product.get('product_price', 100000):,}원")
+            logger.info(f"과거 평균 매출: {product.get('avg_sales', 30000000):,}원")
+            logger.info(f"방송 시간: {broadcast_dt.hour}시")
+            logger.info(f"날씨: {context['weather'].get('weather', 'Clear')}, {context['weather'].get('temperature', 20)}°C")
+            
             # XGBoost 파이프라인으로 예측 (전처리 포함)
             predicted_sales = self.model.predict(product_data)[0]
+            logger.info(f"=== XGBoost 예측 결과 ===")
+            logger.info(f"예측 매출: {predicted_sales:,.0f}원 ({predicted_sales/100000000:.2f}억)")
+            
             return float(predicted_sales)
             
         except Exception as e:
             logger.error(f"상품 매출 예측 오류: {e}")
-            return 30000000  # 기본값
+            logger.error(f"상품 정보: {product.get('product_name', 'Unknown')}")
+            import traceback
+            logger.error(f"상세 에러:\n{traceback.format_exc()}")
+            return 30000000  # 기본값 (0.3억)
     
     async def _get_ace_products_from_category(self, category: str, limit: int = 5) -> List[Dict[str, Any]]:
         """카테고리별 에이스 상품 조회 (방송 테이프 준비 완료 상품만)"""
@@ -1017,7 +1039,7 @@ JSON 형식으로 응답해주세요."""),
                     matchedKeywords=candidate["reasoning"]["matchedKeywords"]
                 ),
                 businessMetrics=BusinessMetrics(
-                    pastAverageSales=f"{candidate['metrics']['pastAverageSales']/100000000:.1f}억",
+                    pastAverageSales=f"{int(candidate['metrics']['pastAverageSales']/10000)}만원",  # 만원 단위
                     marginRate=candidate['metrics']['marginRate'],
                     stockLevel=candidate['metrics']['stockLevel']
                 )

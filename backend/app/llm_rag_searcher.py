@@ -138,6 +138,10 @@ class LLMRAGSearcher:
 3. 구체적인 추천 이유 제시
 4. 최대 5개 상품 추천
 """
+        
+        # 프롬프트 로깅
+        logger.info(f"=== LLM RAG 상품 추천 프롬프트 ===")
+        logger.info(f"\n{prompt}\n")
 
         try:
             response = self.openai_client.chat.completions.create(
@@ -152,6 +156,8 @@ class LLMRAGSearcher:
             
             # JSON 응답 파싱
             response_text = response.choices[0].message.content
+            logger.info(f"=== LLM RAG 상품 추천 응답 ===")
+            logger.info(f"\n{response_text}\n")
             
             # JSON 추출 (```json 블록 처리)
             if "```json" in response_text:

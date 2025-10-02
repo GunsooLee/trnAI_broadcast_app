@@ -159,6 +159,10 @@ class LLMTrendAPI:
 선풍기,88,무더위 대비
 건강즙,85,아침 활력
 """
+            
+            # 프롬프트 로깅
+            logger.info(f"=== LLM 트렌드 생성 프롬프트 ===")
+            logger.info(f"\n{prompt}\n")
 
             response = await client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -168,6 +172,8 @@ class LLMTrendAPI:
             )
 
             llm_response = response.choices[0].message.content.strip()
+            logger.info(f"=== LLM 트렌드 생성 응답 ===")
+            logger.info(f"\n{llm_response}\n")
 
             trends = []
             lines = llm_response.split('\n')

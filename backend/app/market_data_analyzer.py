@@ -200,6 +200,10 @@ class MarketDataAnalyzer:
 """
         
         try:
+            # 프롬프트 로깅
+            logger.info(f"=== LLM 시장 데이터 분석 프롬프트 ===")
+            logger.info(f"\n{prompt}\n")
+            
             response = await self.openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
@@ -208,6 +212,8 @@ class MarketDataAnalyzer:
             )
             
             llm_response = response.choices[0].message.content.strip()
+            logger.info(f"=== LLM 시장 데이터 분석 응답 ===")
+            logger.info(f"\n{llm_response}\n")
             
             # JSON 파싱 시도
             try:
