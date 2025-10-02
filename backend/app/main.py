@@ -50,10 +50,12 @@ async def broadcast_recommendations(payload: BroadcastRequest, workflow: Broadca
     최적의 홈쇼핑 방송 편성을 추천합니다.
     """
     print(f"--- API Endpoint /api/v1/broadcast/recommendations received a request: {payload.broadcastTime} ---")
+    print(f"--- 비율 설정: 트렌드 {payload.trendRatio:.0%} / 매출 {1-payload.trendRatio:.0%} ---")
     try:
         response_data = await workflow.process_broadcast_recommendation(
             payload.broadcastTime,
-            payload.recommendationCount
+            payload.recommendationCount,
+            payload.trendRatio
         )
 
         # 빈 추천 결과 체크

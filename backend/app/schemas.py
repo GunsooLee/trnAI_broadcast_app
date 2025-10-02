@@ -63,6 +63,13 @@ class BroadcastRequest(BaseModel):
     """방송 추천 요청 스키마"""
     broadcastTime: str = Field(..., description="방송 시간", example="2025-09-15T22:40:00+09:00")
     recommendationCount: int = Field(default=5, description="추천 개수", example=5)
+    trendRatio: float = Field(
+        default=0.3, 
+        ge=0.0, 
+        le=1.0,
+        description="트렌드 매칭 비율 (0.0~1.0). 0.3=트렌드30%+매출70%, 0.5=균형, 1.0=트렌드만",
+        example=0.3
+    )
 
 class RecommendedCategory(BaseModel):
     """추천 카테고리 스키마"""
@@ -97,6 +104,7 @@ class BroadcastRecommendation(BaseModel):
     productInfo: ProductInfo
     reasoning: Reasoning
     businessMetrics: BusinessMetrics
+    recommendationType: str  # "trend_match" (유사도) or "sales_prediction" (매출예측)
 
 class BroadcastResponse(BaseModel):
     """방송 추천 응답 스키마"""

@@ -43,9 +43,19 @@ class BroadcastWorkflow:
     async def process_broadcast_recommendation(
         self, 
         broadcast_time: str, 
-        recommendation_count: int = 5
+        recommendation_count: int = 5,
+        trend_ratio: float = 0.3  # 트렌드 매칭 비율 (0.3 = 30%)
     ) -> BroadcastResponse:
-        """메인 워크플로우: 방송 시간 기반 추천"""
+        """메인 워크플로우: 방송 시간 기반 추천
+        
+        Args:
+            broadcast_time: 방송 시간
+            recommendation_count: 추천 개수
+            trend_ratio: 트렌드 매칭 비율 (0.0~1.0, 기본 0.3)
+                - 0.3 = 트렌드 30%, 매출예측 70%
+                - 0.5 = 균형 (50:50)
+                - 0.0 = 매출예측만 (100%)
+        """
         
         print("=== [DEBUG] process_broadcast_recommendation 시작 ===")
         request_time = datetime.now().isoformat()
@@ -53,44 +63,39 @@ class BroadcastWorkflow:
         print(f"=== [DEBUG] broadcast_time: {broadcast_time}, recommendation_count: {recommendation_count} ===")
         
         try:
-            # 1단계: AI의 방향 탐색 (숲 찾기)
-            print("=== [DEBUG] _collect_context 호출 전 ===")
-            context = await self._collect_context(broadcast_time)
-            print(f"=== [DEBUG] _collect_context 완료, context keys: {context.keys()} ===")
+            # 1단계: 컨텍스트 수집 및 통합 키워드 생성
+            print("=== [DEBUG] _collect_context_and_keywords 호출 ===")
+            context = await self._collect_context_and_keywords(broadcast_time)
+            print(f"=== [DEBUG] 통합 키워드: {len(context.get('unified_keywords', []))}개 ===")
             
-            print("=== [DEBUG] _classify_keywords_with_langchain 호출 전 ===")
-            classified_keywords = await self._classify_keywords_with_langchain(context)
-            print(f"=== [DEBUG] _classify_keywords_with_langchain 완료, keys: {classified_keywords.keys()} ===")
+            # 2. 통합 검색 실행 (1회)
+            print("=== [DEBUG] _execute_unified_search 호출 ===")
+            search_result = await self._execute_unified_search(context, context.get("unified_keywords", []))
+            print(f"=== [DEBUG] 검색 완료 - 직접매칭: {len(search_result['direct_products'])}개, 카테고리: {len(search_result['category_groups'])}개 ===")
             
-            # 2. Track A, B 비동기 병렬 실행 (문서 명세 준수)
-            print(f"=== [DEBUG] Track A/B 실행 전, category_keywords: {classified_keywords.get('category_keywords', [])}, product_keywords: {classified_keywords.get('product_keywords', [])} ===")
-            track_a_result, track_b_result = await asyncio.gather(
-                self._execute_track_a(context, classified_keywords.get("category_keywords", [])),
-                self._execute_track_b(context, classified_keywords.get("product_keywords", []))
+            # 3. 후보군 생성 (비율 조정)
+            print("=== [DEBUG] _generate_unified_candidates 호출 ===")
+            max_trend = max(1, int(recommendation_count * trend_ratio))  # 최소 1개
+            max_sales = recommendation_count - max_trend + 5  # 여유분 추가
+            print(f"=== [DEBUG] 비율 조정: 트렌드 {max_trend}개, 매출 {max_sales}개 (비율: {trend_ratio:.0%}) ===")
+            
+            candidate_products, category_scores, top_categories = await self._generate_unified_candidates(
+                search_result,
+                context,
+                max_trend_match=max_trend,
+                max_sales_prediction=max_sales
             )
-            print(f"=== [DEBUG] Track A/B 완료, categories: {len(track_a_result.get('categories', []))}, products: {len(track_b_result.get('products', []))} ===")
+            print(f"=== [DEBUG] 후보군 생성 완료: {len(candidate_products)}개 ===")
             
-            # 생성된 키워드를 context에 저장 (추천 근거에 사용)
-            context["category_keywords"] = classified_keywords.get("category_keywords", [])
-            context["product_keywords"] = classified_keywords.get("product_keywords", [])
-            context["generated_keywords"] = track_b_result.get("generated_keywords", [])  # Track B에서 생성된 키워드
-            print(f"=== [DEBUG] context에 키워드 저장 완료, generated_keywords: {context['generated_keywords']} ===")
-            
-            # 3. 후보군 생성 및 통합 (문서 명세 준수)
-            candidate_products = await self._generate_candidates(
-                promising_categories=track_a_result["categories"],
-                trend_products=track_b_result["products"]
-            )
-            
-            # 4. 최종 랭킹 계산 (문서 명세 준수)
+            # 4. 최종 랭킹 계산
             ranked_products = await self._rank_final_candidates(
                 candidate_products,
-                category_scores=track_a_result["scores"],
+                category_scores=category_scores,
                 context=context
             )
             
-            # 5. API 응답 생성 (문서 명세 준수)
-            response = await self._format_response(ranked_products[:recommendation_count], track_a_result["categories"][:3], context)
+            # 5. API 응답 생성
+            response = await self._format_response(ranked_products[:recommendation_count], top_categories[:3], context)
             response.requestTime = request_time
             
             logger.info(f"방송 추천 완료: {len(ranked_products)}개 추천")
@@ -107,8 +112,8 @@ class BroadcastWorkflow:
             # 기타 내부 오류는 500 에러로 처리
             raise Exception(f"내부 서버 오류: {e}")
     
-    async def _collect_context(self, broadcast_time: str) -> Dict[str, Any]:
-        """컨텍스트 수집: 날씨, 트렌드, 시간 정보"""
+    async def _collect_context_and_keywords(self, broadcast_time: str) -> Dict[str, Any]:
+        """컨텍스트 수집 및 통합 키워드 생성 (개선된 버전)"""
         
         # 방송 시간 파싱
         broadcast_dt = datetime.fromisoformat(broadcast_time.replace('Z', '+00:00'))
@@ -154,6 +159,25 @@ class BroadcastWorkflow:
         # 컨텍스트 로그 출력
         logger.info(f"컨텍스트 수집 완료 - 계절: {context['season']}, 시간대: {time_slot}, 요일: {day_type}")
         logger.info(f"날씨: {weather_info.get('weather', 'N/A')}")
+        
+        # 통합 키워드 생성 (AI 트렌드 + 컨텍스트 키워드)
+        unified_keywords = []
+        
+        # 1. AI 트렌드 키워드 추가
+        if context.get("ai_trends"):
+            unified_keywords.extend(context["ai_trends"][:10])  # 상위 10개
+            logger.info(f"AI 트렌드 키워드 {len(context['ai_trends'][:10])}개 추가")
+        
+        # 2. 컨텍스트 기반 키워드 생성
+        context_keywords = await self._generate_context_keywords(context)
+        if context_keywords:
+            unified_keywords.extend(context_keywords)
+            logger.info(f"컨텍스트 키워드 {len(context_keywords)}개 추가")
+        
+        # 3. 중복 제거 및 저장
+        context["unified_keywords"] = list(dict.fromkeys(unified_keywords))  # 순서 유지 중복 제거
+        logger.info(f"통합 키워드 생성 완료: 총 {len(context['unified_keywords'])}개")
+        logger.info(f"통합 키워드: {context['unified_keywords']}")
 
         return context
     
@@ -234,6 +258,66 @@ JSON 형식으로 응답해주세요."""),
                     "category_keywords": all_keywords[:10],
                     "product_keywords": []
                 }
+    
+    async def _execute_unified_search(self, context: Dict[str, Any], unified_keywords: List[str]) -> Dict[str, Any]:
+        """통합 검색: 1회 Qdrant 검색으로 직접매칭/카테고리 상품 분류"""
+        
+        print(f"=== [DEBUG Unified Search] 시작, keywords: {len(unified_keywords)}개 ===")
+        
+        if not unified_keywords:
+            logger.warning("통합 키워드 없음 - 빈 결과 반환")
+            return {"direct_products": [], "category_groups": {}}
+        
+        query = " ".join(unified_keywords)
+        print(f"=== [DEBUG Unified Search] Qdrant 검색 쿼리: '{query}' ===")
+        
+        try:
+            # Qdrant 통합 검색 (1회)
+            all_results = self.product_embedder.search_products(
+                trend_keywords=[query],
+                top_k=50,
+                score_threshold=0.3,
+                only_ready_products=True
+            )
+            print(f"=== [DEBUG Unified Search] 검색 결과: {len(all_results)}개 상품 ===")
+            
+            # 유사도 기반 분류
+            direct_products = []      # 고유사도: 직접 추천
+            category_groups = {}      # 중유사도: 카테고리별 그룹
+            
+            # 보완: 유사도 임계값 조정 (0.7 → 0.55)
+            HIGH_SIMILARITY_THRESHOLD = 0.55
+            
+            for product in all_results:
+                similarity = product.get("similarity_score", 0)
+                category = product.get("category_main", "기타")
+                
+                # 고유사도 상품: 직접 매칭 (XGBoost 건너뛰기 후보)
+                if similarity >= HIGH_SIMILARITY_THRESHOLD:
+                    # 보완: 안전장치 - 방송테이프 확인
+                    if product.get("tape_code") and product.get("tape_name"):
+                        direct_products.append({
+                            **product,
+                            "source": "direct_match",
+                            "similarity_score": similarity
+                        })
+                        print(f"  - 직접매칭: {product.get('product_name')} (유사도: {similarity:.2f})")
+                
+                # 중유사도: 카테고리 그룹핑
+                if category not in category_groups:
+                    category_groups[category] = []
+                category_groups[category].append(product)
+            
+            print(f"=== [DEBUG Unified Search] 직접매칭: {len(direct_products)}개, 카테고리: {len(category_groups)}개 ===")
+            
+            return {
+                "direct_products": direct_products,
+                "category_groups": category_groups
+            }
+            
+        except Exception as e:
+            logger.error(f"통합 검색 오류: {e}")
+            return {"direct_products": [], "category_groups": {}}
     
     async def _execute_track_a(self, context: Dict[str, Any], category_keywords: List[str]) -> Dict[str, Any]:
         """Track A: 유망 카테고리 찾기"""
@@ -370,6 +454,21 @@ JSON 형식으로 응답해주세요."""),
         chain = keyword_prompt | self.llm | JsonOutputParser()
         
         try:
+            # 프롬프트 로깅 (눈에 띄게)
+            prompt_vars = {
+                "weather": weather,
+                "temperature": temperature,
+                "time_slot": time_slot,
+                "season": season,
+                "day_type": day_type
+            }
+            print("=" * 80)
+            print("[LLM 프롬프트] 컨텍스트 키워드 생성")
+            print("=" * 80)
+            print(f"변수: {prompt_vars}")
+            print("=" * 80)
+            logger.info(f"[LLM 프롬프트] 컨텍스트 키워드 생성 - 변수: {prompt_vars}")
+            
             result = await chain.ainvoke({
                 "weather": weather,
                 "temperature": temperature,
@@ -377,11 +476,21 @@ JSON 형식으로 응답해주세요."""),
                 "season": season,
                 "day_type": day_type
             })
-            keywords = result.get("keywords", [])
+            # result가 리스트일 수도 있고 딕셔너리일 수도 있음
+            if isinstance(result, list):
+                keywords = result
+            elif isinstance(result, dict):
+                keywords = result.get("keywords", [])
+            else:
+                keywords = []
+            
             logger.info(f"컨텍스트 기반 키워드 생성 완료: {keywords}")
+            logger.info(f"반환할 키워드 개수: {len(keywords)}")
             return keywords
         except Exception as e:
             logger.error(f"컨텍스트 키워드 생성 오류: {e}")
+            import traceback
+            logger.error(f"상세 에러:\n{traceback.format_exc()}")
             # 폴백: 시간대/계절 기반 실용적 키워드
             fallback_keywords = []
             
@@ -406,6 +515,7 @@ JSON 형식으로 응답해주세요."""),
                 fallback_keywords.extend(["가을", "건강", "환절기"])
             
             logger.info(f"폴백 키워드 사용: {fallback_keywords}")
+            logger.info(f"폴백 키워드 개수: {len(fallback_keywords)}")
             return fallback_keywords
     
     async def _execute_track_b(self, context: Dict[str, Any], product_keywords: List[str]) -> Dict[str, Any]:
@@ -421,6 +531,7 @@ JSON 형식으로 응답해주세요."""),
             product_keywords = await self._generate_context_keywords(context)
             generated_keywords = product_keywords  # 생성된 키워드 보관
             print(f"=== [DEBUG Track B] 생성된 컨텍스트 키워드: {product_keywords} ===")
+            logger.info(f"생성된 키워드: {product_keywords}, 타입: {type(product_keywords)}")
         
         if not product_keywords:
             logger.info("Track B: 키워드 없음 → 빈 결과 반환")
@@ -452,8 +563,134 @@ JSON 형식으로 응답해주세요."""),
             logger.error(f"Track B 오류: {e}")
             return {"products": [], "trend_scores": {}, "generated_keywords": []}
     
+    async def _generate_unified_candidates(
+        self, 
+        search_result: Dict[str, Any], 
+        context: Dict[str, Any],
+        max_trend_match: int = 3,  # 유사도 기반 최대 개수
+        max_sales_prediction: int = 10  # 매출예측 기반 최대 개수
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any], List[RecommendedCategory]]:
+        """통합 후보군 생성 (비율 조정 가능)"""
+        
+        candidates = []
+        seen_products = set()  # 보완: 중복 제거
+        
+        print(f"=== [DEBUG Unified Candidates] 후보군 생성 시작 (트렌드:{max_trend_match}개, 매출:{max_sales_prediction}개) ===")
+        
+        # 1. 직접 매칭 상품 (고유사도, XGBoost 건너뛰기)
+        trend_count = 0
+        for product in search_result["direct_products"]:
+            if trend_count >= max_trend_match:
+                break
+            
+            product_code = product.get("product_code")
+            if product_code not in seen_products:
+                candidates.append({
+                    "product": product,
+                    "source": "trend_match",  # 타입 명확화
+                    "base_score": product["similarity_score"],
+                    "trend_boost": 2.0,  # 강한 트렌드 부스트
+                    "skip_xgboost": True  # XGBoost 건너뛰기
+                })
+                seen_products.add(product_code)
+                trend_count += 1
+                print(f"  - 트렌드매칭 추가 ({trend_count}/{max_trend_match}): {product.get('product_name')} (유사도: {product['similarity_score']:.2f})")
+        
+        # 2. 카테고리 기반 상품 (XGBoost 사용)
+        category_groups = search_result["category_groups"]
+        
+        # XGBoost로 카테고리별 매출 예측
+        print(f"=== [DEBUG Unified Candidates] XGBoost 카테고리 예측 시작 ({len(category_groups)}개) ===")
+        category_scores = await self._predict_categories_with_xgboost(category_groups, context)
+        
+        # 상위 3개 카테고리 선정
+        sorted_categories = sorted(
+            category_scores.items(),
+            key=lambda x: x[1]["predicted_sales"],
+            reverse=True
+        )
+        top_categories_data = sorted_categories[:3]
+        
+        # RecommendedCategory 객체 생성 (API 응답용)
+        top_categories = []
+        for i, (category, score_info) in enumerate(top_categories_data):
+            top_categories.append(RecommendedCategory(
+                rank=i+1,
+                name=category,
+                reason="AI 추천 유망 카테고리",
+                predictedSales=f"{int(score_info['predicted_sales']/10000)}만원"
+            ))
+        
+        # 상위 카테고리의 상품 추가 (매출 예측 기반)
+        sales_count = 0
+        for category, score_info in top_categories_data:
+            if sales_count >= max_sales_prediction:
+                break
+            
+            category_products = category_groups.get(category, [])
+            for product in category_products[:5]:
+                if sales_count >= max_sales_prediction:
+                    break
+                
+                product_code = product.get("product_code")
+                if product_code not in seen_products:
+                    candidates.append({
+                        "product": product,
+                        "source": "sales_prediction",  # 타입 명확화
+                        "base_score": 0.5,
+                        "trend_boost": 1.0,
+                        "skip_xgboost": False,  # XGBoost 사용
+                        "category_score": score_info["predicted_sales"]
+                    })
+                    seen_products.add(product_code)
+                    sales_count += 1
+        
+        print(f"=== [DEBUG Unified Candidates] 총 {len(candidates)}개 후보 생성 (트렌드:{trend_count}개, 매출:{sales_count}개) ===")
+        
+        return candidates, category_scores, top_categories
+    
+    async def _predict_categories_with_xgboost(
+        self, 
+        category_groups: Dict[str, List[Dict]], 
+        context: Dict[str, Any]
+    ) -> Dict[str, Dict[str, float]]:
+        """카테고리별 XGBoost 매출 예측"""
+        
+        category_scores = {}
+        broadcast_dt = context["broadcast_dt"]
+        
+        for category, products in category_groups.items():
+            if not products:
+                continue
+            
+            try:
+                # 대표 상품으로 카테고리 매출 예측
+                representative_product = products[0]
+                predicted_sales = await self._predict_product_sales(representative_product, context)
+                
+                # 카테고리 내 상품 수로 보정
+                adjusted_sales = predicted_sales * min(len(products) / 5, 2.0)
+                
+                category_scores[category] = {
+                    "predicted_sales": adjusted_sales,
+                    "product_count": len(products),
+                    "avg_similarity": sum(p.get("similarity_score", 0) for p in products) / len(products)
+                }
+                
+                print(f"  - 카테고리 '{category}': {int(adjusted_sales/10000)}만원 (상품: {len(products)}개)")
+                
+            except Exception as e:
+                logger.error(f"카테고리 '{category}' 예측 실패: {e}")
+                category_scores[category] = {
+                    "predicted_sales": 10000000,  # 기본값 1000만원
+                    "product_count": len(products),
+                    "avg_similarity": 0.4
+                }
+        
+        return category_scores
+    
     async def _generate_candidates(self, promising_categories: List[RecommendedCategory], trend_products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """후보군 생성 및 통합"""
+        """후보군 생성 및 통합 (레거시, 사용 안 함)"""
         candidates = []
         
         # 유망 카테고리에서 에이스 상품 선발
@@ -470,8 +707,8 @@ JSON 형식으로 응답해주세요."""),
         
         return candidates
     
-    async def _rank_final_candidates(self, candidates: List[Dict[str, Any]], category_scores: Dict[str, List[float]], context: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """최종 랭킹 계산 (가중치 기반 점수 공식)"""
+    async def _rank_final_candidates(self, candidates: List[Dict[str, Any]], category_scores: Dict[str, Any], context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """최종 랭킹 계산 (보완: skip_xgboost 처리)"""
         
         for candidate in candidates:
             product = candidate["product"]
@@ -479,10 +716,19 @@ JSON 형식으로 응답해주세요."""),
             # 기본 점수 계산
             base_score = candidate["base_score"]
             trend_boost = candidate["trend_boost"]
+            skip_xgboost = candidate.get("skip_xgboost", False)
             
-            # XGBoost 매출 예측
-            predicted_sales = await self._predict_product_sales(product, context)
-            sales_score = min(predicted_sales / 100000000, 1.0)  # 1억 기준 정규화
+            # 보완: XGBoost 건너뛰기 처리
+            if skip_xgboost:
+                # 직접 매칭 상품: 유사도만으로 매출 추정
+                # 보완: 최소한의 매출 검증 (안전장치)
+                predicted_sales = base_score * 20000000  # 유사도 0.6 → 1200만원
+                sales_score = base_score  # 유사도를 매출 점수로 직접 사용
+                print(f"  - [XGBoost 건너뛰기] {product.get('product_name')}: 예상 {int(predicted_sales/10000)}만원")
+            else:
+                # 카테고리 매칭 상품: XGBoost 매출 예측
+                predicted_sales = await self._predict_product_sales(product, context)
+                sales_score = min(predicted_sales / 100000000, 1.0)  # 1억 기준 정규화
             
             # 경쟁 페널티 계산
             competition_penalty = self._calculate_competition_penalty(product, candidates)
@@ -527,6 +773,9 @@ JSON 형식으로 응답해주세요."""),
                 context or {"time_slot": "저녁", "weather": {"weather": "폭염"}}
             )
             
+            # 추천 타입 결정
+            recommendation_type = candidate.get("source", "sales_prediction")
+            
             recommendation = BroadcastRecommendation(
                 rank=i+1,
                 productInfo=ProductInfo(
@@ -548,7 +797,8 @@ JSON 형식으로 응답해주세요."""),
                     pastAverageSales=f"{int(candidate['predicted_sales']/10000)}만원",  # 만원 단위
                     marginRate=0.25,
                     stockLevel="High"
-                )
+                ),
+                recommendationType=recommendation_type  # 추천 타입 추가
             )
             recommendations.append(recommendation)
         
@@ -799,6 +1049,15 @@ JSON 형식으로 응답해주세요."""),
             # 경쟁 상황 분석
             competitor_categories = [comp.get("category_main", "") for comp in competitors]
             has_competition = category in competitor_categories
+            
+            # 프롬프트 로깅 (눈에 띄게)
+            print("=" * 80)
+            print("[LLM 프롬프트] 추천 근거 생성")
+            print("=" * 80)
+            print(f"상품: {product_name}, 카테고리: {category}, 매출: {predicted_sales}만원")
+            print(f"시간대: {time_slot}, 날씨: {weather}")
+            print("=" * 80)
+            logger.info(f"[LLM 프롬프트] 추천 근거 생성 - 상품: {product_name}, 카테고리: {category}, 매출: {predicted_sales}만원")
             
             # 프롬프트 템플릿 생성
             reason_prompt = ChatPromptTemplate.from_messages([
@@ -1144,6 +1403,15 @@ JSON 형식으로 응답해주세요."""),
             # 시간대 정보
             broadcast_time = context.get("broadcast_time", "") if context else ""
             time_period = self._get_time_period(broadcast_time)
+            
+            # 프롬프트 로깅 (눈에 띄게)
+            print("=" * 80)
+            print("[LLM 프롬프트] 상세 설명 생성")
+            print("=" * 80)
+            print(f"타입: {source_type}, 상품: {product_name}")
+            print(f"카테고리: {category}, 매출: {int(avg_sales/10000)}만원")
+            print("=" * 80)
+            logger.info(f"[LLM 프롬프트] 상세 설명 생성 - {source_type}: {product_name}")
             
             # LangChain 프롬프트로 상세 설명 생성
             summary_prompt = ChatPromptTemplate.from_messages([

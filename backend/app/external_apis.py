@@ -160,9 +160,17 @@ class LLMTrendAPI:
 건강즙,85,아침 활력
 """
             
-            # 프롬프트 로깅
-            logger.info(f"=== LLM 트렌드 생성 프롬프트 ===")
-            logger.info(f"\n{prompt}\n")
+            # 프롬프트 로깅 (눈에 띄게)
+            print("=" * 80)
+            print("[LLM 프롬프트] 트렌드 키워드 생성 - AI Trend API")
+            print("=" * 80)
+            print(f"시간대: {time_slot_info['slot']}, 날씨: {weather_condition}, 기온: {temperature}°C")
+            print(f"프롬프트 길이: {len(prompt)} 문자")
+            print("-" * 80)
+            print(prompt)
+            print("=" * 80)
+            
+            logger.info(f"[LLM 프롬프트] 트렌드 키워드 생성 요청 - 시간:{hour}시, 날씨:{weather_condition}")
 
             response = await client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -172,8 +180,12 @@ class LLMTrendAPI:
             )
 
             llm_response = response.choices[0].message.content.strip()
-            logger.info(f"=== LLM 트렌드 생성 응답 ===")
-            logger.info(f"\n{llm_response}\n")
+            print("=" * 80)
+            print("[LLM 응답] 트렌드 키워드 생성 완료")
+            print("=" * 80)
+            print(llm_response)
+            print("=" * 80)
+            logger.info(f"[LLM 응답] 트렌드 키워드 {len(llm_response.split(chr(10)))}줄 생성됨")
 
             trends = []
             lines = llm_response.split('\n')
