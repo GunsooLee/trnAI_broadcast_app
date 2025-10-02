@@ -45,7 +45,7 @@ import sys
 # ---------------------------------------------------------------------------
 # DB 설정 -----------------------------------------------------
 # ---------------------------------------------------------------------------
-DB_URI = os.getenv("POSTGRES_URI", os.getenv("DB_URI", "postgresql://TIKITAKA:TIKITAKA@175.106.97.27:5432/TIKITAKA_DB"))
+DB_URI = os.getenv("POSTGRES_URI")
 TABLE_NAME = "broadcast_training_dataset"
 MODEL_FILE_PROFIT = "xgb_broadcast_profit.joblib"
 MODEL_FILE_EFFICIENCY = "xgb_broadcast_efficiency.joblib"
@@ -368,7 +368,7 @@ def get_category_overall_avg_sales(engine: Engine | None = None) -> Dict[str, fl
 def get_db_engine():
     """새로운 DB 엔진을 생성하여 반환합니다. (스레드 안전성 확보)"""
     if not DB_URI:
-        raise ValueError("DB_URI environment variable is not set.")
+        raise ValueError("POSTGRES_URI environment variable is not set.")
     return create_engine(DB_URI)
 
 

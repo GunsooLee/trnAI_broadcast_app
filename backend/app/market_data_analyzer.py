@@ -17,7 +17,7 @@ class MarketDataAnalyzer:
     
     def __init__(self, openai_api_key: str):
         self.openai_client = AsyncOpenAI(api_key=openai_api_key)
-        self.engine = create_engine(os.getenv("POSTGRES_URI", os.getenv("DB_URI")))
+        self.engine = create_engine(os.getenv("POSTGRES_URI"))
     
     async def get_latest_market_data(self, hours_back: int = 24) -> Dict[str, Any]:
         """DB에서 최신 시장 데이터 수집"""

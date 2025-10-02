@@ -38,7 +38,7 @@ class BroadcastWorkflow:
         )
         
         # DB 연결
-        self.engine = create_engine(os.getenv("POSTGRES_URI", os.getenv("DB_URI")))
+        self.engine = create_engine(os.getenv("POSTGRES_URI"))
     
     async def process_broadcast_recommendation(
         self, 
@@ -135,10 +135,14 @@ class BroadcastWorkflow:
         api_manager = ExternalAPIManager()
         if api_manager.llm_trend_api:
             try:
-                llm_trends = await api_manager.llm_trend_api.get_trending_searches()
+                # 방송 시간과 날씨 정보를 전달하여 맥락 기반 트렌드 생성
+                llm_trends = await api_manager.llm_trend_api.get_trending_searches(
+                    hour=broadcast_dt.hour,
+                    weather_info=weather_info
+                )
                 # AI가 생성한 트렌드 키워드 추가
                 context["ai_trends"] = [t["keyword"] for t in llm_trends]
-                logger.info(f"AI 트렌드 생성 완료: {len(llm_trends)}개 키워드")
+                logger.info(f"AI 트렌드 생성 완료 ({broadcast_dt.hour}시, {weather_info.get('weather', 'N/A')}): {len(llm_trends)}개 키워드")
                 logger.info(f"AI 트렌드: {context['ai_trends'][:5]}...")  # 상위 5개만 로그
             except Exception as e:
                 logger.error(f"AI 트렌드 생성 실패: {e}")
@@ -535,7 +539,10 @@ JSON 형식으로 응답해주세요."""),
                 reasoning=Reasoning(
                     summary=reasoning_summary,
                     linkedCategories=[product.get("category_main", "Unknown")],
-                    matchedKeywords=(context.get("generated_keywords", []) or context.get("ai_trends", [])[:5]) if context else []
+                    matchedKeywords=(
+                        (context.get("generated_keywords", [])[:3] +  # 시간대 맥락
+                        context.get("ai_trends", [])[:2])            # AI 트렌드
+                    ) if context else []
                 ),
                 businessMetrics=BusinessMetrics(
                     pastAverageSales=f"{candidate['predicted_sales']/100000000:.1f}억",

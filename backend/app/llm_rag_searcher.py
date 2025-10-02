@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class LLMRAGSearcher:
     def __init__(self, openai_api_key: str):
         self.openai_client = openai.OpenAI(api_key=openai_api_key)
-        self.engine = create_engine(os.getenv("POSTGRES_URI", os.getenv("DB_URI")))
+        self.engine = create_engine(os.getenv("POSTGRES_URI"))
     
     def get_product_context(self, limit: int = 50) -> str:
         """상품 데이터베이스에서 컨텍스트 정보 조회"""

@@ -16,7 +16,7 @@ class ProductEmbedder:
         self.openai_client = openai.OpenAI(api_key=openai_api_key)
         self.qdrant_client = QdrantClient(qdrant_host, port=qdrant_port)
         self.collection_name = "products"
-        self.engine = create_engine(os.getenv("POSTGRES_URI", os.getenv("DB_URI")))
+        self.engine = create_engine(os.getenv("POSTGRES_URI"))
         
     def setup_collection(self):
         """컬렉션 초기화 (기존 컬렉션이 있으면 삭제 후 재생성)"""
