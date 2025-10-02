@@ -76,7 +76,7 @@ class BroadcastWorkflow:
             # 3. 후보군 생성 (비율 조정)
             print("=== [DEBUG] _generate_unified_candidates 호출 ===")
             max_trend = max(1, int(recommendation_count * trend_ratio))  # 최소 1개
-            max_sales = recommendation_count - max_trend + 5  # 여유분 추가
+            max_sales = recommendation_count - max_trend + 3  # 여유분 추가
             print(f"=== [DEBUG] 비율 조정: 트렌드 {max_trend}개, 매출 {max_sales}개 (비율: {trend_ratio:.0%}) ===")
             
             candidate_products, category_scores, top_categories = await self._generate_unified_candidates(
@@ -275,7 +275,7 @@ JSON 형식으로 응답해주세요."""),
             # Qdrant 통합 검색 (1회)
             all_results = self.product_embedder.search_products(
                 trend_keywords=[query],
-                top_k=50,
+                top_k=30,
                 score_threshold=0.3,
                 only_ready_products=True
             )
@@ -285,8 +285,8 @@ JSON 형식으로 응답해주세요."""),
             direct_products = []      # 고유사도: 직접 추천
             category_groups = {}      # 중유사도: 카테고리별 그룹
             
-            # 보완: 유사도 임계값 조정 (0.7 → 0.55)
-            HIGH_SIMILARITY_THRESHOLD = 0.55
+            # 유사도 임계값
+            HIGH_SIMILARITY_THRESHOLD = 0.7
             
             for product in all_results:
                 similarity = product.get("similarity_score", 0)
@@ -335,7 +335,7 @@ JSON 형식으로 응답해주세요."""),
             # Qdrant에서 카테고리 검색 (방송 테이프 준비 완료 상품만)
             similar_products = self.product_embedder.search_products(
                 trend_keywords=[query],
-                top_k=50,
+                top_k=30,  # 통합 검색과 동일하게 30으로 설정
                 score_threshold=0.3,
                 only_ready_products=True
             )
@@ -545,7 +545,7 @@ JSON 형식으로 응답해주세요."""),
             # Qdrant에서 상품 검색 (방송 테이프 준비 완료 상품만)
             similar_products = self.product_embedder.search_products(
                 trend_keywords=[query],
-                top_k=20,
+                top_k=30,  # 통합 검색과 동일하게 30으로 설정
                 score_threshold=0.3
             )
             
@@ -564,88 +564,109 @@ JSON 형식으로 응답해주세요."""),
             return {"products": [], "trend_scores": {}, "generated_keywords": []}
     
     async def _generate_unified_candidates(
-        self, 
-        search_result: Dict[str, Any], 
+        self,
+        search_result: Dict[str, Any],
         context: Dict[str, Any],
         max_trend_match: int = 3,  # 유사도 기반 최대 개수
         max_sales_prediction: int = 10  # 매출예측 기반 최대 개수
     ) -> tuple[List[Dict[str, Any]], Dict[str, Any], List[RecommendedCategory]]:
-        """통합 후보군 생성 (비율 조정 가능)"""
+        """통합 후보군 생성 - 모든 상품 XGBoost 예측 후 가중치 조정"""
         
         candidates = []
-        seen_products = set()  # 보완: 중복 제거
+        seen_products = set()
         
-        print(f"=== [DEBUG Unified Candidates] 후보군 생성 시작 (트렌드:{max_trend_match}개, 매출:{max_sales_prediction}개) ===")
+        print(f"=== [DEBUG Unified Candidates] 후보군 생성 시작 (목표: 최대 {max_trend_match + max_sales_prediction}개) ===")
         
-        # 1. 직접 매칭 상품 (고유사도, XGBoost 건너뛰기)
-        trend_count = 0
-        for product in search_result["direct_products"]:
-            if trend_count >= max_trend_match:
-                break
-            
+        # 1. 모든 검색 결과를 하나로 통합
+        all_products = []
+        all_products.extend(search_result["direct_products"])  # 고유사도 상품
+        
+        # 카테고리 그룹의 모든 상품도 추가
+        for category, products in search_result["category_groups"].items():
+            all_products.extend(products)
+        
+        print(f"=== [DEBUG] 통합된 상품 수: {len(all_products)}개 ===")
+        
+        # 2. 중복 제거
+        unique_products = {}
+        for product in all_products:
             product_code = product.get("product_code")
-            if product_code not in seen_products:
-                candidates.append({
-                    "product": product,
-                    "source": "trend_match",  # 타입 명확화
-                    "base_score": product["similarity_score"],
-                    "trend_boost": 2.0,  # 강한 트렌드 부스트
-                    "skip_xgboost": True  # XGBoost 건너뛰기
-                })
-                seen_products.add(product_code)
-                trend_count += 1
-                print(f"  - 트렌드매칭 추가 ({trend_count}/{max_trend_match}): {product.get('product_name')} (유사도: {product['similarity_score']:.2f})")
+            if product_code not in unique_products:
+                unique_products[product_code] = product
         
-        # 2. 카테고리 기반 상품 (XGBoost 사용)
-        category_groups = search_result["category_groups"]
+        print(f"=== [DEBUG] 중복 제거 후: {len(unique_products)}개 ===")
         
-        # XGBoost로 카테고리별 매출 예측
-        print(f"=== [DEBUG Unified Candidates] XGBoost 카테고리 예측 시작 ({len(category_groups)}개) ===")
-        category_scores = await self._predict_categories_with_xgboost(category_groups, context)
+        # 3. 배치 예측 준비 (상위 30개만)
+        products_list = list(unique_products.values())[:30]
+        print(f"=== [DEBUG] 배치 예측 대상: {len(products_list)}개 ===")
         
-        # 상위 3개 카테고리 선정
-        sorted_categories = sorted(
-            category_scores.items(),
-            key=lambda x: x[1]["predicted_sales"],
-            reverse=True
-        )
-        top_categories_data = sorted_categories[:3]
+        # 4. 배치 XGBoost 예측 (한 번에 처리)
+        predicted_sales_list = await self._predict_products_sales_batch(products_list, context)
         
-        # RecommendedCategory 객체 생성 (API 응답용)
+        # 5. 예측 결과와 상품 매칭 + 점수 계산
+        for i, product in enumerate(products_list):
+            similarity = product.get("similarity_score", 0.5)
+            predicted_sales = predicted_sales_list[i]
+            
+            # 점수 계산 (유사도 vs 매출 가중치 조정)
+            if similarity >= 0.7:
+                # 고유사도: 유사도 가중치 높임
+                final_score = (
+                    similarity * 0.7 +  # 유사도 70%
+                    (predicted_sales / 100000000) * 0.3  # 매출 30% (정규화: 1억 기준)
+                )
+                source = "trend_match"
+                print(f"  [고유사도] {product.get('product_name')[:20]}: 유사도={similarity:.2f}, 매출={predicted_sales/10000:.0f}만원, 점수={final_score:.3f}")
+            else:
+                # 저유사도: 매출 가중치 높임
+                final_score = (
+                    similarity * 0.3 +  # 유사도 30%
+                    (predicted_sales / 100000000) * 0.7  # 매출 70%
+                )
+                source = "sales_prediction"
+                print(f"  [저유사도] {product.get('product_name')[:20]}: 유사도={similarity:.2f}, 매출={predicted_sales/10000:.0f}만원, 점수={final_score:.3f}")
+            
+            candidates.append({
+                "product": product,
+                "source": source,
+                "similarity_score": similarity,
+                "predicted_sales": predicted_sales,
+                "final_score": final_score
+            })
+        
+        # 4. 점수순 정렬
+        candidates.sort(key=lambda x: x["final_score"], reverse=True)
+        
+        print(f"=== [DEBUG] 총 {len(candidates)}개 후보 생성 완료, 점수순 정렬됨 ===")
+        
+        # 5. 상위 카테고리 추출 (API 응답용)
+        category_scores = {}
         top_categories = []
-        for i, (category, score_info) in enumerate(top_categories_data):
+        
+        # 카테고리별 평균 점수 계산
+        category_sales = {}
+        for candidate in candidates:
+            category = candidate["product"].get("product_lgroup", "기타")
+            if category not in category_sales:
+                category_sales[category] = []
+            category_sales[category].append(candidate["predicted_sales"])
+        
+        # 상위 3개 카테고리
+        sorted_categories = sorted(
+            category_sales.items(),
+            key=lambda x: sum(x[1]) / len(x[1]),  # 평균 매출
+            reverse=True
+        )[:3]
+        
+        for i, (category, sales_list) in enumerate(sorted_categories):
+            avg_sales = sum(sales_list) / len(sales_list)
+            category_scores[category] = {"predicted_sales": avg_sales}
             top_categories.append(RecommendedCategory(
                 rank=i+1,
                 name=category,
                 reason="AI 추천 유망 카테고리",
-                predictedSales=f"{int(score_info['predicted_sales']/10000)}만원"
+                predictedSales=f"{int(avg_sales/10000)}만원"
             ))
-        
-        # 상위 카테고리의 상품 추가 (매출 예측 기반)
-        sales_count = 0
-        for category, score_info in top_categories_data:
-            if sales_count >= max_sales_prediction:
-                break
-            
-            category_products = category_groups.get(category, [])
-            for product in category_products[:5]:
-                if sales_count >= max_sales_prediction:
-                    break
-                
-                product_code = product.get("product_code")
-                if product_code not in seen_products:
-                    candidates.append({
-                        "product": product,
-                        "source": "sales_prediction",  # 타입 명확화
-                        "base_score": 0.5,
-                        "trend_boost": 1.0,
-                        "skip_xgboost": False,  # XGBoost 사용
-                        "category_score": score_info["predicted_sales"]
-                    })
-                    seen_products.add(product_code)
-                    sales_count += 1
-        
-        print(f"=== [DEBUG Unified Candidates] 총 {len(candidates)}개 후보 생성 (트렌드:{trend_count}개, 매출:{sales_count}개) ===")
         
         return candidates, category_scores, top_categories
     
@@ -708,40 +729,16 @@ JSON 형식으로 응답해주세요."""),
         return candidates
     
     async def _rank_final_candidates(self, candidates: List[Dict[str, Any]], category_scores: Dict[str, Any], context: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """최종 랭킹 계산 (보완: skip_xgboost 처리)"""
+        """최종 랭킹 계산 - 이미 정렬된 candidates 반환 (XGBoost 예측 완료됨)"""
         
-        for candidate in candidates:
-            product = candidate["product"]
-            
-            # 기본 점수 계산
-            base_score = candidate["base_score"]
-            trend_boost = candidate["trend_boost"]
-            skip_xgboost = candidate.get("skip_xgboost", False)
-            
-            # 보완: XGBoost 건너뛰기 처리
-            if skip_xgboost:
-                # 직접 매칭 상품: 유사도만으로 매출 추정
-                # 보완: 최소한의 매출 검증 (안전장치)
-                predicted_sales = base_score * 20000000  # 유사도 0.6 → 1200만원
-                sales_score = base_score  # 유사도를 매출 점수로 직접 사용
-                print(f"  - [XGBoost 건너뛰기] {product.get('product_name')}: 예상 {int(predicted_sales/10000)}만원")
-            else:
-                # 카테고리 매칭 상품: XGBoost 매출 예측
-                predicted_sales = await self._predict_product_sales(product, context)
-                sales_score = min(predicted_sales / 100000000, 1.0)  # 1억 기준 정규화
-            
-            # 경쟁 페널티 계산
-            competition_penalty = self._calculate_competition_penalty(product, candidates)
-            
-            # 최종 점수 = (기본점수 × 트렌드부스트 + 매출점수) × (1 - 경쟁페널티)
-            final_score = (base_score * trend_boost + sales_score) * (1 - competition_penalty)
-            
-            candidate["final_score"] = final_score
-            candidate["predicted_sales"] = predicted_sales
-            candidate["competition_penalty"] = competition_penalty
+        print(f"=== [DEBUG _rank_final_candidates] 이미 점수순으로 정렬된 {len(candidates)}개 후보 수신 ===")
         
-        # 점수순 정렬
-        candidates.sort(key=lambda x: x["final_score"], reverse=True)
+        # 이미 _generate_unified_candidates에서 final_score 계산 및 정렬 완료
+        # 여기서는 추가 처리 없이 그대로 반환
+        
+        for i, candidate in enumerate(candidates[:5]):
+            print(f"  {i+1}위: {candidate['product'].get('product_name')[:25]} (점수: {candidate['final_score']:.3f}, 타입: {candidate['source']})")
+        
         return candidates
     
     def _calculate_competition_penalty(self, product: Dict[str, Any], all_candidates: List[Dict[str, Any]]) -> float:
@@ -1162,46 +1159,51 @@ JSON 형식으로 응답해주세요."""),
             logger.error(f"상세 에러:\n{traceback.format_exc()}")
             return 50000000  # 기본값 (0.5억)
     
+    def _prepare_features_for_product(self, product: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        """1개 상품의 XGBoost feature 준비 (예측은 안 함)"""
+        broadcast_dt = context["broadcast_dt"]
+        
+        return {
+            # Numeric features
+            "product_price": product.get("product_price", 100000),
+            "product_avg_profit": product.get("avg_sales", 30000000),
+            "product_broadcast_count": product.get("broadcast_count", 10),
+            "category_timeslot_avg_profit": 25000000,
+            "hour": broadcast_dt.hour,
+            "temperature": context["weather"].get("temperature", 20),
+            "precipitation": context["weather"].get("precipitation", 0),
+            
+            # Categorical features
+            "product_lgroup": product.get("category_main", "Unknown"),
+            "product_mgroup": product.get("category_middle", "Unknown"),
+            "product_sgroup": product.get("category_sub", "Unknown"),
+            "brand": "Unknown",
+            "product_type": "유형",
+            "time_slot": context["time_slot"],
+            "day_of_week": ["월", "화", "수", "목", "금", "토", "일"][broadcast_dt.weekday()],
+            "season": context["season"],
+            "weather": context["weather"].get("weather", "Clear"),
+            
+            # Boolean features
+            "is_weekend": 1 if broadcast_dt.weekday() >= 5 else 0,
+            "is_holiday": 0
+        }
+    
     async def _predict_product_sales(self, product: Dict[str, Any], context: Dict[str, Any]) -> float:
         """개별 상품 XGBoost 매출 예측"""
         try:
             import pandas as pd
             
-            # XGBoost 모델이 요구하는 형식으로 데이터 준비
-            broadcast_dt = context["broadcast_dt"]
-            
-            product_data = pd.DataFrame([{
-                # Numeric features
-                "product_price": product.get("product_price", 100000),
-                "product_avg_profit": product.get("avg_sales", 30000000),
-                "product_broadcast_count": product.get("broadcast_count", 10),
-                "category_timeslot_avg_profit": 25000000,
-                "hour": broadcast_dt.hour,
-                "temperature": context["weather"].get("temperature", 20),
-                "precipitation": context["weather"].get("precipitation", 0),
-                
-                # Categorical features
-                "product_lgroup": product.get("category_main", "Unknown"),
-                "product_mgroup": product.get("category_middle", "Unknown"),
-                "product_sgroup": product.get("category_sub", "Unknown"),
-                "brand": "Unknown",
-                "product_type": "유형",
-                "time_slot": context["time_slot"],
-                "day_of_week": ["월", "화", "수", "목", "금", "토", "일"][broadcast_dt.weekday()],
-                "season": context["season"],
-                "weather": context["weather"].get("weather", "Clear"),
-                
-                # Boolean features
-                "is_weekend": 1 if broadcast_dt.weekday() >= 5 else 0,
-                "is_holiday": 0
-            }])
+            # Feature 준비
+            features = self._prepare_features_for_product(product, context)
+            product_data = pd.DataFrame([features])
             
             logger.info(f"=== XGBoost 매출 예측 입력 데이터 ===")
             logger.info(f"상품: {product.get('product_name', 'Unknown')}")
             logger.info(f"카테고리: {product.get('category_main', 'Unknown')}")
             logger.info(f"가격: {product.get('product_price', 100000):,}원")
             logger.info(f"과거 평균 매출: {product.get('avg_sales', 30000000):,}원")
-            logger.info(f"방송 시간: {broadcast_dt.hour}시")
+            logger.info(f"방송 시간: {context['broadcast_dt'].hour}시")
             logger.info(f"날씨: {context['weather'].get('weather', 'Clear')}, {context['weather'].get('temperature', 20)}°C")
             
             # XGBoost 파이프라인으로 예측 (전처리 포함)
@@ -1217,6 +1219,38 @@ JSON 형식으로 응답해주세요."""),
             import traceback
             logger.error(f"상세 에러:\n{traceback.format_exc()}")
             return 30000000  # 기본값 (0.3억)
+    
+    async def _predict_products_sales_batch(self, products: List[Dict[str, Any]], context: Dict[str, Any]) -> List[float]:
+        """여러 상품 XGBoost 매출 예측 (배치 처리)"""
+        try:
+            import pandas as pd
+            
+            if not products:
+                return []
+            
+            # 모든 상품의 features를 한 번에 준비
+            features_list = [
+                self._prepare_features_for_product(product, context)
+                for product in products
+            ]
+            
+            batch_df = pd.DataFrame(features_list)
+            
+            print(f"=== [배치 예측] {len(products)}개 상품 일괄 예측 시작 ===")
+            
+            # XGBoost 배치 예측 (한 번에 처리)
+            predicted_sales_array = self.model.predict(batch_df)
+            
+            print(f"=== [배치 예측] 완료: 평균 {predicted_sales_array.mean()/10000:.0f}만원 ===")
+            
+            return [float(sales) for sales in predicted_sales_array]
+            
+        except Exception as e:
+            logger.error(f"배치 매출 예측 오류: {e}")
+            import traceback
+            logger.error(f"상세 에러:\n{traceback.format_exc()}")
+            # 기본값 반환
+            return [30000000.0] * len(products)
     
     async def _get_ace_products_from_category(self, category: str, limit: int = 5) -> List[Dict[str, Any]]:
         """카테고리별 에이스 상품 조회 (방송 테이프 준비 완료 상품만)"""
