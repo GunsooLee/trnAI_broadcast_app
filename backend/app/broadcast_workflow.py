@@ -1108,8 +1108,10 @@ JSON 형식으로 응답해주세요."""),
             
         except Exception as e:
             logger.error(f"동적 근거 생성 오류: {e}")
-            # 폴백: 기존 로직 사용
-            return self._generate_recommendation_reason(candidate, context)
+            import traceback
+            traceback.print_exc()  # 에러 상세 로그
+            # 폴백: 간단한 기본 메시지 (템플릿 아닌)
+            return f"{candidate['product'].get('category_main', '상품')} 추천"
     
     async def _predict_category_sales(self, category: str, broadcast_dt: datetime) -> float:
         """카테고리별 XGBoost 매출 예측"""
