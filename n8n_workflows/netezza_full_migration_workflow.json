@@ -1,0 +1,294 @@
+{
+  "name": "NETEZZA 전체 마이그레이션 (TAIGOODS → TAIPGMTAPE → 임베딩)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 2 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "매일 새벽 2시 실행",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://fastapi_backend:8501/api/v1/migration/start-sync",
+        "options": {
+          "timeout": 600000
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "full_sync",
+              "value": "=false"
+            },
+            {
+              "name": "tables",
+              "value": "TAIGOODS"
+            }
+          ]
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        }
+      },
+      "id": "migrate-taigoods",
+      "name": "1️⃣ TAIGOODS 마이그레이션",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [470, 300],
+      "notes": "상품 마스터 데이터 동기화"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.status}}",
+              "operation": "equals",
+              "value2": "success"
+            }
+          ]
+        }
+      },
+      "id": "check-taigoods-success",
+      "name": "TAIGOODS 성공?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://fastapi_backend:8501/api/v1/migration/start-sync",
+        "options": {
+          "timeout": 600000
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "full_sync",
+              "value": "=false"
+            },
+            {
+              "name": "tables",
+              "value": "TAIPGMTAPE"
+            }
+          ]
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        }
+      },
+      "id": "migrate-taipgmtape",
+      "name": "2️⃣ TAIPGMTAPE 마이그레이션",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [910, 200],
+      "notes": "방송테이프 데이터 동기화"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.status}}",
+              "operation": "equals",
+              "value2": "success"
+            }
+          ]
+        }
+      },
+      "id": "check-taipgmtape-success",
+      "name": "TAIPGMTAPE 성공?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1130, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://fastapi_backend:8501/api/v1/embeddings/generate-sync",
+        "options": {
+          "timeout": 1800000
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "force_all",
+              "value": "=false"
+            }
+          ]
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        }
+      },
+      "id": "generate-embeddings",
+      "name": "3️⃣ 임베딩 생성 (동기)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1350, 100],
+      "notes": "완료될 때까지 대기 (최대 30분), 결과 즉시 확인"
+    },
+    {
+      "parameters": {
+        "functionCode": "// 전체 성공 로그\nconst successData = {\n  timestamp: new Date().toISOString(),\n  workflow: 'NETEZZA Full Migration',\n  status: 'SUCCESS',\n  message: '전체 마이그레이션 및 임베딩 생성 완료',\n  steps: [\n    'TAIGOODS 마이그레이션',\n    'TAIPGMTAPE 마이그레이션',\n    '임베딩 생성'\n  ]\n};\n\nconsole.log('✅ 전체 워크플로우 성공:', successData);\n\nreturn successData;"
+      },
+      "id": "log-success",
+      "name": "✅ 성공 로그",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1570, 100]
+    },
+    {
+      "parameters": {
+        "functionCode": "// 실패 로그 저장\nconst failureData = {\n  timestamp: new Date().toISOString(),\n  workflow: 'NETEZZA Full Migration',\n  status: 'FAILED',\n  failedStep: $node['TAIGOODS 성공?'].json ? 'TAIPGMTAPE 마이그레이션' : 'TAIGOODS 마이그레이션',\n  message: $input.item.json.message || 'Unknown error',\n  details: $input.item.json\n};\n\nconsole.error('❌ 워크플로우 실패:', failureData);\n\nreturn failureData;"
+      },
+      "id": "log-failure",
+      "name": "❌ 실패 로그",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1350, 400]
+    },
+    {
+      "parameters": {
+        "content": "## 📝 전체 마이그레이션 워크플로우\n\n**실행 시간:** 매일 새벽 2:00\n\n**처리 순서:**\n1. ✅ TAIGOODS 마이그레이션 (상품 마스터)\n2. ✅ TAIPGMTAPE 마이그레이션 (방송테이프)\n3. ✅ 임베딩 생성 (방송 가능 상품만)\n\n**중요:**\n- TAIGOODS가 성공해야 TAIPGMTAPE 실행\n- TAIPGMTAPE가 성공해야 임베딩 생성\n- 각 단계는 증분 업데이트 (어제 이후 수정분)\n\n**전체 재처리:**\n- 각 노드에서 full_sync를 true로 변경\n\n**장점:**\n- 의존성 순서 보장\n- 단계별 실패 처리\n- 불필요한 임베딩 생성 방지"
+      },
+      "id": "workflow-notes",
+      "name": "워크플로우 설명",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [250, 80]
+    }
+  ],
+  "connections": {
+    "매일 새벽 2시 실행": {
+      "main": [
+        [
+          {
+            "node": "1️⃣ TAIGOODS 마이그레이션",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1️⃣ TAIGOODS 마이그레이션": {
+      "main": [
+        [
+          {
+            "node": "TAIGOODS 성공?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TAIGOODS 성공?": {
+      "main": [
+        [
+          {
+            "node": "2️⃣ TAIPGMTAPE 마이그레이션",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "❌ 실패 로그",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2️⃣ TAIPGMTAPE 마이그레이션": {
+      "main": [
+        [
+          {
+            "node": "TAIPGMTAPE 성공?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TAIPGMTAPE 성공?": {
+      "main": [
+        [
+          {
+            "node": "3️⃣ 임베딩 생성",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "❌ 실패 로그",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3️⃣ 임베딩 생성": {
+      "main": [
+        [
+          {
+            "node": "✅ 성공 로그",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "timezone": "Asia/Seoul",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "데이터 마이그레이션",
+      "id": "migration"
+    },
+    {
+      "name": "순차 처리",
+      "id": "sequential"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2025-10-13T05:50:00.000Z",
+  "versionId": "3.0.0"
+}

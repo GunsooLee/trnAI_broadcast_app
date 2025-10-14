@@ -1,0 +1,192 @@
+{
+  "name": "NETEZZA → PostgreSQL 매일 데이터 마이그레이션 (HTTP)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 2 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "매일 새벽 2시 실행",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://fastapi_backend:8501/api/v1/migration/start-sync",
+        "options": {
+          "timeout": 600000
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "full_sync",
+              "value": "=false"
+            },
+            {
+              "name": "tables",
+              "value": ""
+            }
+          ]
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        }
+      },
+      "id": "migrate-data-http",
+      "name": "데이터 마이그레이션 실행 (HTTP)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [470, 300],
+      "notes": "FastAPI 엔드포인트 호출로 마이그레이션 실행"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.status}}",
+              "operation": "equals",
+              "value2": "success"
+            }
+          ]
+        }
+      },
+      "id": "check-success",
+      "name": "마이그레이션 성공?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://fastapi_backend:8501/api/v1/embeddings/generate",
+        "options": {}
+      },
+      "id": "generate-embeddings-http",
+      "name": "임베딩 생성 (HTTP)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [910, 200],
+      "notes": "신규/수정 상품 임베딩 생성"
+    },
+    {
+      "parameters": {
+        "functionCode": "// 실패 로그 저장\nconst failureData = {\n  timestamp: new Date().toISOString(),\n  workflow: 'NETEZZA Migration',\n  status: 'FAILED',\n  message: $input.item.json.message || 'Unknown error',\n  details: $input.item.json\n};\n\nconsole.error('Migration failed:', failureData);\n\nreturn failureData;"
+      },
+      "id": "log-failure",
+      "name": "실패 로그 처리",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [910, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// 성공 결과 정리\nconst successData = {\n  timestamp: new Date().toISOString(),\n  workflow: 'NETEZZA Migration',\n  status: 'SUCCESS',\n  message: '데이터 마이그레이션 및 임베딩 생성 완료',\n  details: $input.item.json\n};\n\nconsole.log('Migration successful:', successData);\n\nreturn successData;"
+      },
+      "id": "log-success",
+      "name": "성공 로그 처리",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1130, 200]
+    },
+    {
+      "parameters": {
+        "content": "## 📝 워크플로우 설명 (HTTP 버전)\n\n**실행 시간:** 매일 새벽 2:00\n\n**처리 순서:**\n1. FastAPI 마이그레이션 엔드포인트 호출 (HTTP POST)\n2. 증분 업데이트 실행 (어제 이후 수정분)\n3. 성공 시 임베딩 생성 엔드포인트 호출\n4. 실패 시 로그 기록\n\n**API 엔드포인트:**\n- 마이그레이션: POST http://fastapi_backend:8501/api/v1/migration/start-sync\n- 임베딩: POST http://fastapi_backend:8501/api/v1/embeddings/generate\n\n**전체 재처리 방법:**\n- 마이그레이션 노드에서 full_sync를 true로 변경\n\n**장점:**\n- Docker 명령 불필요\n- 안정적인 HTTP 통신\n- 결과 즉시 확인 가능"
+      },
+      "id": "workflow-notes",
+      "name": "워크플로우 설명",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [250, 80]
+    }
+  ],
+  "connections": {
+    "매일 새벽 2시 실행": {
+      "main": [
+        [
+          {
+            "node": "데이터 마이그레이션 실행 (HTTP)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "데이터 마이그레이션 실행 (HTTP)": {
+      "main": [
+        [
+          {
+            "node": "마이그레이션 성공?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "마이그레이션 성공?": {
+      "main": [
+        [
+          {
+            "node": "임베딩 생성 (HTTP)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "실패 로그 처리",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "임베딩 생성 (HTTP)": {
+      "main": [
+        [
+          {
+            "node": "성공 로그 처리",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "timezone": "Asia/Seoul",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "데이터 마이그레이션",
+      "id": "migration"
+    },
+    {
+      "name": "HTTP API",
+      "id": "http-api"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2025-10-13T04:45:00.000Z",
+  "versionId": "2.0.0"
+}

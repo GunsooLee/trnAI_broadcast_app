@@ -1,10 +1,26 @@
 # --- Dockerfile for Home Shopping FastAPI Recommender (운영 서버용) ---
 FROM python:3.11-slim
 
-# 필수 시스템 패키지 설치 (psycopg2, 빌드툴 등)
+# 필수 시스템 패키지 설치 (psycopg2, 빌드툴, ODBC 드라이버 등)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential libpq-dev && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        libpq-dev \
+        unixodbc \
+        unixodbc-dev \
+        libodbcinst2 \
+        unixodbc-common \
+        odbcinst \
+        wget \
+        curl && \
     rm -rf /var/lib/apt/lists/*
+
+# NETEZZA ODBC 드라이버 설치 (선택사항 - 드라이버 파일이 있는 경우)
+# COPY netezza_odbc_driver.tar.gz /tmp/
+# RUN cd /tmp && tar -xzf netezza_odbc_driver.tar.gz && \
+#     cp -r lib/* /usr/lib/ && \
+#     cp -r bin/* /usr/bin/ && \
+#     rm -rf /tmp/netezza_odbc_driver.tar.gz
 
 # 작업 디렉토리 생성
 WORKDIR /app

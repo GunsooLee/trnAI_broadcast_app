@@ -101,15 +101,16 @@ def main():
     openai_api_key = os.getenv('OPENAI_API_KEY')
     db_uri = os.getenv('DB_URI')
     
+    # DB_URI가 없으면 기본값 사용 (docker-compose.yml 설정과 동일)
+    if not db_uri:
+        db_uri = "postgresql://TRN_AI:TRN_AI@postgres:5432/TRNAI_DB"
+        print(f"   ℹ️  DB_URI 환경변수 없음, 기본값 사용: {db_uri}")
+    
     # 전체 재처리 여부 확인 (환경변수로 제어)
-    force_all = os.getenv('FORCE_ALL_EMBEDDING', 'false').lower() == 'true'
+    force_all = os.getenv('FORCE_ALL', 'false').lower() == 'true'
     
     if not openai_api_key or openai_api_key == 'your_openai_api_key_here':
         print("❌ OpenAI API 키가 설정되지 않았습니다.")
-        return False
-    
-    if not db_uri:
-        print("❌ 데이터베이스 URI가 설정되지 않았습니다.")
         return False
     
     try:
@@ -178,6 +179,7 @@ def main():
                     tape_name = str(row.get('tape_name', ''))
                     category_main = str(row.get('category_main', ''))
                     category_middle = str(row.get('category_middle', ''))
+                    category_sub = str(row.get('category_sub', ''))
                     
                     text = f"{product_name} {tape_name} {category_main} > {category_middle}".strip()
                     

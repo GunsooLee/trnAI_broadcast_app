@@ -165,3 +165,16 @@ async def sync_broadcast_tapes():
             detail=f"방송테이프 동기화 중 오류가 발생했습니다: {str(e)}"
         )
 
+
+# ========================================
+# 🔄 데이터 마이그레이션 API (n8n 연동용)
+# ========================================
+from .api.migration import router as migration_router
+app.include_router(migration_router)
+
+# ========================================
+# 🎨 상품 임베딩 생성 API (n8n 연동용)
+# ========================================
+from .api.embeddings import router as embeddings_router
+app.include_router(embeddings_router)
+

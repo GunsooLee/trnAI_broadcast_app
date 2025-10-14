@@ -1,0 +1,168 @@
+{
+  "name": "NETEZZA → PostgreSQL 매일 데이터 마이그레이션",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 2 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "매일 새벽 2시 실행",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "command": "docker exec -i fastapi_backend python app/migrate_netezza_to_postgres.py",
+        "cwd": "/home/trn/trnAi"
+      },
+      "id": "migrate-data",
+      "name": "데이터 마이그레이션 실행",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [470, 300],
+      "notes": "NETEZZA → PostgreSQL 증분 업데이트"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.exitCode}}",
+              "operation": "equals",
+              "value2": "0"
+            }
+          ]
+        }
+      },
+      "id": "check-success",
+      "name": "마이그레이션 성공?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "command": "docker exec -i fastapi_backend python app/setup_product_embeddings.py",
+        "cwd": "/home/trn/trnAi"
+      },
+      "id": "generate-embeddings",
+      "name": "임베딩 생성",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [910, 200],
+      "notes": "신규/수정 상품 임베딩 생성"
+    },
+    {
+      "parameters": {
+        "functionCode": "// 실패 로그 저장 및 알림\nconst failureData = {\n  timestamp: new Date().toISOString(),\n  workflow: 'NETEZZA Migration',\n  status: 'FAILED',\n  exitCode: $input.item.json.exitCode,\n  stderr: $input.item.json.stderr,\n  stdout: $input.item.json.stdout\n};\n\nreturn failureData;"
+      },
+      "id": "log-failure",
+      "name": "실패 로그 처리",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [910, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// 성공 결과 정리\nconst successData = {\n  timestamp: new Date().toISOString(),\n  workflow: 'NETEZZA Migration',\n  status: 'SUCCESS',\n  message: '데이터 마이그레이션 및 임베딩 생성 완료',\n  stdout: $input.item.json.stdout\n};\n\nreturn successData;"
+      },
+      "id": "log-success",
+      "name": "성공 로그 처리",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1130, 200]
+    },
+    {
+      "parameters": {
+        "content": "## 📝 워크플로우 설명\n\n**실행 시간:** 매일 새벽 2:00\n\n**처리 순서:**\n1. NETEZZA에서 어제 수정된 데이터 추출\n2. PostgreSQL에 UPSERT (증분 업데이트)\n3. 성공 시 자동으로 임베딩 생성\n4. 실패 시 로그 기록 (Slack/이메일 알림 추가 가능)\n\n**환경변수:**\n- `FULL_SYNC=true` - 전체 재처리\n- `TABLES=TAIGOODS,TAIPGMTAPE` - 특정 테이블만\n\n**다음 단계:**\n1. n8n 대시보드에서 이 워크플로우 Import\n2. 실행 권한 확인\n3. 테스트 실행 후 활성화"
+      },
+      "id": "workflow-notes",
+      "name": "워크플로우 설명",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [250, 80]
+    }
+  ],
+  "connections": {
+    "매일 새벽 2시 실행": {
+      "main": [
+        [
+          {
+            "node": "데이터 마이그레이션 실행",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "데이터 마이그레이션 실행": {
+      "main": [
+        [
+          {
+            "node": "마이그레이션 성공?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "마이그레이션 성공?": {
+      "main": [
+        [
+          {
+            "node": "임베딩 생성",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "실패 로그 처리",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "임베딩 생성": {
+      "main": [
+        [
+          {
+            "node": "성공 로그 처리",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "timezone": "Asia/Seoul",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "데이터 마이그레이션",
+      "id": "migration"
+    },
+    {
+      "name": "배치 작업",
+      "id": "batch"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2025-10-13T02:30:00.000Z",
+  "versionId": "1.0.0"
+}
