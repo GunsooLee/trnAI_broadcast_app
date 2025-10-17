@@ -33,7 +33,7 @@ class BroadcastWorkflow:
         # LangChain LLM 초기화
         self.llm = ChatOpenAI(
             model="gpt-4o-mini",
-            temperature=0.6,
+            temperature=0.5,
             openai_api_key=os.getenv("OPENAI_API_KEY")
         )
         
