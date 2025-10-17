@@ -91,7 +91,6 @@ class Reasoning(BaseModel):
     """추천 근거 스키마"""
     summary: str
     linkedCategories: List[str]
-    matchedKeywords: List[str]
 
 class BusinessMetrics(BaseModel):
     """비즈니스 지표 스키마"""
