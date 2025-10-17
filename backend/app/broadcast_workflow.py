@@ -33,7 +33,7 @@ class BroadcastWorkflow:
         # LangChain LLM 초기화
         self.llm = ChatOpenAI(
             model="gpt-4o-mini",
-            temperature=0.1,
+            temperature=0.6,
             openai_api_key=os.getenv("OPENAI_API_KEY")
         )
         
@@ -815,6 +815,10 @@ JSON 형식으로 응답해주세요."""),
         for i, candidate in enumerate(ranked_products):
             product = candidate["product"]
             
+            # 순위 정보 추가
+            candidate["rank"] = i + 1
+            candidate["total_count"] = len(ranked_products)
+            
             # LangChain 기반 동적 근거 생성 (비동기)
             reasoning_summary = await self._generate_dynamic_reason_with_langchain(
                 candidate, 
@@ -1081,112 +1085,130 @@ JSON 형식으로 응답해주세요."""),
         try:
             product = candidate["product"]
             source = candidate["source"]
-            trend_boost = candidate.get("trend_boost", 1.0)
             predicted_sales = candidate.get("predicted_sales", 0)
+            similarity_score = candidate.get("similarity_score", 0)
+            final_score = candidate.get("final_score", 0)
+            rank = candidate.get("rank", 0)
             
             # 상품 정보
             category = product.get("category_main", "")
             product_name = product.get("product_name", "")
             trend_keyword = candidate.get("trend_keyword", "")
-            tape_name = product.get("tape_name", "")
             
             # 컨텍스트 정보
             time_slot = context.get("time_slot", "") if context else ""
             weather = context.get("weather", {}).get("weather", "") if context else ""
+            holiday_name = context.get("holiday_name") if context else None
             competitors = context.get("competitors", []) if context else []
             
             # 경쟁 상황 분석
             competitor_categories = [comp.get("category_main", "") for comp in competitors]
             has_competition = category in competitor_categories
             
+            # 점수 분석 (실제 가중치 기반)
+            if similarity_score >= 0.7:
+                # 고유사도: 유사도 70%, 매출 30%
+                similarity_ratio = 0.7
+                sales_ratio = 0.3
+            else:
+                # 저유사도: 유사도 30%, 매출 70%
+                similarity_ratio = 0.3
+                sales_ratio = 0.7
+            
             # 프롬프트 로깅 (눈에 띄게)
             print("=" * 80)
             print("[LLM 프롬프트] 추천 근거 생성")
             print("=" * 80)
-            print(f"상품: {product_name}, 카테고리: {category}, 매출: {predicted_sales}만원")
-            print(f"시간대: {time_slot}, 날씨: {weather}")
+            print(f"순위: {rank}위 | 추천 타입: {source}")
+            print(f"상품: {product_name}, 카테고리: {category}")
+            print(f"유사도: {similarity_score:.3f} | 매출: {int(predicted_sales/10000)}만원 | 최종점수: {final_score:.3f}")
+            print(f"점수 구성: 유사도 {similarity_ratio*100:.0f}% / 매출 {sales_ratio*100:.0f}%")
+            print(f"시간대: {time_slot}, 날씨: {weather}, 공휴일: {holiday_name or '없음'}")
             print("=" * 80)
-            logger.info(f"[LLM 프롬프트] 추천 근거 생성 - 상품: {product_name}, 카테고리: {category}, 매출: {predicted_sales}만원")
             
             # 프롬프트 템플릿 생성
             reason_prompt = ChatPromptTemplate.from_messages([
                 ("system", """당신은 홈쇼핑 방송 편성 전문가입니다. 
-주어진 상품 정보와 데이터를 바탕으로 간결하고 설득력 있는 추천 근거를 생성해주세요.
+주어진 데이터를 바탕으로 각 상품마다 독창적이고 설득력 있는 추천 근거를 작성하세요.
 
-다음 규칙을 따라주세요:
-1. **정확히 한 문장**으로 작성 (최대 100자)
-2. **예상 매출 수치는 반드시 포함** (예: "2500만원")
-3. 시청자가 즉시 이해할 수 있는 쉬운 표현
-4. 긍정적이고 확신에 찬 톤앤매너 유지
+# 핵심 원칙
+1. **100자 이내** 간결하게 작성
+2. 전문적이고 객관적인 톤 유지
+3. 구체적인 수치와 데이터 활용
+4. **각 상품마다 완전히 다른 관점과 표현 사용**
+5. 같은 패턴이나 문구 반복 절대 금지
 
-# 우선순위 기반 작성 가이드
-**1순위 - 공휴일 (있을 경우 필수 언급)**
-- 공휴일명 + 특수/연휴/시즌 등의 표현 사용
-- 예: "설 연휴 특수로", "추석 시즌 맞아", "크리스마스 특수로"
+# 활용 가능한 요소들
+- 예측 매출 수치
+- 시간대 특성 (저녁/오전/오후)
+- 카테고리 특성
+- 점수 구성 비율 (유사도 vs 매출)
+- 트렌드 키워드 (있을 경우)
+- 공휴일 (있을 경우 필수 언급)
+- 날씨/계절 (선택적, 과도한 반복 금지)
 
-**2순위 - 예상 매출 수치 (항상 필수)**
-- 반드시 "만원" 단위로 명시
-- 예: "2500만원 매출 예상", "1800만원 기대"
+# 금지 사항 (답변에 절대 포함하지 말 것)
+- "AI 분석 결과"로 시작하지 마세요
+- 템플릿처럼 보이는 반복적 표현 금지
+- 과장된 표현 (대박, 최고, 강추 등)
+- 감정적 표현 (기쁘게, 행복하게 등)
+- **기술 용어 절대 사용 금지**: 
+  * "유사도", "유사도 점수", "similarity"
+  * "매출 비중", "점수 구성", "70%", "30%", "비율"
+  * "최종 점수", "final score"
+  * 이런 내부 지표들을 절대 답변에 포함하지 마세요
 
-**3순위 - 시간대/날씨**
-- 시간대: "저녁 시간대 최적", "오후 타임 추천"
-- 날씨: "비 오는 날 인기", "무더위 해결사"
-
-**4순위 - 카테고리/트렌드**
-- 카테고리: "건강식품 시즌", "화장품 성수기"
-- 트렌드: 실제 키워드가 있을 때만 사용
-
-# 작성 패턴 (반드시 따를 것)
-## 공휴일 O + 매출:
-"{공휴일명} 특수로 {매출}만원 매출 예상"
-"{공휴일명} 연휴 맞아 {매출}만원 기대"
-
-## 공휴일 X + 시간대 + 매출:
-"{시간대} 시간대 최적, {매출}만원 예상"
-"{시간대} 타임 추천, {매출}만원 기대"
-
-## 공휴일 X + 날씨 + 매출:
-"{날씨} 날 인기 상품, {매출}만원 예측"
-"{날씨} 대비 필수템, {매출}만원 전망"
-
-**절대 하지 말 것:**
-- 두 문장 이상 작성 금지
-- 애매한 표현 금지 (예: "좋은", "적절한")
-- 매출 수치 누락 금지
-- 불필요한 수식어 과다 사용 금지"""),
+# 창의적 작성 가이드
+- **상품명의 특징을 활용** (브랜드, 수량, 특수성 등)
+- 매출 수치를 다양한 방식으로 표현
+- 시간대를 다르게 표현 (황금시간대, 주시청시간 등)
+- 카테고리 특성을 창의적으로 활용
+- 점수 구성에 따라 강조점을 다르게
+- **각 상품마다 완전히 다른 각도에서 접근**
+- **절대 이전 응답과 비슷한 패턴 사용 금지**"""),
     
     ("human", """
 상품명: {product_name}
 카테고리: {category}
+추천 순위: {rank}위
+추천 타입: {source}
 예측 매출: {predicted_sales}만원
+유사도 점수: {similarity_score}
+최종 점수: {final_score}
+점수 구성: 유사도 {similarity_ratio}% / 매출 {sales_ratio}%
 시간대: {time_slot}
 날씨: {weather}
 공휴일: {holiday_name}
 트렌드 키워드: {trend_keyword}
 
-**지시사항:**
-1. 공휴일이 "{holiday_name}"로 제공되면 반드시 첫 번째로 언급하세요
-2. 예측 매출 "{predicted_sales}만원"은 반드시 포함하세요
-3. 공휴일이 없으면 시간대({time_slot})와 날씨({weather})를 활용하세요
-4. 위 작성 패턴 중 하나를 선택해서 정확히 따르세요
+위 데이터를 분석하여 이 상품만의 독특한 추천 근거를 작성하세요.
 
-""")
+**중요:**
+- 다른 상품들과 완전히 다른 시작 문구 사용
+- 같은 단어나 표현 반복 금지
+- 공휴일이 있으면 반드시 언급
+- 점수 구성 비율에 따라 강조점 다르게
+- 100자 이내로 작성
+
+추천 근거:""")
             ])
             
             chain = reason_prompt | self.llm
             
-            # 공휴일 정보 추가
-            holiday_name = context.get("holiday_name") if context else None
-            
             result = await chain.ainvoke({
                 "product_name": product_name,
                 "category": category,
-                "source": "트렌드" if source == "trend" else "카테고리",
-                "trend_keyword": trend_keyword or "없음",
-                "predicted_sales": int(predicted_sales / 10000),  # 만원 단위
+                "rank": rank,
+                "source": source,  # "trend_match" 또는 "sales_prediction"
+                "predicted_sales": int(predicted_sales/10000) if predicted_sales else "없음",
+                "similarity_score": f"{similarity_score:.3f}",
+                "final_score": f"{final_score:.3f}",
+                "similarity_ratio": f"{similarity_ratio*100:.0f}",
+                "sales_ratio": f"{sales_ratio*100:.0f}",
                 "time_slot": time_slot or "미지정",
                 "weather": weather or "보통",
-                "holiday_name": holiday_name if holiday_name else "없음"
+                "holiday_name": holiday_name if holiday_name else "없음",
+                "trend_keyword": trend_keyword or "없음"
             })
             
             return result.content.strip()
