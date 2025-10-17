@@ -303,7 +303,7 @@ JSON 형식으로 응답해주세요."""),
             # Qdrant 통합 검색 (1회)
             all_results = self.product_embedder.search_products(
                 trend_keywords=[query],
-                top_k=30,
+                top_k=50,  # 후보군
                 score_threshold=0.3,
                 only_ready_products=True
             )
@@ -363,7 +363,7 @@ JSON 형식으로 응답해주세요."""),
             # Qdrant에서 카테고리 검색 (방송 테이프 준비 완료 상품만)
             similar_products = self.product_embedder.search_products(
                 trend_keywords=[query],
-                top_k=30,  # 통합 검색과 동일하게 30으로 설정
+                top_k=50,  # 후보군
                 score_threshold=0.3,
                 only_ready_products=True
             )
@@ -581,7 +581,7 @@ JSON 형식으로 응답해주세요."""),
             # Qdrant에서 상품 검색 (방송 테이프 준비 완료 상품만)
             similar_products = self.product_embedder.search_products(
                 trend_keywords=[query],
-                top_k=30,  # 통합 검색과 동일하게 30으로 설정
+                top_k=50,  # 후보군
                 score_threshold=0.3
             )
             
@@ -677,12 +677,46 @@ JSON 형식으로 응답해주세요."""),
                 source = "sales_prediction"
                 print(f"  [저유사도] {product.get('product_name')[:20]}: 유사도={similarity:.2f}, 매출={predicted_sales/10000:.0f}만원, 점수={final_score:.3f}")
             
+            # 상품별 매칭 키워드 추출 (상품명/카테고리와 관련된 트렌드 키워드)
+            matched_keywords = []
+            product_name = product.get('product_name', '').lower()
+            category = product.get('category_main', '').lower()
+            
+            # AI 트렌드에서 관련 키워드 찾기 (더 정교한 매칭)
+            if context and context.get("ai_trends"):
+                for trend_item in context["ai_trends"][:15]:
+                    # 트렌드 키워드에서 숫자와 점 제거 (예: "1. 김장 재료" → "김장 재료")
+                    keyword = trend_item.split('.', 1)[-1].strip() if '.' in trend_item else trend_item
+                    keyword_lower = keyword.lower()
+                    
+                    # 의미 있는 단어만 추출 (2글자 이상)
+                    keyword_words = [w for w in keyword_lower.split() if len(w) >= 2]
+                    
+                    # 상품명이나 카테고리에 키워드의 핵심 단어가 포함되어 있는지 확인
+                    match_score = 0
+                    for word in keyword_words:
+                        if word in product_name:
+                            match_score += 2  # 상품명 매칭은 높은 점수
+                        elif word in category:
+                            match_score += 1  # 카테고리 매칭은 낮은 점수
+                    
+                    # 매칭 점수가 2 이상이면 관련성 있다고 판단
+                    if match_score >= 2:
+                        matched_keywords.append(keyword)
+                        if len(matched_keywords) >= 3:
+                            break
+            
+            # 매칭된 키워드가 없으면 빈 리스트 (억지로 넣지 않음)
+            if not matched_keywords:
+                matched_keywords = []
+            
             candidates.append({
                 "product": product,
                 "source": source,
                 "similarity_score": similarity,
                 "predicted_sales": predicted_sales,
-                "final_score": final_score
+                "final_score": final_score,
+                "matched_keywords": matched_keywords  # 상품별 매칭 키워드 추가
             })
         
         # 4. 점수순 정렬
@@ -841,10 +875,7 @@ JSON 형식으로 응답해주세요."""),
                 reasoning=Reasoning(
                     summary=reasoning_summary,
                     linkedCategories=[product.get("category_main", "Unknown")],
-                    matchedKeywords=(
-                        (context.get("generated_keywords", [])[:3] +  # 시간대 맥락
-                        context.get("ai_trends", [])[:2])            # AI 트렌드
-                    ) if context else []
+                    matchedKeywords=candidate.get("matched_keywords", [])  # 상품별 매칭 키워드 사용
                 ),
                 businessMetrics=BusinessMetrics(
                     pastAverageSales=f"{int(candidate['predicted_sales']/10000)}만원",  # 만원 단위

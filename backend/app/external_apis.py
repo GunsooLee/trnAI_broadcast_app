@@ -176,7 +176,7 @@ class LLMTrendAPI:
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=800,
-                temperature=0.7
+                temperature=0.2
             )
 
             llm_response = response.choices[0].message.content.strip()
