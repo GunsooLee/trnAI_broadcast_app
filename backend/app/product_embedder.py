@@ -52,7 +52,9 @@ class ProductEmbedder:
     
     def build_product_index(self, products_df: pd.DataFrame, batch_size: int = 100):
         """상품 데이터를 임베딩하여 Qdrant에 저장"""
-        logger.info(f"총 {len(products_df)}개 상품 임베딩 시작")
+        total = len(products_df)
+        print(f"=== 임베딩 시작: 총 {total}개 상품 ===")
+        logger.info(f"총 {total}개 상품 임베딩 시작")
         
         points = []
         processed = 0
@@ -91,6 +93,7 @@ class ProductEmbedder:
                         "category_middle": category_middle,
                         "category_sub": category_sub,
                         "brand": brand,
+                        "price": float(row.get('price', 0)) if row.get('price') else 0,
                         "text": text,
                         "created_at": datetime.now().isoformat()
                     }
@@ -98,12 +101,17 @@ class ProductEmbedder:
                 points.append(point)
                 processed += 1
                 
+                # 진행 상황 출력 (10개마다)
+                if processed % 10 == 0:
+                    print(f"진행 중: {processed}/{total} ({processed*100//total}%)")
+                
                 # 배치 단위로 업로드
                 if len(points) >= batch_size:
                     self.qdrant_client.upsert(
                         collection_name=self.collection_name,
                         points=points
                     )
+                    print(f"=== 배치 업로드: {processed}개 완료 ({processed*100//total}%) ===")
                     logger.info(f"{processed}개 상품 임베딩 완료")
                     points = []
                     
@@ -155,6 +163,9 @@ class ProductEmbedder:
             for hit in results:
                 product = hit.payload.copy()
                 product['similarity_score'] = hit.score
+                # 디버깅: price 확인
+                if 'price' not in product or product.get('price') is None:
+                    logger.warning(f"⚠️ Qdrant 검색 결과에 price 없음: {product.get('product_name', 'Unknown')[:30]}")
                 filtered_products.append(product)
             
             filter_msg = "(방송테이프 존재)" if only_ready_products else ""

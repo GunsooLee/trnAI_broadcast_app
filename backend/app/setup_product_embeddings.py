@@ -33,6 +33,8 @@ def get_products_to_embed(engine, force_all=False):
             g.category_main,
             g.category_middle,
             g.category_sub,
+            g.brand,
+            g.price,
             t.tape_code,
             t.tape_name,
             g.created_at,
@@ -56,6 +58,8 @@ def get_products_to_embed(engine, force_all=False):
             g.category_main,
             g.category_middle,
             g.category_sub,
+            g.brand,
+            g.price,
             t.tape_code,
             t.tape_name,
             g.created_at,
@@ -99,12 +103,14 @@ def main():
     
     # 환경변수 로드
     openai_api_key = os.getenv('OPENAI_API_KEY')
-    db_uri = os.getenv('DB_URI')
+    db_uri = os.getenv('POSTGRES_URI') or os.getenv('DB_URI')
     
     # DB_URI가 없으면 기본값 사용 (docker-compose.yml 설정과 동일)
     if not db_uri:
         db_uri = "postgresql://TRN_AI:TRN_AI@postgres:5432/TRNAI_DB"
-        print(f"   ℹ️  DB_URI 환경변수 없음, 기본값 사용: {db_uri}")
+        print(f"   ℹ️  POSTGRES_URI 환경변수 없음, 기본값 사용: {db_uri}")
+    else:
+        print(f"   ✅ POSTGRES_URI 환경변수 사용")
     
     # 전체 재처리 여부 확인 (환경변수로 제어)
     force_all = os.getenv('FORCE_ALL', 'false').lower() == 'true'
@@ -204,6 +210,8 @@ def main():
                             "category_main": category_main,
                             "category_middle": category_middle,
                             "category_sub": category_sub,
+                            "brand": str(row.get('brand', '')),
+                            "price": float(row.get('price', 0)) if row.get('price') else 0,
                             "tape_code": str(row.get('tape_code', '')),
                             "tape_name": str(row.get('tape_name', '')),
                             "text": text,

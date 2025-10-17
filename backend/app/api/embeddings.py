@@ -154,7 +154,7 @@ async def get_embedding_status():
         from sqlalchemy import create_engine, text
         
         # PostgreSQL 연결 (setup_product_embeddings.py와 동일한 환경변수 사용)
-        postgres_url = os.getenv("DB_URI")
+        postgres_url = os.getenv("POSTGRES_URI") or os.getenv("DB_URI")
         if not postgres_url:
             # Fallback: docker-compose.yml의 설정 사용
             postgres_url = "postgresql://TRN_AI:TRN_AI@postgres:5432/TRNAI_DB"

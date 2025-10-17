@@ -199,6 +199,22 @@ def upsert_to_postgres(df, table_name, postgres_engine, key_column='product_code
                 production_status = EXCLUDED.production_status,
                 updated_at = CURRENT_TIMESTAMP
             """
+        elif table_name.lower() == 'taibroadcasts':
+            # TAIPGMTAPE에 존재하는 tape_code만 삽입 (Foreign Key 제약 준수)
+            upsert_query = f"""
+            INSERT INTO taibroadcasts (tape_code, broadcast_start_timestamp, product_is_new, 
+                                       gross_profit, sales_efficiency, created_at)
+            SELECT t.tape_code, 
+                   t.broadcast_start_timestamp::TIMESTAMP, 
+                   CASE WHEN t.product_is_new IS NULL THEN FALSE 
+                        ELSE t.product_is_new::BOOLEAN 
+                   END, 
+                   t.gross_profit::NUMERIC, 
+                   t.sales_efficiency::NUMERIC, 
+                   t.created_at::TIMESTAMP
+            FROM {temp_table} t
+            WHERE EXISTS (SELECT 1 FROM taipgmtape WHERE tape_code = t.tape_code)
+            """
         else:
             raise ValueError(f"지원하지 않는 테이블: {table_name}")
         

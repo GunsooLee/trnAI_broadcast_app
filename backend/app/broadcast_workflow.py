@@ -118,12 +118,16 @@ class BroadcastWorkflow:
         # 방송 시간 파싱
         broadcast_dt = datetime.fromisoformat(broadcast_time.replace('Z', '+00:00'))
         
+        # DB에서 공휴일 정보 조회
+        holiday_name = await self._get_holiday_from_db(broadcast_dt.date())
+        
         context = {
             "broadcast_time": broadcast_time,
             "broadcast_dt": broadcast_dt,
             "hour": broadcast_dt.hour,
             "weekday": broadcast_dt.weekday(),
-            "season": self._get_season(broadcast_dt.month)
+            "season": self._get_season(broadcast_dt.month),
+            "holiday_name": holiday_name  # 공휴일 정보 추가
         }
         
         # 날씨 정보 수집
@@ -158,6 +162,8 @@ class BroadcastWorkflow:
 
         # 컨텍스트 로그 출력
         logger.info(f"컨텍스트 수집 완료 - 계절: {context['season']}, 시간대: {time_slot}, 요일: {day_type}")
+        if holiday_name:
+            logger.info(f"🎉 공휴일: {holiday_name}")
         logger.info(f"날씨: {weather_info.get('weather', 'N/A')}")
         
         # 통합 키워드 생성 (AI 트렌드 + 컨텍스트 키워드)
@@ -180,6 +186,28 @@ class BroadcastWorkflow:
         logger.info(f"통합 키워드: {context['unified_keywords']}")
 
         return context
+    
+    async def _get_holiday_from_db(self, target_date) -> Optional[str]:
+        """DB에서 공휴일 정보 조회"""
+        try:
+            with self.engine.connect() as conn:
+                query = text("""
+                    SELECT holiday_name 
+                    FROM TAIHOLIDAYS 
+                    WHERE holiday_date = :target_date
+                """)
+                result = conn.execute(query, {"target_date": target_date})
+                row = result.fetchone()
+                
+                if row:
+                    holiday_name = row[0]
+                    logger.info(f"공휴일 조회 성공: {target_date} -> {holiday_name}")
+                    return holiday_name
+                else:
+                    return None
+        except Exception as e:
+            logger.error(f"공휴일 조회 오류: {e}")
+            return None
     
     def _get_season(self, month: int) -> str:
         """계절 정보 반환"""
@@ -428,8 +456,9 @@ JSON 형식으로 응답해주세요."""),
         time_slot = context.get("time_slot", "저녁")
         season = context.get("season", "봄")
         day_type = context.get("day_type", "평일")
+        holiday_name = context.get("holiday_name")  # 공휴일 정보
         
-        logger.info(f"추출된 정보 - weather: {weather}, temp: {temperature}, time_slot: {time_slot}, season: {season}, day_type: {day_type}")
+        logger.info(f"추출된 정보 - weather: {weather}, temp: {temperature}, time_slot: {time_slot}, season: {season}, day_type: {day_type}, holiday: {holiday_name}")
         
         # LangChain 프롬프트
         keyword_prompt = ChatPromptTemplate.from_messages([
@@ -440,6 +469,10 @@ JSON 형식으로 응답해주세요."""),
 - 날씨가 '비'이고 저녁 시간 → "우산", "방수", "실내활동", "따뜻한음식", "집콕", "요리도구"
 - 날씨가 '맑음'이고 오후 시간 → "야외활동", "운동", "캠핑", "레저", "자외선차단"
 - 겨울철 저녁 시간 → "난방", "보온", "따뜻한", "겨울의류", "온열", "찜질"
+- 크리스마스 → "선물", "파티", "케이크", "장식", "가족모임", "연말선물"
+- 추석 → "선물세트", "한복", "송편", "귀성", "명절음식", "차례상"
+
+**중요: 공휴일이 있으면 반드시 공휴일 관련 키워드를 우선적으로 포함하세요!**
 
 5-10개의 키워드를 JSON 배열로 반환해주세요."""),
             ("human", """날씨: {weather}
@@ -447,8 +480,9 @@ JSON 형식으로 응답해주세요."""),
 시간대: {time_slot}
 계절: {season}
 요일 타입: {day_type}
+공휴일: {holiday_name}
 
-위 상황에 적합한 상품 검색 키워드를 생성해주세요.""")
+위 상황에 적합한 상품 검색 키워드를 생성해주세요. 공휴일이 있다면 공휴일 관련 키워드를 반드시 포함하세요!""")
         ])
         
         chain = keyword_prompt | self.llm | JsonOutputParser()
@@ -460,7 +494,8 @@ JSON 형식으로 응답해주세요."""),
                 "temperature": temperature,
                 "time_slot": time_slot,
                 "season": season,
-                "day_type": day_type
+                "day_type": day_type,
+                "holiday_name": holiday_name if holiday_name else "없음"
             }
             print("=" * 80)
             print("[LLM 프롬프트] 컨텍스트 키워드 생성")
@@ -474,7 +509,8 @@ JSON 형식으로 응답해주세요."""),
                 "temperature": temperature,
                 "time_slot": time_slot,
                 "season": season,
-                "day_type": day_type
+                "day_type": day_type,
+                "holiday_name": holiday_name if holiday_name else "없음"
             })
             # result가 리스트일 수도 있고 딕셔너리일 수도 있음
             if isinstance(result, list):
@@ -587,14 +623,29 @@ JSON 형식으로 응답해주세요."""),
         
         print(f"=== [DEBUG] 통합된 상품 수: {len(all_products)}개 ===")
         
-        # 2. 중복 제거
+        # 2. 중복 제거 (상품코드 + 소분류)
         unique_products = {}
+        seen_sub_categories = set()
+        
         for product in all_products:
             product_code = product.get("product_code")
-            if product_code not in unique_products:
-                unique_products[product_code] = product
+            category_sub = product.get("category_sub", "")
+            
+            # 상품코드 중복 체크
+            if product_code in unique_products:
+                continue
+            
+            # 소분류 중복 체크 (다양성 보장)
+            if category_sub and category_sub in seen_sub_categories:
+                logger.info(f"소분류 중복 제외: {product.get('product_name', '')[:30]} (소분류: {category_sub})")
+                continue
+            
+            # 통과한 경우 추가
+            unique_products[product_code] = product
+            if category_sub:
+                seen_sub_categories.add(category_sub)
         
-        print(f"=== [DEBUG] 중복 제거 후: {len(unique_products)}개 ===")
+        print(f"=== [DEBUG] 중복 제거 후: {len(unique_products)}개 (소분류 다양성 보장) ===")
         
         # 3. 배치 예측 준비 (상위 30개만)
         products_list = list(unique_products.values())[:30]
@@ -779,6 +830,7 @@ JSON 형식으로 응답해주세요."""),
                     productId=product.get("product_code", "Unknown"),
                     productName=product.get("product_name", "Unknown"),
                     category=product.get("category_main", "Unknown"),
+                    price=product.get("price"),
                     tapeCode=product.get("tape_code"),
                     tapeName=product.get("tape_name")
                 ),
@@ -1062,46 +1114,79 @@ JSON 형식으로 응답해주세요."""),
 주어진 상품 정보와 데이터를 바탕으로 간결하고 설득력 있는 추천 근거를 생성해주세요.
 
 다음 규칙을 따라주세요:
-1. 한 문장으로 간결하게 작성 (최대 50자)
-2. 구체적인 수치나 키워드 포함
-3. 시청자가 이해하기 쉬운 표현 사용
-4. 긍정적이고 확신에 찬 톤앤매너
+1. **정확히 한 문장**으로 작성 (최대 100자)
+2. **예상 매출 수치는 반드시 포함** (예: "2500만원")
+3. 시청자가 즉시 이해할 수 있는 쉬운 표현
+4. 긍정적이고 확신에 찬 톤앤매너 유지
 
-근거에 포함할 요소들:
-- 트렌드 키워드 활용
-- 매출 예측 수치
-- 시간대/날씨 적합성
-- 경쟁 상황 (독점 편성 등)
-- 방송테이프 준비 상태"""),
-                ("human", """
+# 우선순위 기반 작성 가이드
+**1순위 - 공휴일 (있을 경우 필수 언급)**
+- 공휴일명 + 특수/연휴/시즌 등의 표현 사용
+- 예: "설 연휴 특수로", "추석 시즌 맞아", "크리스마스 특수로"
+
+**2순위 - 예상 매출 수치 (항상 필수)**
+- 반드시 "만원" 단위로 명시
+- 예: "2500만원 매출 예상", "1800만원 기대"
+
+**3순위 - 시간대/날씨**
+- 시간대: "저녁 시간대 최적", "오후 타임 추천"
+- 날씨: "비 오는 날 인기", "무더위 해결사"
+
+**4순위 - 카테고리/트렌드**
+- 카테고리: "건강식품 시즌", "화장품 성수기"
+- 트렌드: 실제 키워드가 있을 때만 사용
+
+# 작성 패턴 (반드시 따를 것)
+## 공휴일 O + 매출:
+"{공휴일명} 특수로 {매출}만원 매출 예상"
+"{공휴일명} 연휴 맞아 {매출}만원 기대"
+
+## 공휴일 X + 시간대 + 매출:
+"{시간대} 시간대 최적, {매출}만원 예상"
+"{시간대} 타임 추천, {매출}만원 기대"
+
+## 공휴일 X + 날씨 + 매출:
+"{날씨} 날 인기 상품, {매출}만원 예측"
+"{날씨} 대비 필수템, {매출}만원 전망"
+
+**절대 하지 말 것:**
+- 두 문장 이상 작성 금지
+- 애매한 표현 금지 (예: "좋은", "적절한")
+- 매출 수치 누락 금지
+- 불필요한 수식어 과다 사용 금지"""),
+    
+    ("human", """
 상품명: {product_name}
 카테고리: {category}
-추천 소스: {source}
-트렌드 키워드: {trend_keyword}
-트렌드 부스트: {trend_boost}
 예측 매출: {predicted_sales}만원
-방송테이프: {tape_name}
 시간대: {time_slot}
 날씨: {weather}
-경쟁 상황: {competition_status}
+공휴일: {holiday_name}
+트렌드 키워드: {trend_keyword}
 
-위 정보를 바탕으로 이 상품을 추천하는 핵심 근거를 한 문장으로 작성해주세요.
+**지시사항:**
+1. 공휴일이 "{holiday_name}"로 제공되면 반드시 첫 번째로 언급하세요
+2. 예측 매출 "{predicted_sales}만원"은 반드시 포함하세요
+3. 공휴일이 없으면 시간대({time_slot})와 날씨({weather})를 활용하세요
+4. 위 작성 패턴 중 하나를 선택해서 정확히 따르세요
+
 """)
             ])
             
             chain = reason_prompt | self.llm
+            
+            # 공휴일 정보 추가
+            holiday_name = context.get("holiday_name") if context else None
             
             result = await chain.ainvoke({
                 "product_name": product_name,
                 "category": category,
                 "source": "트렌드" if source == "trend" else "카테고리",
                 "trend_keyword": trend_keyword or "없음",
-                "trend_boost": f"{trend_boost:.1f}배",
                 "predicted_sales": int(predicted_sales / 10000),  # 만원 단위
-                "tape_name": tape_name or "미준비",
                 "time_slot": time_slot or "미지정",
                 "weather": weather or "보통",
-                "competition_status": "경쟁 없음" if not has_competition else "경쟁 있음"
+                "holiday_name": holiday_name if holiday_name else "없음"
             })
             
             return result.content.strip()
@@ -1165,23 +1250,36 @@ JSON 형식으로 응답해주세요."""),
         """1개 상품의 XGBoost feature 준비 (예측은 안 함)"""
         broadcast_dt = context["broadcast_dt"]
         
+        print(f"=== [_prepare_features_for_product] 호출됨: {product.get('product_name', 'Unknown')[:30]} ===")
+        
+        # 상품별 과거 평균 매출 조회 (DB에서)
+        product_code = product.get("product_code", product.get("productId"))
+        category_main = product.get("category_main", product.get("category", "Unknown"))
+        print(f"  product_code: {product_code}, category: {category_main}")
+        product_avg_profit = self._get_product_avg_profit(product_code, category_main)
+        
+        # 카테고리-시간대별 평균 매출 조회
+        category_main = product.get("category_main", product.get("category", "Unknown"))
+        time_slot = context["time_slot"]
+        category_timeslot_avg = self._get_category_timeslot_avg(category_main, time_slot)
+        
         return {
             # Numeric features
-            "product_price": product.get("product_price", 100000),
-            "product_avg_profit": product.get("avg_sales", 30000000),
-            "product_broadcast_count": product.get("broadcast_count", 10),
-            "category_timeslot_avg_profit": 25000000,
+            "product_price": product.get("product_price", product.get("price", 100000)),
+            "product_avg_profit": product_avg_profit,
+            "product_broadcast_count": product.get("broadcast_count", 1),
+            "category_timeslot_avg_profit": category_timeslot_avg,
             "hour": broadcast_dt.hour,
             "temperature": context["weather"].get("temperature", 20),
             "precipitation": context["weather"].get("precipitation", 0),
             
             # Categorical features
-            "product_lgroup": product.get("category_main", "Unknown"),
+            "product_lgroup": category_main,
             "product_mgroup": product.get("category_middle", "Unknown"),
             "product_sgroup": product.get("category_sub", "Unknown"),
-            "brand": "Unknown",
-            "product_type": "유형",
-            "time_slot": context["time_slot"],
+            "brand": product.get("brand", "Unknown"),
+            "product_type": product.get("product_type", "유형"),
+            "time_slot": time_slot,
             "day_of_week": ["월", "화", "수", "목", "금", "토", "일"][broadcast_dt.weekday()],
             "season": context["season"],
             "weather": context["weather"].get("weather", "Clear"),
@@ -1190,6 +1288,66 @@ JSON 형식으로 응답해주세요."""),
             "is_weekend": 1 if broadcast_dt.weekday() >= 5 else 0,
             "is_holiday": 0
         }
+    
+    def _get_product_avg_profit(self, product_code: str, category: str = None) -> float:
+        """상품별 과거 평균 매출 조회 (없으면 카테고리 평균 사용)"""
+        try:
+            # 1. 상품별 평균 조회
+            query = text(f"""
+            SELECT COALESCE(AVG(gross_profit), 0) as avg_profit, COUNT(*) as cnt
+            FROM broadcast_training_dataset
+            WHERE product_code = '{product_code}'
+            """)
+            with self.engine.connect() as conn:
+                result = conn.execute(query).fetchone()
+            avg_profit = float(result[0]) if result and result[0] else 0
+            count = int(result[1]) if result else 0
+            
+            if count > 0:
+                print(f"✅ 상품 '{product_code}': 평균 {avg_profit/10000:.0f}만원 ({count}건)")
+                return avg_profit
+            
+            # 2. 과거 데이터 없으면 카테고리 평균 사용
+            if category:
+                query = text(f"""
+                SELECT COALESCE(AVG(gross_profit), 0) as avg_profit, COUNT(*) as cnt
+                FROM broadcast_training_dataset
+                WHERE category_main = '{category}'
+                """)
+                with self.engine.connect() as conn:
+                    result = conn.execute(query).fetchone()
+                category_avg = float(result[0]) if result and result[0] else 100000000  # 기본 1억
+                cat_count = int(result[1]) if result else 0
+                print(f"📊 상품 '{product_code}': 과거 데이터 없음 → 카테고리 '{category}' 평균 {category_avg/10000:.0f}만원 사용 ({cat_count}건)")
+                return category_avg
+            
+            # 3. 카테고리도 없으면 전체 평균
+            query = text("SELECT AVG(gross_profit) FROM broadcast_training_dataset")
+            with self.engine.connect() as conn:
+                result = conn.execute(query).fetchone()
+            overall_avg = float(result[0]) if result and result[0] else 100000000
+            print(f"📊 상품 '{product_code}': 전체 평균 {overall_avg/10000:.0f}만원 사용")
+            return overall_avg
+            
+        except Exception as e:
+            logger.warning(f"상품 평균 매출 조회 실패 ({product_code}): {e}")
+            return 100000000  # 기본 1억
+    
+    def _get_category_timeslot_avg(self, category: str, time_slot: str) -> float:
+        """카테고리-시간대별 평균 매출 조회"""
+        try:
+            query = text(f"""
+            SELECT COALESCE(AVG(gross_profit), 0) as avg_profit
+            FROM broadcast_training_dataset
+            WHERE category_main = '{category}'
+              AND time_slot = '{time_slot}'
+            """)
+            with self.engine.connect() as conn:
+                result = conn.execute(query).fetchone()
+            return float(result[0]) if result and result[0] else 0
+        except Exception as e:
+            logger.warning(f"카테고리-시간대 평균 조회 실패 ({category}, {time_slot}): {e}")
+            return 0
     
     async def _predict_product_sales(self, product: Dict[str, Any], context: Dict[str, Any]) -> float:
         """개별 상품 XGBoost 매출 예측"""
@@ -1240,10 +1398,28 @@ JSON 형식으로 응답해주세요."""),
             
             print(f"=== [배치 예측] {len(products)}개 상품 일괄 예측 시작 ===")
             
+            # 입력 피처 샘플 출력 (디버깅용)
+            print(f"=== [입력 피처 샘플] ===")
+            for i, (product, features) in enumerate(zip(products[:3], features_list[:3])):
+                print(f"  상품 {i+1}: {product.get('product_name', '')[:30]}")
+                print(f"    - product_avg_profit: {features['product_avg_profit']:,.0f}원")
+                print(f"    - category_timeslot_avg: {features['category_timeslot_avg_profit']:,.0f}원")
+                print(f"    - product_price: {features['product_price']:,.0f}원")
+                print(f"    - 카테고리: {features['product_lgroup']}")
+            
             # XGBoost 배치 예측 (한 번에 처리)
             predicted_sales_array = self.model.predict(batch_df)
             
-            print(f"=== [배치 예측] 완료: 평균 {predicted_sales_array.mean()/10000:.0f}만원 ===")
+            print(f"=== [배치 예측] 완료 ===")
+            print(f"  평균: {predicted_sales_array.mean()/10000:.0f}만원")
+            print(f"  최소: {predicted_sales_array.min()/10000:.0f}만원")
+            print(f"  최대: {predicted_sales_array.max()/10000:.0f}만원")
+            print(f"  표준편차: {predicted_sales_array.std()/10000:.0f}만원")
+            
+            # 예측 결과 샘플 출력
+            print(f"=== [예측 결과 샘플] ===")
+            for i, (product, sales) in enumerate(zip(products[:5], predicted_sales_array[:5])):
+                print(f"  {i+1}. {product.get('product_name', '')[:30]:30s} → {sales/10000:.0f}만원")
             
             return [float(sales) for sales in predicted_sales_array]
             
@@ -1253,116 +1429,6 @@ JSON 형식으로 응답해주세요."""),
             logger.error(f"상세 에러:\n{traceback.format_exc()}")
             # 기본값 반환
             return [30000000.0] * len(products)
-    
-    async def _get_ace_products_from_category(self, category: str, limit: int = 5) -> List[Dict[str, Any]]:
-        """카테고리별 에이스 상품 조회 (방송 테이프 준비 완료 상품만)"""
-        try:
-            # Qdrant에서 해당 카테고리 상품들 검색 (방송 테이프 준비 완료만)
-            ace_products = self.product_embedder.search_products(
-                trend_keywords=[category],
-                top_k=limit * 3,  # 필터링으로 인한 결과 부족 방지
-                score_threshold=0.3,
-                only_ready_products=True  # 방송 테이프 준비 완료 상품만
-            )
-            
-            # 카테고리 필터링 및 매출 예측 점수 추가
-            filtered_products = []
-            for product in ace_products:
-                if product.get("category_main") == category:
-                    # 과거 매출 실적 기반 점수 추가
-                    product["predicted_sales_score"] = min(
-                        product.get("product_avg_sales", 10000000) / 100000000, 1.0
-                    )
-                    filtered_products.append(product)
-                    
-                if len(filtered_products) >= limit:
-                    break
-            
-            logger.info(f"카테고리 '{category}': {len(filtered_products)}개 방송 준비 완료 상품 발견")
-            return filtered_products
-            
-        except Exception as e:
-            logger.error(f"에이스 상품 조회 오류 ({category}): {e}")
-            return []
-    
-    async def _generate_final_recommendations(
-        self,
-        category_candidates: List[RecommendedCategory],
-        trend_products: List[Dict[str, Any]],
-        broadcast_time: str,
-        recommendation_count: int
-    ) -> List[BroadcastRecommendation]:
-        """2단계: 최종 후보 선정 및 고속 랭킹"""
-        
-        final_candidates = []
-        
-        # 1. 트렌드 상품 우선 포함
-        for product in trend_products[:recommendation_count//2]:
-            candidate = await self._create_recommendation_item(product, "trend", context)
-            if candidate:
-                final_candidates.append(candidate)
-        
-        # 2. 유망 카테고리에서 에이스 상품 선발
-        for category in category_candidates[:3]:
-            ace_products = await self._get_ace_products_from_category(category.name, 5)
-            
-            for product in ace_products:
-                if len(final_candidates) >= recommendation_count:
-                    break
-                    
-                candidate = await self._create_recommendation_item(product, "category", context)
-                if candidate:
-                    final_candidates.append(candidate)
-        
-        # 3. 중복 제거 및 랭킹
-        unique_candidates = self._remove_duplicates(final_candidates)
-        ranked_candidates = self._rank_candidates(unique_candidates)
-        
-        # 4. BroadcastRecommendation 객체로 변환
-        recommendations = []
-        for i, candidate in enumerate(ranked_candidates[:recommendation_count]):
-            recommendations.append(BroadcastRecommendation(
-                rank=i+1,
-                productInfo=ProductInfo(
-                    productId=candidate["product_code"],
-                    productName=candidate["product_name"],
-                    category=candidate.get("category_main", "Unknown")
-                ),
-                reasoning=Reasoning(
-                    summary=candidate["reasoning"]["summary"],
-                    linkedCategories=candidate["reasoning"]["linkedCategories"],
-                    matchedKeywords=candidate["reasoning"]["matchedKeywords"]
-                ),
-                businessMetrics=BusinessMetrics(
-                    pastAverageSales=f"{int(candidate['metrics']['pastAverageSales']/10000)}만원",  # 만원 단위
-                    marginRate=candidate['metrics']['marginRate'],
-                    stockLevel=candidate['metrics']['stockLevel']
-                )
-            ))
-        
-        return recommendations
-    
-    async def _predict_category_sales(self, category: str, broadcast_dt: datetime) -> float:
-        """카테고리별 매출 예측 (간단한 추정)"""
-        try:
-            # 과거 데이터에서 해당 카테고리의 평균 매출 조회
-            query = text("""
-                SELECT AVG(gross_profit) as avg_sales
-                FROM broadcast_training_dataset 
-                WHERE category_main = :category
-                AND time_slot = :time_slot
-            """)
-            
-            time_slot = self._get_time_slot(broadcast_dt)
-            
-            with self.engine.connect() as conn:
-                result = conn.execute(query, {"category": category, "time_slot": time_slot}).fetchone()
-                
-            return float(result[0]) if result and result[0] else 10000000.0  # 기본값 1천만원
-            
-        except Exception as e:
-            logger.error(f"매출 예측 오류: {e}")
-            return 10000000.0
     
     async def _get_all_categories_from_db(self) -> List[str]:
         """PostgreSQL에서 모든 카테고리 조회"""
@@ -1388,12 +1454,12 @@ JSON 형식으로 응답해주세요."""),
         """카테고리별 에이스 상품 조회"""
         try:
             query = text("""
-                SELECT product_code, product_name, category_main, category_middle, 
+                SELECT product_code, product_name, category_main, category_middle, category_sub,
                        AVG(gross_profit) as avg_sales, COUNT(*) as broadcast_count,
-                       tape_code, tape_name
+                       tape_code, tape_name, MAX(price) as price
                 FROM broadcast_training_dataset 
                 WHERE category_main = :category
-                GROUP BY product_code, product_name, category_main, category_middle,
+                GROUP BY product_code, product_name, category_main, category_middle, category_sub,
                          tape_code, tape_name
                 ORDER BY avg_sales DESC 
                 LIMIT :limit
@@ -1409,10 +1475,12 @@ JSON 형식으로 응답해주세요."""),
                     "product_name": row[1],
                     "category_main": row[2],
                     "category_middle": row[3],
-                    "avg_sales": float(row[4]),
-                    "broadcast_count": int(row[5]),
-                    "tape_code": row[6],
-                    "tape_name": row[7]
+                    "category_sub": row[4],
+                    "avg_sales": float(row[5]),
+                    "broadcast_count": int(row[6]),
+                    "tape_code": row[7],
+                    "tape_name": row[8],
+                    "price": float(row[9]) if row[9] else None
                 })
             
             return products
@@ -1421,132 +1489,33 @@ JSON 형식으로 응답해주세요."""),
             logger.error(f"에이스 상품 조회 오류: {e}")
             return []
     
-    async def _generate_detailed_summary(self, product: Dict[str, Any], source_type: str, context: Dict[str, Any] = None) -> str:
-        """LangChain을 사용한 상세 추천 근거 생성"""
-        try:
-            # 컨텍스트 정보 준비
-            category = product.get("category_main", "")
-            avg_sales = product.get("avg_sales", 0)
-            
-            # 경쟁사 정보 수집
-            competitors = context.get("competitors", []) if context else []
-            competitor_categories = [comp.get("category_main", "") for comp in competitors]
-            has_competition = category in competitor_categories
-            
-            # 트렌드 키워드 정보
-            trend_keywords = context.get("trend_keywords", []) if context else []
-            
-            # 시간대 정보
-            broadcast_time = context.get("broadcast_time", "") if context else ""
-            time_period = self._get_time_period(broadcast_time)
-            
-            # 프롬프트 로깅 (눈에 띄게)
-            print("=" * 80)
-            print("[LLM 프롬프트] 상세 설명 생성")
-            print("=" * 80)
-            print(f"타입: {source_type}, 상품: {product_name}")
-            print(f"카테고리: {category}, 매출: {int(avg_sales/10000)}만원")
-            print("=" * 80)
-            logger.info(f"[LLM 프롬프트] 상세 설명 생성 - {source_type}: {product_name}")
-            
-            # LangChain 프롬프트로 상세 설명 생성
-            summary_prompt = ChatPromptTemplate.from_messages([
-                ("system", """당신은 홈쇼핑 방송 편성 전문가입니다. 
-주어진 정보를 바탕으로 상품 추천 근거를 구체적이고 설득력 있게 작성해주세요.
-
-다음 요소들을 포함해서 작성하세요:
-1. 카테고리의 매출 전망
-2. 경쟁 상황 분석 (독점 방송 가능성 등)
-3. 트렌드 키워드와의 연관성
-4. 시간대 적합성
-
-한 문장으로 간결하게 작성해주세요."""),
-                ("human", """
-상품 정보:
-- 카테고리: {category}
-- 예상 매출: {avg_sales}만원
-- 방송 시간: {time_period}
-
-경쟁 상황:
-- 동시간대 경쟁사 카테고리: {competitor_categories}
-- 경쟁 여부: {has_competition}
-
-트렌드 키워드: {trend_keywords}
-""")
-            ])
-            
-            chain = summary_prompt | self.llm
-            
-            result = await chain.ainvoke({
-                "category": category,
-                "avg_sales": int(avg_sales / 10000),  # 만원 단위
-                "time_period": time_period,
-                "competitor_categories": ", ".join(competitor_categories) if competitor_categories else "없음",
-                "has_competition": "있음" if has_competition else "없음",
-                "trend_keywords": ", ".join(trend_keywords) if trend_keywords else "없음"
-            })
-            
-            return result.content.strip()
-            
-        except Exception as e:
-            logger.error(f"상세 설명 생성 오류: {e}")
-            # 폴백: 기본 템플릿 사용
-            if source_type == "trend":
-                return f"'{product.get('trend_keyword', '')}' 트렌드와 관련된 인기 상품입니다."
-            else:
-                return f"'{product.get('category_main', '')}' 카테고리의 베스트셀러 상품입니다."
-    
-    async def _create_recommendation_item(self, product: Dict[str, Any], source_type: str, context: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
-        """추천 아이템 생성"""
-        try:
-            # 기본 점수 계산
-            base_score = product.get("avg_sales", 0) * 0.7
-            
-            if source_type == "trend":
-                base_score *= 1.5  # 트렌드 보너스
-                linked_categories = ["트렌드"]
-                matched_keywords = [product.get("trend_keyword", "")]
-                summary = await self._generate_detailed_summary(product, source_type, context)
-            else:
-                linked_categories = [product.get("category_main", "")]
-                # context에서 생성된 키워드 가져오기
-                matched_keywords = []
-                if context:
-                    matched_keywords = context.get("generated_keywords", []) or context.get("category_keywords", [])
-                summary = await self._generate_detailed_summary(product, source_type, context)
-            
-            return {
-                "product_code": product.get("product_code", ""),
-                "product_name": product.get("product_name", ""),
-                "category_main": product.get("category_main", ""),
-                "final_score": base_score,
-                "reasoning": {
-                    "summary": summary,
-                    "linkedCategories": linked_categories,
-                    "matchedKeywords": matched_keywords
-                },
-                "metrics": {
-                    "pastAverageSales": product.get("avg_sales", 0),
-                    "marginRate": 0.25,  # 기본 마진율
-                    "stockLevel": "High"  # 기본 재고 수준
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"추천 아이템 생성 오류: {e}")
-            return None
-    
     def _remove_duplicates(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """중복 제거"""
+        """중복 제거 - 같은 상품코드 및 같은 소분류(category_sub) 제거"""
         seen_products = set()
+        seen_sub_categories = set()
         unique_candidates = []
         
         for candidate in candidates:
             product_code = candidate.get("product_code", "")
-            if product_code and product_code not in seen_products:
+            category_sub = candidate.get("category_sub", "")
+            
+            # 상품코드 중복 체크
+            if product_code and product_code in seen_products:
+                continue
+            
+            # 소분류 중복 체크 (대/중분류는 같아도 OK, 소분류만 다르면 OK)
+            if category_sub and category_sub in seen_sub_categories:
+                logger.info(f"소분류 중복 제외: {candidate.get('product_name', '')} (소분류: {category_sub})")
+                continue
+            
+            # 통과한 경우 추가
+            if product_code:
                 seen_products.add(product_code)
-                unique_candidates.append(candidate)
+            if category_sub:
+                seen_sub_categories.add(category_sub)
+            unique_candidates.append(candidate)
         
+        logger.info(f"중복 제거 완료: {len(candidates)}개 → {len(unique_candidates)}개 (소분류 다양성 보장)")
         return unique_candidates
     
     def _rank_candidates(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

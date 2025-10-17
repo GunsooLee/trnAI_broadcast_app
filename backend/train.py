@@ -30,9 +30,12 @@ TABLE_NAME = "broadcast_training_dataset"
 def get_db_engine():
     """새로운 DB 엔진을 생성하여 반환합니다."""
     load_dotenv()
-    db_uri = os.getenv("DB_URI")
+    db_uri = os.getenv("DB_URI") or os.getenv("POSTGRES_URI")
+    
+    # Docker 컨테이너 내부에서는 호스트명이 다를 수 있음
     if not db_uri:
-        raise ValueError("DB_URI 환경변수가 설정되지 않았습니다.")
+        db_uri = "postgresql://TRN_AI:TRN_AI@trnAi_postgres:5432/TRNAI_DB"
+    
     return create_engine(db_uri)
 
 # --- 데이터 로딩 및 전처리 ---
@@ -170,10 +173,22 @@ def build_pipeline() -> Pipeline:
     return Pipeline([("pre", preprocessor), ("model", model)])
 
 # --- 모델 학습 실행 ---
-def train() -> None:
-    """전체 모델 학습 파이프라인을 실행합니다. (2개 타겟: gross_profit, sales_efficiency)"""
+def train() -> dict:
+    """전체 모델 학습 파이프라인을 실행합니다. (2개 타겟: gross_profit, sales_efficiency)
+    
+    Returns:
+        dict: 학습 결과 통계
+    """
+    import time
+    start_time = time.time()
+    
     engine = get_db_engine()
     df = load_data(engine)
+    
+    training_stats = {
+        "total_records": len(df),
+        "models": {}
+    }
 
     # 공통 제거 컬럼 (타겟 변수 제외)
     common_drop_cols = [
@@ -207,15 +222,28 @@ def train() -> None:
     print("모델 학습 완료.")
 
     y1_pred = pipe1.predict(X1_test)
+    mae1 = mean_absolute_error(y1_test, y1_pred)
+    rmse1 = np.sqrt(mean_squared_error(y1_test, y1_pred))
+    r2_1 = r2_score(y1_test, y1_pred)
+    
     print("\n=== 모델 1 평가 (gross_profit) ===")
-    print(f"MAE : {mean_absolute_error(y1_test, y1_pred):,.2f} 원")
-    print(f"RMSE: {np.sqrt(mean_squared_error(y1_test, y1_pred)):,.2f} 원")
-    print(f"R2  : {r2_score(y1_test, y1_pred):.4f}\n")
+    print(f"MAE : {mae1:,.2f} 원")
+    print(f"RMSE: {rmse1:,.2f} 원")
+    print(f"R2  : {r2_1:.4f}\n")
 
     # 모델 1 저장
     model_path1 = Path(__file__).parent / 'app' / MODEL_FILE_PROFIT
     joblib.dump(pipe1, model_path1)
     print(f"✅ 모델 1이 '{model_path1}'에 저장되었습니다.")
+    
+    # 통계 저장
+    training_stats["models"]["profit_model"] = {
+        "train_records": len(X1_train),
+        "test_records": len(X1_test),
+        "mae": round(mae1, 2),
+        "rmse": round(rmse1, 2),
+        "r2_score": round(r2_1, 4)
+    }
 
     # ========================================
     # 모델 2: sales_efficiency 예측 모델
@@ -246,19 +274,39 @@ def train() -> None:
     print("모델 학습 완료.")
 
     y2_pred = pipe2.predict(X2_test)
+    mae2 = mean_absolute_error(y2_test, y2_pred)
+    rmse2 = np.sqrt(mean_squared_error(y2_test, y2_pred))
+    r2_2 = r2_score(y2_test, y2_pred)
+    
     print("\n=== 모델 2 평가 (sales_efficiency) ===")
-    print(f"MAE : {mean_absolute_error(y2_test, y2_pred):,.2f} 원/분")
-    print(f"RMSE: {np.sqrt(mean_squared_error(y2_test, y2_pred)):,.2f} 원/분")
-    print(f"R2  : {r2_score(y2_test, y2_pred):.4f}\n")
+    print(f"MAE : {mae2:,.2f} 원/분")
+    print(f"RMSE: {rmse2:,.2f} 원/분")
+    print(f"R2  : {r2_2:.4f}\n")
 
     # 모델 2 저장
     model_path2 = Path(__file__).parent / 'app' / MODEL_FILE_EFFICIENCY
     joblib.dump(pipe2, model_path2)
     print(f"✅ 모델 2가 '{model_path2}'에 저장되었습니다.")
     
+    # 통계 저장
+    training_stats["models"]["efficiency_model"] = {
+        "train_records": len(X2_train),
+        "test_records": len(X2_test),
+        "mae": round(mae2, 2),
+        "rmse": round(rmse2, 2),
+        "r2_score": round(r2_2, 4)
+    }
+    
+    # 총 소요 시간
+    elapsed_time = time.time() - start_time
+    training_stats["training_time_seconds"] = round(elapsed_time, 2)
+    
     print("\n" + "="*60)
     print("🎉 전체 모델 학습 완료!")
+    print(f"⏱️  총 소요 시간: {elapsed_time:.2f}초")
     print("="*60)
+    
+    return training_stats
 
 if __name__ == "__main__":
     train()

@@ -178,3 +178,8 @@ app.include_router(migration_router)
 from .api.embeddings import router as embeddings_router
 app.include_router(embeddings_router)
 
+# ========================================
+# 🤖 XGBoost 모델 학습 API (n8n 연동용)
+# ========================================
+from .api.training import router as training_router
+app.include_router(training_router)
