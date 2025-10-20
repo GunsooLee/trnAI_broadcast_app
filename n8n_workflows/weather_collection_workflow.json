@@ -1,0 +1,142 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 3
+            }
+          ]
+        }
+      },
+      "id": "e6a27add-8872-44ac-a363-ace6943a9003",
+      "name": "Every 3 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -432,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO taiweather_daily (\n  weather_date,\n  weather,\n  temperature,\n  precipitation\n) VALUES (\n  '{{ $json.weather_date }}',\n  '{{ $json.weather }}',\n  {{ $json.temperature }},\n  {{ $json.precipitation }}\n)\nON CONFLICT (weather_date) \nDO UPDATE SET\n  weather = EXCLUDED.weather,\n  temperature = EXCLUDED.temperature,\n  precipitation = EXCLUDED.precipitation,\n  created_at = CURRENT_TIMESTAMP;",
+        "options": {}
+      },
+      "id": "35b12032-946d-4960-9a92-10028124ec3f",
+      "name": "Save to PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        240,
+        32
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PwSyo68HgjCiS6zK",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "console.log('✅ Weather data saved successfully');\nconsole.log('Date:', $input.first().json.weather_date);\nconsole.log('Weather:', $input.first().json.weather);\nconsole.log('Temperature:', $input.first().json.temperature, '°C');\nconsole.log('Precipitation:', $input.first().json.precipitation, 'mm');\n\nreturn $input.all();"
+      },
+      "id": "774a51a7-3f6e-417e-960c-2cd118f47411",
+      "name": "Log Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        464,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "5DayForecast",
+        "cityName": "Seoul"
+      },
+      "type": "n8n-nodes-base.openWeatherMap",
+      "typeVersion": 1,
+      "position": [
+        -208,
+        32
+      ],
+      "id": "ab9a7f0c-5de0-4a8e-908b-733992bc3b87",
+      "name": "OpenWeatherMap",
+      "credentials": {
+        "openWeatherMapApi": {
+          "id": "YSpUNJw6bmOWuRxo",
+          "name": "OpenWeatherMap account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// OpenWeatherMap의 5일 예보 데이터를 날짜별로 집계\nconst items = $input.all();\nconst weatherData = items[0].json.list;\n\n// 날짜별로 그룹화\nconst dailyData = {};\n\nweatherData.forEach(item => {\n  const date = item.dt_txt.split(' ')[0]; // '2025-10-20 09:00:00' -> '2025-10-20'\n  \n  if (!dailyData[date]) {\n    dailyData[date] = {\n      temps: [],\n      weathers: [],\n      precips: []\n    };\n  }\n  \n  dailyData[date].temps.push(item.main.temp);\n  dailyData[date].weathers.push(item.weather[0].main);\n  \n  // 비와 눈 모두 포함\n  const rainfall = item.rain ? (item.rain['3h'] || 0) : 0;\n  const snowfall = item.snow ? (item.snow['3h'] || 0) : 0;\n  dailyData[date].precips.push(rainfall + snowfall);\n});\n\n// 일별 데이터로 변환 (최고기온 사용)\nconst result = Object.keys(dailyData).map(date => ({\n  weather_date: date,\n  weather: dailyData[date].weathers[0], // 대표 날씨\n  temperature: Math.round(Math.max(...dailyData[date].temps) * 10) / 10, // 최고 기온\n  precipitation: Math.round(dailyData[date].precips.reduce((a, b) => a + b, 0) * 10) / 10 // 총 강수량\n}));\n\nreturn result;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        16,
+        32
+      ],
+      "id": "13825e8d-6638-4f56-b720-c149ceaa7da4",
+      "name": "Code in JavaScript"
+    }
+  ],
+  "connections": {
+    "Every 3 Hours": {
+      "main": [
+        [
+          {
+            "node": "OpenWeatherMap",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "Log Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenWeatherMap": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Save to PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "d1796ed16a0ea2d6fca594ff1a53c6bbc07405103208c42098e5abd4140f94b5"
+  }
+}

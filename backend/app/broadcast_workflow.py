@@ -351,97 +351,6 @@ JSON 형식으로 응답해주세요."""),
             logger.error(f"통합 검색 오류: {e}")
             return {"direct_products": [], "category_groups": {}}
     
-    async def _execute_track_a(self, context: Dict[str, Any], category_keywords: List[str]) -> Dict[str, Any]:
-        """Track A: 유망 카테고리 찾기"""
-        
-        print(f"=== [DEBUG Track A] 시작, category_keywords: {category_keywords} ===")
-        if not category_keywords:
-            print("=== [DEBUG Track A] category_keywords가 비어있음 ===")
-            return {"categories": [], "scores": {}}
-        
-        # RAG 검색으로 관련 카테고리 찾기
-        query = " ".join(category_keywords)
-        print(f"=== [DEBUG Track A] Qdrant 검색 쿼리: '{query}' ===")
-        
-        try:
-            # Qdrant에서 카테고리 검색 (방송 테이프 준비 완료 상품만)
-            similar_products = self.product_embedder.search_products(
-                trend_keywords=[query],
-                top_k=50,  # 후보군
-                score_threshold=0.3,
-                only_ready_products=True
-            )
-            print(f"=== [DEBUG Track A] Qdrant 검색 결과: {len(similar_products)}개 상품 ===")
-            if len(similar_products) > 0:
-                print(f"=== [DEBUG Track A] 첫 번째 상품 예시: {similar_products[0]} ===")
-            
-            # 카테고리별 그룹핑
-            category_scores = {}
-            for product in similar_products:
-                category = product.get('category_main', 'Unknown')
-                score = product.get('similarity_score', 0)
-                
-                if category not in category_scores:
-                    category_scores[category] = []
-                category_scores[category].append(score)
-            
-            print(f"=== [DEBUG Track A] 카테고리 그룹핑 완료, 총 {len(category_scores)} 카테고리: {list(category_scores.keys())} ===")
-            
-            # Qdrant 결과가 없으면 전체 카테고리 조회
-            if len(category_scores) == 0:
-                print("=== [DEBUG Track A] Qdrant 결과 없음, PostgreSQL에서 전체 카테고리 조회 ===")
-                all_categories = await self._get_all_categories_from_db()
-                print(f"=== [DEBUG Track A] 전체 카테고리 {len(all_categories)}개 발견: {all_categories} ===")
-                # 기본 점수 부여
-                for category in all_categories:
-                    category_scores[category] = [0.5]  # 기본 유사도 점수
-            
-            # 카테고리별 평균 점수 계산 및 XGBoost 예측
-            promising_categories = []
-            broadcast_dt = datetime.fromisoformat(context["broadcast_time"].replace('Z', '+00:00'))
-            
-            print(f"=== [DEBUG Track A] XGBoost 매출 예측 시작 ===")
-            for category, scores in category_scores.items():
-                print(f"=== [DEBUG Track A] 카테고리 '{category}' XGBoost 예측 중... ===")
-                avg_score = sum(scores) / len(scores)
-                
-                # XGBoost로 해당 카테고리의 예상 매출 예측
-                predicted_sales = await self._predict_category_sales(category, broadcast_dt)
-                
-                # 최종 점수 = RAG 점수 * 예상 매출
-                final_score = avg_score * (predicted_sales / 1000000)  # 백만원 단위로 정규화
-                
-                promising_categories.append({
-                    "category": category,
-                    "rag_score": avg_score,
-                    "predicted_sales": predicted_sales,
-                    "final_score": final_score,
-                    "reason": "AI 추천 유망 카테고리"
-                })
-            
-            print(f"=== [DEBUG Track A] XGBoost 예측 완료, 총 {len(promising_categories)} 카테고리 ===")
-            
-            # 점수순 정렬
-            promising_categories.sort(key=lambda x: x["final_score"], reverse=True)
-            
-            # RecommendedCategory 객체로 변환
-            result = []
-            for i, cat in enumerate(promising_categories[:5]):
-                result.append(RecommendedCategory(
-                    rank=i+1,
-                    name=cat["category"],
-                    reason=cat["reason"],
-                    predictedSales=f"{int(cat['predicted_sales']/10000)}만원"  # 만원 단위
-                ))
-            
-            print(f"=== [DEBUG Track A] 최종 결과: {len(result)} 카테고리 ===")
-            logger.info(f"Track A: 유망 카테고리 {len(result)}개 발견")
-            return {"categories": result, "scores": category_scores}
-            
-        except Exception as e:
-            logger.error(f"Track A 오류: {e}")
-            return {"categories": [], "scores": {}}
-    
     async def _generate_context_keywords(self, context: Dict[str, Any]) -> List[str]:
         """컨텍스트 정보를 기반으로 LangChain으로 검색 키워드 생성"""
         
@@ -558,51 +467,6 @@ JSON 형식으로 응답해주세요."""),
             logger.info(f"폴백 키워드 개수: {len(fallback_keywords)}")
             return fallback_keywords
     
-    async def _execute_track_b(self, context: Dict[str, Any], product_keywords: List[str]) -> Dict[str, Any]:
-        """Track B: 컨텍스트 기반 상품 찾기 (날씨/시간대 기반)"""
-        
-        print(f"=== [DEBUG Track B] 시작, product_keywords: {product_keywords} ===")
-        
-        generated_keywords = []  # 생성된 키워드 저장
-        
-        # 1. 트렌드 키워드가 없으면 컨텍스트에서 키워드 생성
-        if not product_keywords:
-            logger.info("Track B: 트렌드 키워드 없음 → 컨텍스트 기반 키워드 생성")
-            product_keywords = await self._generate_context_keywords(context)
-            generated_keywords = product_keywords  # 생성된 키워드 보관
-            print(f"=== [DEBUG Track B] 생성된 컨텍스트 키워드: {product_keywords} ===")
-            logger.info(f"생성된 키워드: {product_keywords}, 타입: {type(product_keywords)}")
-        
-        if not product_keywords:
-            logger.info("Track B: 키워드 없음 → 빈 결과 반환")
-            return {"products": [], "trend_scores": {}, "generated_keywords": []}
-        
-        # 2. 생성된 키워드로 상품 검색
-        query = " ".join(product_keywords)
-        print(f"=== [DEBUG Track B] Qdrant 검색 쿼리: '{query}' ===")
-        
-        try:
-            # Qdrant에서 상품 검색 (방송 테이프 준비 완료 상품만)
-            similar_products = self.product_embedder.search_products(
-                trend_keywords=[query],
-                top_k=50,  # 후보군
-                score_threshold=0.3
-            )
-            
-            print(f"=== [DEBUG Track B] Qdrant 검색 결과: {len(similar_products)}개 ===")
-            
-            if similar_products:
-                trend_scores = {p["product_code"]: p.get("score", 0.5) for p in similar_products}
-                logger.info(f"Track B 완료: {len(similar_products)}개 상품 발견")
-                return {"products": similar_products, "trend_scores": trend_scores, "generated_keywords": generated_keywords}
-            else:
-                logger.info("Track B: 검색 결과 없음")
-                return {"products": [], "trend_scores": {}, "generated_keywords": generated_keywords}
-                
-        except Exception as e:
-            logger.error(f"Track B 오류: {e}")
-            return {"products": [], "trend_scores": {}, "generated_keywords": []}
-    
     async def _generate_unified_candidates(
         self,
         search_result: Dict[str, Any],
@@ -698,10 +562,13 @@ JSON 형식으로 응답해주세요."""),
         category_scores = {}
         top_categories = []
         
-        # 카테고리별 평균 점수 계산
+        # 카테고리별 평균 점수 계산 (category_main 사용)
         category_sales = {}
         for candidate in candidates:
-            category = candidate["product"].get("product_lgroup", "기타")
+            category = candidate["product"].get("category_main", "기타")
+            # "기타" 카테고리는 제외
+            if category == "기타" or not category:
+                continue
             if category not in category_sales:
                 category_sales[category] = []
             category_sales[category].append(candidate["predicted_sales"])
@@ -715,11 +582,21 @@ JSON 형식으로 응답해주세요."""),
         
         for i, (category, sales_list) in enumerate(sorted_categories):
             avg_sales = sum(sales_list) / len(sales_list)
+            product_count = len(sales_list)
             category_scores[category] = {"predicted_sales": avg_sales}
+            
+            # 동적 근거 생성 (순위 기반)
+            if i == 0:
+                reason = f"{context['time_slot']} 시간대 최고 매출 예상 ({product_count}개 상품)"
+            elif i == 1:
+                reason = f"{context['time_slot']} 시간대 2순위 카테고리 ({product_count}개 상품)"
+            else:
+                reason = f"{context['time_slot']} 시간대 유망 카테고리 ({product_count}개 상품)"
+            
             top_categories.append(RecommendedCategory(
                 rank=i+1,
                 name=category,
-                reason="AI 추천 유망 카테고리",
+                reason=reason,
                 predictedSales=f"{int(avg_sales/10000)}만원"
             ))
         
@@ -1219,54 +1096,6 @@ JSON 형식으로 응답해주세요."""),
             traceback.print_exc()  # 에러 상세 로그
             # 폴백: 간단한 기본 메시지 (템플릿 아닌)
             return f"{candidate['product'].get('category_main', '상품')} 추천"
-    
-    async def _predict_category_sales(self, category: str, broadcast_dt: datetime) -> float:
-        """카테고리별 XGBoost 매출 예측"""
-        try:
-            # XGBoost 모델이 요구하는 형식으로 데이터 준비
-            import pandas as pd
-            
-            dummy_data = pd.DataFrame([{
-                # Numeric features
-                "product_price": 100000,
-                "product_avg_profit": 30000000,
-                "product_broadcast_count": 10,
-                "category_timeslot_avg_profit": 25000000,
-                "hour": broadcast_dt.hour,
-                "temperature": 20,
-                "precipitation": 0,
-                
-                # Categorical features
-                "product_lgroup": category,
-                "product_mgroup": category,
-                "product_sgroup": category,
-                "brand": "Unknown",
-                "product_type": "유형",
-                "time_slot": self._get_time_slot(broadcast_dt),
-                "day_of_week": ["월", "화", "수", "목", "금", "토", "일"][broadcast_dt.weekday()],
-                "season": self._get_season(broadcast_dt.month),
-                "weather": "Clear",
-                
-                # Boolean features
-                "is_weekend": 1 if broadcast_dt.weekday() >= 5 else 0,
-                "is_holiday": 0
-            }])
-            
-            logger.info(f"=== 카테고리 매출 예측 입력 ===")
-            logger.info(f"카테고리: {category}, 시간: {broadcast_dt.hour}시")
-            
-            # XGBoost 파이프라인으로 예측 (전처리 포함)
-            predicted_sales = self.model.predict(dummy_data)[0]
-            logger.info(f"=== 카테고리 예측 결과 ===")
-            logger.info(f"{category}: {predicted_sales:,.0f}원 ({predicted_sales/100000000:.2f}억)")
-            
-            return float(predicted_sales)
-            
-        except Exception as e:
-            logger.error(f"카테고리 매출 예측 오류 ({category}): {e}")
-            import traceback
-            logger.error(f"상세 에러:\n{traceback.format_exc()}")
-            return 50000000  # 기본값 (0.5억)
     
     def _prepare_features_for_product(self, product: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """1개 상품의 XGBoost feature 준비 (예측은 안 함)"""
