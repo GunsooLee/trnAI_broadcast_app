@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 from typing import List, Optional, Dict, Any
 import datetime as dt
 
@@ -63,13 +63,29 @@ class BroadcastRequest(BaseModel):
     """방송 추천 요청 스키마"""
     broadcastTime: str = Field(..., description="방송 시간", example="2025-09-15T22:40:00+09:00")
     recommendationCount: int = Field(default=5, description="추천 개수", example=5)
-    trendRatio: float = Field(
+    trendWeight: float = Field(
         default=0.3, 
         ge=0.0, 
         le=1.0,
-        description="트렌드 매칭 비율 (0.0~1.0). 0.3=트렌드30%+매출70%, 0.5=균형, 1.0=트렌드만",
+        description="트렌드 가중치 (0.0~1.0). 예: 0.3=트렌드 30%",
         example=0.3
     )
+    salesWeight: float = Field(
+        default=0.7, 
+        ge=0.0, 
+        le=1.0,
+        description="매출 예측 가중치 (0.0~1.0). 예: 0.7=매출 70%",
+        example=0.7
+    )
+    
+    @validator('salesWeight')
+    def validate_weights_sum(cls, v, values):
+        """트렌드 + 매출 가중치 합이 1.0인지 검증"""
+        if 'trendWeight' in values:
+            total = values['trendWeight'] + v
+            if not (0.99 <= total <= 1.01):  # 부동소수점 오차 허용
+                raise ValueError(f"trendWeight + salesWeight는 1.0이어야 합니다 (현재: {total:.2f})")
+        return v
 
 class RecommendedCategory(BaseModel):
     """추천 카테고리 스키마"""
@@ -83,6 +99,7 @@ class ProductInfo(BaseModel):
     productId: str
     productName: str
     category: str
+    brand: Optional[str] = Field(default=None, description="브랜드", example="해피콜")
     price: Optional[float] = Field(default=None, description="상품 가격", example=99000.0)
     tapeCode: Optional[str] = Field(default=None, description="방송테이프 코드", example="T001")
     tapeName: Optional[str] = Field(default=None, description="방송테이프명", example="프리미엄 다이어트 보조제 방송테이프")

@@ -23,6 +23,8 @@ class MigrationResponse(BaseModel):
     status: str
     message: str
     job_id: Optional[str] = None
+    total_rows: Optional[int] = None  # 총 마이그레이션된 row 수
+    tables: Optional[dict] = None  # 테이블별 상세 정보
 
 
 @router.post("/start", response_model=MigrationResponse)
@@ -48,7 +50,7 @@ async def start_migration(
         
         if request.tables:
             env['TABLES'] = request.tables
-        
+        ㄴㅁㅁㄴ
         # 백그라운드에서 마이그레이션 실행
         background_tasks.add_task(
             run_migration_task,
@@ -97,10 +99,15 @@ async def start_migration_sync(request: MigrationRequest):
         )
         
         if result.returncode == 0:
+            # stdout에서 결과 파싱
+            total_rows, tables_info = parse_migration_output(result.stdout)
+            
             return MigrationResponse(
                 status="success",
                 message="마이그레이션 완료",
-                job_id="migration_sync_001"
+                job_id="migration_sync_001",
+                total_rows=total_rows,
+                tables=tables_info
             )
         else:
             return MigrationResponse(
@@ -114,6 +121,42 @@ async def start_migration_sync(request: MigrationRequest):
     except Exception as e:
         logger.error(f"마이그레이션 실행 실패: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def parse_migration_output(output: str) -> tuple:
+    """마이그레이션 스크립트 출력에서 row 수 추출
+    
+    Returns:
+        tuple: (total_rows, tables_info)
+    """
+    import re
+    
+    total_rows = 0
+    tables_info = {}
+    
+    try:
+        # "총 레코드: 1,234개" 패턴 찾기
+        total_match = re.search(r'총 레코드:\s*([\d,]+)개', output)
+        if total_match:
+            total_rows = int(total_match.group(1).replace(',', ''))
+        
+        # 각 테이블별 레코드 수 추출
+        # 패턴: "✅ TAIGOODS                   1,234개  (완료)"
+        table_pattern = r'[✅❌]\s+(\w+)\s+([\d,]+)개\s+\((.+?)\)'
+        for match in re.finditer(table_pattern, output):
+            table_name = match.group(1)
+            row_count = int(match.group(2).replace(',', ''))
+            status = match.group(3)
+            
+            tables_info[table_name] = {
+                "rows": row_count,
+                "status": status
+            }
+    
+    except Exception as e:
+        logger.warning(f"출력 파싱 실패: {e}")
+    
+    return total_rows, tables_info
 
 
 def run_migration_task(env: dict):

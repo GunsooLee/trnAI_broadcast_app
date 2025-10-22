@@ -44,17 +44,18 @@ class BroadcastWorkflow:
         self, 
         broadcast_time: str, 
         recommendation_count: int = 5,
-        trend_ratio: float = 0.3  # 트렌드 매칭 비율 (0.3 = 30%)
+        trend_weight: float = 0.3,  # 트렌드 가중치 (0.3 = 30%)
+        sales_weight: float = 0.7   # 매출 예측 가중치 (0.7 = 70%)
     ) -> BroadcastResponse:
         """메인 워크플로우: 방송 시간 기반 추천
         
         Args:
             broadcast_time: 방송 시간
             recommendation_count: 추천 개수
-            trend_ratio: 트렌드 매칭 비율 (0.0~1.0, 기본 0.3)
-                - 0.3 = 트렌드 30%, 매출예측 70%
-                - 0.5 = 균형 (50:50)
-                - 0.0 = 매출예측만 (100%)
+            trend_weight: 트렌드 가중치 (0.0~1.0, 기본 0.3)
+            sales_weight: 매출 예측 가중치 (0.0~1.0, 기본 0.7)
+                - 예: trend_weight=0.3, sales_weight=0.7 → 트렌드 30%, 매출 70%
+                - 예: trend_weight=0.5, sales_weight=0.5 → 균형 (50:50)
         """
         
         print("=== [DEBUG] process_broadcast_recommendation 시작 ===")
@@ -76,11 +77,11 @@ class BroadcastWorkflow:
             # 검색에 사용된 키워드를 context에 저장
             context["search_keywords"] = search_result.get("search_keywords", [])
             
-            # 3. 후보군 생성 (비율 조정)
+            # 3. 후보군 생성 (가중치 기반 비율 조정)
             print("=== [DEBUG] _generate_unified_candidates 호출 ===")
-            max_trend = max(1, int(recommendation_count * trend_ratio))  # 최소 1개
+            max_trend = max(1, int(recommendation_count * trend_weight))  # 최소 1개
             max_sales = recommendation_count - max_trend + 3  # 여유분 추가
-            print(f"=== [DEBUG] 비율 조정: 트렌드 {max_trend}개, 매출 {max_sales}개 (비율: {trend_ratio:.0%}) ===")
+            print(f"=== [DEBUG] 가중치 적용: 트렌드 {max_trend}개 ({trend_weight:.0%}), 매출 {max_sales}개 ({sales_weight:.0%}) ===")
             
             candidate_products, category_scores, top_categories = await self._generate_unified_candidates(
                 search_result,
@@ -491,29 +492,31 @@ JSON 형식으로 응답해주세요."""),
         
         print(f"=== [DEBUG] 통합된 상품 수: {len(all_products)}개 ===")
         
-        # 2. 중복 제거 (상품코드 + 소분류)
+        # 2. 중복 제거 (상품코드 + 소분류 + 브랜드)
         unique_products = {}
-        seen_sub_categories = set()
+        seen_category_brand_pairs = set()  # (소분류, 브랜드) 조합
         
         for product in all_products:
             product_code = product.get("product_code")
             category_sub = product.get("category_sub", "")
+            brand = product.get("brand", "")
             
             # 상품코드 중복 체크
             if product_code in unique_products:
                 continue
             
-            # 소분류 중복 체크 (다양성 보장)
-            if category_sub and category_sub in seen_sub_categories:
-                logger.info(f"소분류 중복 제외: {product.get('product_name', '')[:30]} (소분류: {category_sub})")
+            # 소분류 + 브랜드 조합 중복 체크 (다양성 보장)
+            category_brand_key = (category_sub, brand)
+            if category_sub and brand and category_brand_key in seen_category_brand_pairs:
+                logger.info(f"소분류+브랜드 중복 제외: {product.get('product_name', '')[:30]} (소분류: {category_sub}, 브랜드: {brand})")
                 continue
             
             # 통과한 경우 추가
             unique_products[product_code] = product
-            if category_sub:
-                seen_sub_categories.add(category_sub)
+            if category_sub and brand:
+                seen_category_brand_pairs.add(category_brand_key)
         
-        print(f"=== [DEBUG] 중복 제거 후: {len(unique_products)}개 (소분류 다양성 보장) ===")
+        print(f"=== [DEBUG] 중복 제거 후: {len(unique_products)}개 (소분류+브랜드 다양성 보장) ===")
         
         # 3. 배치 예측 준비 (상위 30개만)
         products_list = list(unique_products.values())[:30]
@@ -715,6 +718,7 @@ JSON 형식으로 응답해주세요."""),
                     productId=product.get("product_code", "Unknown"),
                     productName=product.get("product_name", "Unknown"),
                     category=product.get("category_main", "Unknown"),
+                    brand=product.get("brand"),
                     price=product.get("price"),
                     tapeCode=product.get("tape_code"),
                     tapeName=product.get("tape_name")
@@ -1307,11 +1311,11 @@ JSON 형식으로 응답해주세요."""),
             query = text("""
                 SELECT product_code, product_name, category_main, category_middle, category_sub,
                        AVG(gross_profit) as avg_sales, COUNT(*) as broadcast_count,
-                       tape_code, tape_name, MAX(price) as price
+                       tape_code, tape_name, MAX(price) as price, brand
                 FROM broadcast_training_dataset 
                 WHERE category_main = :category
                 GROUP BY product_code, product_name, category_main, category_middle, category_sub,
-                         tape_code, tape_name
+                         tape_code, tape_name, brand
                 ORDER BY avg_sales DESC 
                 LIMIT :limit
             """)
@@ -1331,7 +1335,8 @@ JSON 형식으로 응답해주세요."""),
                     "broadcast_count": int(row[6]),
                     "tape_code": row[7],
                     "tape_name": row[8],
-                    "price": float(row[9]) if row[9] else None
+                    "price": float(row[9]) if row[9] else None,
+                    "brand": row[10] if len(row) > 10 else None
                 })
             
             return products
@@ -1341,32 +1346,34 @@ JSON 형식으로 응답해주세요."""),
             return []
     
     def _remove_duplicates(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """중복 제거 - 같은 상품코드 및 같은 소분류(category_sub) 제거"""
+        """중복 제거 - 같은 상품코드 및 같은 (소분류 + 브랜드) 조합 제거"""
         seen_products = set()
-        seen_sub_categories = set()
+        seen_category_brand_pairs = set()  # (소분류, 브랜드) 조합
         unique_candidates = []
         
         for candidate in candidates:
             product_code = candidate.get("product_code", "")
             category_sub = candidate.get("category_sub", "")
+            brand = candidate.get("brand", "")
             
             # 상품코드 중복 체크
             if product_code and product_code in seen_products:
                 continue
             
-            # 소분류 중복 체크 (대/중분류는 같아도 OK, 소분류만 다르면 OK)
-            if category_sub and category_sub in seen_sub_categories:
-                logger.info(f"소분류 중복 제외: {candidate.get('product_name', '')} (소분류: {category_sub})")
+            # 소분류 + 브랜드 조합 중복 체크
+            category_brand_key = (category_sub, brand)
+            if category_sub and brand and category_brand_key in seen_category_brand_pairs:
+                logger.info(f"소분류+브랜드 중복 제외: {candidate.get('product_name', '')} (소분류: {category_sub}, 브랜드: {brand})")
                 continue
             
             # 통과한 경우 추가
             if product_code:
                 seen_products.add(product_code)
-            if category_sub:
-                seen_sub_categories.add(category_sub)
+            if category_sub and brand:
+                seen_category_brand_pairs.add(category_brand_key)
             unique_candidates.append(candidate)
         
-        logger.info(f"중복 제거 완료: {len(candidates)}개 → {len(unique_candidates)}개 (소분류 다양성 보장)")
+        logger.info(f"중복 제거 완료: {len(candidates)}개 → {len(unique_candidates)}개 (소분류+브랜드 다양성 보장)")
         return unique_candidates
     
     def _rank_candidates(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

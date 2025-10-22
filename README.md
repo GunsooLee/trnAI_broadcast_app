@@ -68,16 +68,20 @@
 - **production_status='ready'**: 즉시 방송 가능한 상품만 추천
 - **INNER JOIN**: 방송테이프가 없는 상품은 자동 제외
 
-### 5. 유사도 기반 가중치 조정
+### 5. 사용자 정의 가중치 시스템
+API 요청 시 트렌드와 매출 예측의 비율을 조정할 수 있습니다:
+
 ```python
-if similarity >= 0.7:
-    # 고유사도: 트렌드 중시
-    final_score = similarity * 0.7 + (predicted_sales / 1억) * 0.3
-    recommendationType = "trend_match"
-else:
-    # 저유사도: 매출 중시
-    final_score = similarity * 0.3 + (predicted_sales / 1억) * 0.7
-    recommendationType = "sales_prediction"
+# 요청 예시
+{
+  "trendWeight": 0.3,  # 트렌드 30%
+  "salesWeight": 0.7   # 매출 예측 70%
+}
+
+# 가중치 적용
+- 트렌드 중심 (0.7, 0.3): 실시간 트렌드 반영 극대화
+- 균형 (0.5, 0.5): 트렌드와 매출 예측 균형
+- 매출 중심 (0.3, 0.7): 안정적 매출 예측 우선 (기본값)
 ```
 
 ---
@@ -245,7 +249,9 @@ curl -X POST http://localhost:8501/api/v1/broadcast/recommendations \
 {
   "broadcastTime": "2025-10-17T22:00:00+09:00",
   "recommendationCount": 5,
-  "trendRatio": 0.3  // 선택사항, 기본값 0.3
+  "trendWeight": 0.3,  // 트렌드 가중치 (기본값 0.3)
+  "salesWeight": 0.7   // 매출 예측 가중치 (기본값 0.7)
+  // 주의: trendWeight + salesWeight = 1.0 이어야 함
 }
 ```
 
@@ -268,6 +274,8 @@ curl -X POST http://localhost:8501/api/v1/broadcast/recommendations \
         "productId": "11388995",
         "productName": "[해피콜] 다이아몬드 프라이팬 3종 세트",
         "category": "생활 > 주방용품",
+        "brand": "해피콜",
+        "price": 99000.0,
         "tapeCode": "T001",
         "tapeName": "다이아몬드 프라이팬 방송테이프"
       },
@@ -406,14 +414,3 @@ CREATE TABLE broadcast_training_dataset (
 - 강수량 (mm)
 
 ---
-
-## 🔮 향후 개발 계획
-
-### 단기 (1~2개월)
-- [ ] 실시간 트렌드 수집 (네이버 DataLab, Google Trends)
-- [ ] 경쟁사 편성 데이터 수집 및 분석
-- [ ] 프론트엔드 UI 완성
-
-
-
-**⭐ 이 프로젝트가 도움이 되었다면 Star를 눌러주세요!**
