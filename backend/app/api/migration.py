@@ -50,7 +50,7 @@ async def start_migration(
         
         if request.tables:
             env['TABLES'] = request.tables
-        ㄴㅁㅁㄴ
+        
         # 백그라운드에서 마이그레이션 실행
         background_tasks.add_task(
             run_migration_task,

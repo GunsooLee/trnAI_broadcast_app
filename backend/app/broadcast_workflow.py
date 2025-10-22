@@ -352,8 +352,86 @@ JSON 형식으로 응답해주세요."""),
             logger.error(f"통합 검색 오류: {e}")
             return {"direct_products": [], "category_groups": {}}
     
-    async def _generate_context_keywords(self, context: Dict[str, Any]) -> List[str]:
-        """컨텍스트 정보를 기반으로 LangChain으로 검색 키워드 생성"""
+    async def _get_realtime_trend_keywords(self) -> List[str]:
+        """실시간 트렌드 키워드 수집 (OpenAI Web Search)"""
+        from openai import OpenAI
+        
+        try:
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            
+            prompt = """당신은 한국 쇼핑 트렌드 분석 전문가입니다.
+
+**임무: 지금 이 순간 한국에서 인기 있는 쇼핑 관련 키워드를 찾으세요**
+
+웹 검색으로 다음 정보를 수집하세요:
+- 한국 실시간 인기 검색어
+- 현재 이슈가 되는 이벤트 (스포츠, 날씨 이슈, 사회 이벤트 등)
+- 쇼핑 트렌드 키워드
+
+**중요:**
+- 쇼핑/상품과 연관 가능한 키워드만 추출
+- 3-5개의 핵심 키워드만 선별
+- 반드시 JSON 배열로만 반환: ["키워드1", "키워드2", ...]
+
+**예시:**
+- 가을야구 경기 중 → ["야구", "치킨", "맥주", "응원용품"]
+- 한파주의보 → ["난방", "온열기", "핫팩"]
+- 크리스마스 시즌 → ["크리스마스", "선물", "파티용품"]
+"""
+            
+            print("=" * 80)
+            print("[2단계 - OpenAI Web Search] 실시간 트렌드 수집 시작")
+            print("=" * 80)
+            print(f"[프롬프트]\n{prompt}")
+            print("=" * 80)
+            logger.info(f"[2단계] 실시간 트렌드 프롬프트: {prompt[:200]}...")
+            
+            response = client.responses.create(
+                model="gpt-4o",
+                tools=[{
+                    "type": "web_search_preview",
+                    "search_context_size": "medium",
+                    "user_location": {
+                        "type": "approximate",
+                        "country": "KR",
+                        "timezone": "Asia/Seoul"
+                    }
+                }],
+                input=prompt,
+                max_output_tokens=200
+            )
+            
+            result_text = response.output_text
+            print("=" * 80)
+            print(f"[2단계 - 응답] {result_text}")
+            print("=" * 80)
+            logger.info(f"[2단계] 실시간 트렌드 응답: {result_text}")
+            
+            # JSON 배열 추출
+            import json
+            import re
+            json_match = re.search(r'\[.*?\]', result_text, re.DOTALL)
+            if json_match:
+                keywords = json.loads(json_match.group())
+                print(f"[2단계 - 추출 성공] 키워드: {keywords}")
+                logger.info(f"[2단계] 실시간 트렌드 키워드 추출 성공: {keywords}")
+                return keywords[:5]  # 최대 5개만
+            else:
+                print("[2단계 - 실패] JSON 배열을 찾을 수 없음")
+                logger.warning("[2단계] 실시간 트렌드에서 JSON 배열을 찾을 수 없음")
+                return []
+                
+        except Exception as e:
+            print("=" * 80)
+            print(f"[2단계 - 오류] {e}")
+            print("=" * 80)
+            logger.error(f"[2단계] 실시간 트렌드 수집 실패: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+    
+    async def _generate_base_context_keywords(self, context: Dict[str, Any]) -> List[str]:
+        """기본 컨텍스트 정보를 기반으로 LangChain으로 검색 키워드 생성"""
         
         # 컨텍스트 정보 추출 (안전하게)
         weather_info = context.get("weather", {})
@@ -412,11 +490,13 @@ JSON 형식으로 응답해주세요."""),
                 "holiday_name": holiday_name if holiday_name else "없음"
             }
             print("=" * 80)
-            print("[LLM 프롬프트] 컨텍스트 키워드 생성")
+            print("[1단계 - LangChain 프롬프트] 기본 컨텍스트 키워드 생성")
             print("=" * 80)
-            print(f"변수: {prompt_vars}")
+            print(f"입력 변수:")
+            for key, value in prompt_vars.items():
+                print(f"  - {key}: {value}")
             print("=" * 80)
-            logger.info(f"[LLM 프롬프트] 컨텍스트 키워드 생성 - 변수: {prompt_vars}")
+            logger.info(f"[1단계] 기본 컨텍스트 프롬프트 변수: {prompt_vars}")
             
             result = await chain.ainvoke({
                 "weather": weather,
@@ -434,8 +514,12 @@ JSON 형식으로 응답해주세요."""),
             else:
                 keywords = []
             
-            logger.info(f"컨텍스트 기반 키워드 생성 완료: {keywords}")
-            logger.info(f"반환할 키워드 개수: {len(keywords)}")
+            print("=" * 80)
+            print(f"[1단계 - 응답] LLM 생성 키워드: {keywords}")
+            print(f"[1단계 - 결과] 총 {len(keywords)}개 키워드")
+            print("=" * 80)
+            logger.info(f"[1단계] 컨텍스트 기반 키워드 생성 완료: {keywords}")
+            logger.info(f"[1단계] 반환할 키워드 개수: {len(keywords)}")
             return keywords
         except Exception as e:
             logger.error(f"컨텍스트 키워드 생성 오류: {e}")
@@ -464,9 +548,42 @@ JSON 형식으로 응답해주세요."""),
             else:
                 fallback_keywords.extend(["가을", "건강", "환절기"])
             
-            logger.info(f"폴백 키워드 사용: {fallback_keywords}")
-            logger.info(f"폴백 키워드 개수: {len(fallback_keywords)}")
+            print(f"[1단계 - 폴백] 폴백 키워드 사용: {fallback_keywords}")
+            logger.info(f"[1단계] 폴백 키워드 사용: {fallback_keywords}")
+            logger.info(f"[1단계] 폴백 키워드 개수: {len(fallback_keywords)}")
             return fallback_keywords
+    
+    async def _generate_context_keywords(self, context: Dict[str, Any]) -> List[str]:
+        """통합 키워드 생성: 1단계(기본 컨텍스트) + 2단계(실시간 트렌드)"""
+        
+        print("=" * 80)
+        print("[통합 키워드 생성] 1단계: 기본 컨텍스트 키워드")
+        print("=" * 80)
+        
+        # 1단계: 기본 컨텍스트 키워드 (날씨, 시간대, 계절, 공휴일)
+        base_keywords = await self._generate_base_context_keywords(context)
+        logger.info(f"1단계 기본 키워드: {base_keywords}")
+        
+        print("=" * 80)
+        print("[통합 키워드 생성] 2단계: 실시간 트렌드 키워드")
+        print("=" * 80)
+        
+        # 2단계: 실시간 트렌드 키워드 (OpenAI Web Search)
+        realtime_keywords = await self._get_realtime_trend_keywords()
+        logger.info(f"2단계 실시간 트렌드: {realtime_keywords}")
+        
+        # 통합: 실시간 트렌드 우선 + 기본 컨텍스트
+        combined_keywords = realtime_keywords + base_keywords
+        
+        # 중복 제거 (순서 유지)
+        unique_keywords = list(dict.fromkeys(combined_keywords))
+        
+        print("=" * 80)
+        print(f"[통합 키워드] 최종 {len(unique_keywords)}개: {unique_keywords}")
+        print("=" * 80)
+        logger.info(f"통합 키워드 생성 완료: {unique_keywords}")
+        
+        return unique_keywords
     
     async def _generate_unified_candidates(
         self,
