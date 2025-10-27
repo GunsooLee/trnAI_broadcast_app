@@ -156,13 +156,23 @@ MIGRATION_TABLES = {
     
     # 5. 경쟁사 방송 정보 (추가 예정)
     "TAICOMPETITOR_BROADCASTS": {
-        "enabled": False,  # 추후 구현
+        "enabled": True,
         "description": "경쟁사 방송 정보 (추후 구현)",
         "primary_key": "id",
-        "incremental_column": None,
-        "query": lambda incremental: """
-            -- 경쟁사 데이터 수집 쿼리 (추후 정의)
-            SELECT 1 WHERE 1=0
+        "incremental_column": "BDCAST_DT",
+        "query": lambda incremental: f"""
+            SELECT 
+                BDCAST_DT ,
+                STRT_DTTM,
+                END_DTTM,
+                CMPNY_NM,
+                LCLS_CTGR,
+                MCLS_CTGR
+            FROM SNTDM.SNTADM.FBD_OTENT_RST_ANAL_D
+            WHERE CMPNY_NM IS NOT NULL
+              AND LCLS_CTGR IS NOT NULL
+              {f"AND BDCAST_DT >= '{get_yesterday()}'" if incremental else "AND BDCAST_DT >= '20240101'"}
+            ORDER BY BDCAST_DT, STRT_DTTM DESC
         """
     },
     

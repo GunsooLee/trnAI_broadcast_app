@@ -58,11 +58,11 @@ services:
       - N8N_HOST=localhost
       - N8N_PORT=5678
       - WEBHOOK_TUNNEL_URL=http://localhost:5678/
+      - GENERIC_TIMEZONE=Asia/Seoul
     volumes:
       - n8n_data:/home/node/.n8n
-      - /var/run/docker.sock:/var/run/docker.sock  # Docker 소켓 마운트
-      - /usr/bin/docker:/usr/bin/docker  # Docker CLI 마운트
-    user: root  # Docker 소켓 접근 권한
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # Docker 소켓 마운트 (읽기 전용)
+    # user: root 제거 - 기본 node 유저 사용
     restart: always
     networks:
       - shopping-network

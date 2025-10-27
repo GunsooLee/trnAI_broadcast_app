@@ -215,6 +215,34 @@ def upsert_to_postgres(df, table_name, postgres_engine, key_column='product_code
             FROM {temp_table} t
             WHERE EXISTS (SELECT 1 FROM taipgmtape WHERE tape_code = t.tape_code)
             """
+        elif table_name.lower() == 'taicompetitor_broadcasts':
+            # 경쟁사 방송 정보 UPSERT
+            # 1. 고유 인덱스 생성 (없으면 생성)
+            create_index_query = """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_taicomp_brdcst_date_slot_comp 
+            ON taicompetitor_broadcasts (broadcast_date, time_slot, competitor_name)
+            """
+            with postgres_engine.connect() as conn:
+                conn.execute(text(create_index_query))
+                conn.commit()
+            
+            # 2. UPSERT 실행
+            upsert_query = f"""
+            INSERT INTO taicompetitor_broadcasts (broadcast_date, time_slot, competitor_name, 
+                                                   category_main, category_middle, created_at)
+            SELECT broadcast_date::DATE, 
+                   time_slot, 
+                   competitor_name, 
+                   category_main, 
+                   category_middle,
+                   CURRENT_TIMESTAMP
+            FROM {temp_table}
+            ON CONFLICT (broadcast_date, time_slot, competitor_name)
+            DO UPDATE SET
+                category_main = EXCLUDED.category_main,
+                category_middle = EXCLUDED.category_middle,
+                created_at = CURRENT_TIMESTAMP
+            """
         else:
             raise ValueError(f"지원하지 않는 테이블: {table_name}")
         
@@ -234,6 +262,47 @@ def upsert_to_postgres(df, table_name, postgres_engine, key_column='product_code
         import traceback
         traceback.print_exc()
         return False
+
+
+def convert_time_slot(start_time, end_time):
+    """시작/종료 시간을 time_slot으로 변환
+    
+    Args:
+        start_time: 시작 시간 (예: "2025-10-15 14:30:00.000")
+        end_time: 종료 시간 (예: "2025-10-15 15:30:00.000")
+    
+    Returns:
+        time_slot: 시간대 문자열 (예: "14:00-16:00")
+    """
+    try:
+        # 문자열을 datetime으로 변환
+        if pd.isna(start_time) or pd.isna(end_time):
+            return "00:00-01:00"
+        
+        start_str = str(start_time)
+        end_str = str(end_time)
+        
+        # 시간 추출 (여러 형식 대응)
+        if len(start_str) >= 19:  # "2025-10-15 14:30:00" 형식
+            start_hour = int(start_str[11:13])
+            end_hour = int(end_str[11:13])
+            end_minute = int(end_str[14:16])
+            
+            # 종료 시간이 정각이 아니면 다음 시간으로 올림
+            if end_minute > 0:
+                end_hour += 1
+            
+            # 24시를 넘어가는 경우 처리
+            if end_hour > 24:
+                end_hour = 24
+            
+            return f"{start_hour:02d}:00-{end_hour:02d}:00"
+        else:
+            return "00:00-01:00"
+            
+    except Exception as e:
+        logger.warning(f"시간 변환 실패: {start_time} ~ {end_time}, 에러: {e}")
+        return "00:00-01:00"
 
 
 def data_cleansing(df, table_type='products'):
@@ -261,6 +330,39 @@ def data_cleansing(df, table_type='products'):
         df = df[df['product_code'] != '']
         
         logger.info(f"   정제 후: {len(df)}개 상품")
+    
+    elif table_type == 'competitors':
+        # 경쟁사 방송 데이터 정제
+        logger.info("   경쟁사 방송 데이터 정제 중...")
+        
+        # 컬럼 리네임
+        df = df.rename(columns={
+            'bdcast_dt': 'broadcast_date',
+            'strt_dttm': 'start_time',
+            'end_dttm': 'end_time',
+            'cmpny_nm': 'competitor_name',
+            'lcls_ctgr': 'category_main',
+            'mcls_ctgr': 'category_middle'
+        })
+        
+        # time_slot 계산
+        df['time_slot'] = df.apply(
+            lambda row: convert_time_slot(row.get('start_time'), row.get('end_time')), 
+            axis=1
+        )
+        
+        # NULL 처리
+        df['competitor_name'] = df['competitor_name'].fillna('미지정')
+        df['category_main'] = df['category_main'].fillna('기타')
+        df['category_middle'] = df['category_middle'].fillna('기타')
+        
+        # 필요한 컬럼만 선택
+        df = df[['broadcast_date', 'time_slot', 'competitor_name', 'category_main', 'category_middle']]
+        
+        # 중복 제거 (같은 날짜/시간대/경쟁사는 최신 데이터만)
+        df = df.drop_duplicates(subset=['broadcast_date', 'time_slot', 'competitor_name'], keep='last')
+        
+        logger.info(f"   정제 후: {len(df)}개 경쟁사 방송")
     
     return df
 
@@ -291,7 +393,14 @@ def migrate_single_table(netezza_conn, postgres_engine, table_name, incremental=
             return {"success": True, "table": table_name, "message": "데이터 없음", "count": 0}
         
         # 2. 데이터 정제
-        df = data_cleansing(df, 'products' if table_name == 'TAIGOODS' else 'tapes')
+        if table_name == 'TAIGOODS':
+            table_type = 'products'
+        elif table_name == 'TAICOMPETITOR_BROADCASTS':
+            table_type = 'competitors'
+        else:
+            table_type = 'tapes'
+        
+        df = data_cleansing(df, table_type)
         
         # 3. UPSERT
         primary_key = config["primary_key"]
@@ -302,7 +411,7 @@ def migrate_single_table(netezza_conn, postgres_engine, table_name, incremental=
             "table": table_name,
             "message": "완료" if success else "실패",
             "count": len(df)
-        }
+    }
         
     except Exception as e:
         logger.error(f"❌ {table_name} 마이그레이션 실패: {e}")

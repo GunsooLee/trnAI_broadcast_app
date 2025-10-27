@@ -1,0 +1,366 @@
+{
+  "name": "NETEZZA → PostgreSQL 전체 마이그레이션 (경쟁사 포함)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 2 * * *"
+            }
+          ]
+        }
+      },
+      "id": "3968c190-8ba5-4284-bf19-dece2875f48f",
+      "name": "매일 새벽 2시 실행",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [-208, 256]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://fastapi_backend:8501/api/v1/migration/start-sync",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "full_sync",
+              "value": "=false"
+            },
+            {
+              "name": "tables",
+              "value": "TAIGOODS"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "c3ca8d95-14ac-4906-8eff-e95c6bd4aa89",
+      "name": "1️⃣ TAIGOODS 마이그레이션",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [16, 256],
+      "notes": "상품 마스터 데이터 동기화"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.status}}",
+              "value2": "success"
+            }
+          ]
+        }
+      },
+      "id": "cba86e6f-3673-4e8d-a1e0-2ae0d7179a5e",
+      "name": "TAIGOODS 성공?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [240, 256]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://fastapi_backend:8501/api/v1/migration/start-sync",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "full_sync",
+              "value": "=false"
+            },
+            {
+              "name": "tables",
+              "value": "TAIPGMTAPE"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "ca15e4f5-e009-4518-80dc-881f00655c55",
+      "name": "2️⃣ TAIPGMTAPE 마이그레이션",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [464, 160],
+      "notes": "방송테이프 데이터 동기화"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.status}}",
+              "value2": "success"
+            }
+          ]
+        }
+      },
+      "id": "6b2f1ba2-44b0-45a2-8a39-7a55bec74108",
+      "name": "TAIPGMTAPE 성공?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [672, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://fastapi_backend:8501/api/v1/migration/start-sync",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "full_sync",
+              "value": "=false"
+            },
+            {
+              "name": "tables",
+              "value": "TAIBROADCASTS"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "756c46b7-0d66-4898-9468-b17b023bf8fc",
+      "name": "3️⃣ TAIBROADCASTS 마이그레이션",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [896, 256],
+      "notes": "방송 이력 데이터 동기화 (병렬 실행)"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://fastapi_backend:8501/api/v1/migration/start-sync",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "full_sync",
+              "value": "=false"
+            },
+            {
+              "name": "tables",
+              "value": "TAICOMPETITOR_BROADCASTS"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "8a7f9c2d-5e11-4f29-a8b3-d4c5e6f7a8b9",
+      "name": "🆕 경쟁사 편성 마이그레이션",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [464, 352],
+      "notes": "경쟁사 방송 편성 정보 동기화 (TAIGOODS와 병렬)"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- 기존 데이터와 중복되지 않도록 임시 테이블 사용\nCREATE TEMP TABLE temp_training_data AS\nSELECT \n    b.broadcast_start_timestamp::DATE as broadcast_date,\n    EXTRACT(HOUR FROM b.broadcast_start_timestamp)::INTEGER as hour,\n    CASE EXTRACT(DOW FROM b.broadcast_start_timestamp)\n        WHEN 0 THEN '일' WHEN 1 THEN '월' WHEN 2 THEN '화'\n        WHEN 3 THEN '수' WHEN 4 THEN '목' WHEN 5 THEN '금' WHEN 6 THEN '토'\n    END as day_of_week,\n    CASE \n        WHEN EXTRACT(HOUR FROM b.broadcast_start_timestamp) BETWEEN 0 AND 5 THEN '새벽'\n        WHEN EXTRACT(HOUR FROM b.broadcast_start_timestamp) BETWEEN 6 AND 11 THEN '오전'\n        WHEN EXTRACT(HOUR FROM b.broadcast_start_timestamp) BETWEEN 12 AND 17 THEN '오후'\n        WHEN EXTRACT(HOUR FROM b.broadcast_start_timestamp) BETWEEN 18 AND 23 THEN '저녁'\n    END as time_slot,\n    CASE \n        WHEN EXTRACT(MONTH FROM b.broadcast_start_timestamp) IN (3, 4, 5) THEN '봄'\n        WHEN EXTRACT(MONTH FROM b.broadcast_start_timestamp) IN (6, 7, 8) THEN '여름'\n        WHEN EXTRACT(MONTH FROM b.broadcast_start_timestamp) IN (9, 10, 11) THEN '가을'\n        WHEN EXTRACT(MONTH FROM b.broadcast_start_timestamp) IN (12, 1, 2) THEN '겨울'\n    END as season,\n    EXTRACT(DOW FROM b.broadcast_start_timestamp) IN (0, 6) as is_weekend,\n    g.product_code, g.product_name, g.category_main, g.category_middle, g.category_sub,\n    g.price, g.brand, g.product_type, b.product_is_new,\n    t.tape_code, t.tape_name,\n    w.weather, w.temperature, w.precipitation,\n    CASE WHEN h.holiday_date IS NOT NULL THEN TRUE ELSE FALSE END as is_holiday,\n    h.holiday_name, b.gross_profit, b.sales_efficiency\nFROM TAIBROADCASTS b\nINNER JOIN TAIPGMTAPE t ON b.tape_code = t.tape_code\nINNER JOIN TAIGOODS g ON t.product_code = g.product_code\nLEFT JOIN taiweather_daily w ON b.broadcast_start_timestamp::DATE = w.weather_date\nLEFT JOIN TAIHOLIDAYS h ON b.broadcast_start_timestamp::DATE = h.holiday_date\nWHERE b.broadcast_start_timestamp >= CURRENT_DATE - INTERVAL '1 day';\n\n-- 기존 데이터와 중복 제거 후 삽입\nINSERT INTO broadcast_training_dataset (\n    broadcast_date, hour, day_of_week, time_slot, season, is_weekend,\n    product_code, product_name, category_main, category_middle, category_sub,\n    price, brand, product_type, product_is_new,\n    tape_code, tape_name,\n    weather, temperature, precipitation,\n    is_holiday, holiday_name, gross_profit, sales_efficiency\n)\nSELECT * FROM temp_training_data\nWHERE NOT EXISTS (\n    SELECT 1 FROM broadcast_training_dataset btd\n    WHERE btd.tape_code = temp_training_data.tape_code\n      AND btd.broadcast_date = temp_training_data.broadcast_date\n      AND btd.hour = temp_training_data.hour\n);\n\nDROP TABLE temp_training_data;",
+        "options": {}
+      },
+      "id": "39fa803e-2eae-4fe0-8fb3-f51e992e6a8a",
+      "name": "5️⃣ 학습 데이터셋 생성",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1120, 256],
+      "credentials": {
+        "postgres": {
+          "id": "PwSyo68HgjCiS6zK",
+          "name": "Postgres account"
+        }
+      },
+      "notes": "TAIBROADCASTS 마이그레이션 후 학습 데이터 생성"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://fastapi_backend:8501/api/v1/embeddings/generate-sync",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "force_all",
+              "value": "=false"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 1800000
+        }
+      },
+      "id": "425255d8-67a1-470c-8851-13860079420d",
+      "name": "4️⃣ 임베딩 생성 (동기)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [896, 64],
+      "notes": "완료될 때까지 대기 (최대 30분), 결과 즉시 확인"
+    },
+    {
+      "parameters": {
+        "functionCode": "// 전체 성공 로그\nconst successData = {\n  timestamp: new Date().toISOString(),\n  workflow: 'NETEZZA Full Migration with Competitor',\n  status: 'SUCCESS',\n  message: '전체 마이그레이션 및 임베딩 생성 완료',\n  steps: [\n    'TAIGOODS 마이그레이션',\n    'TAIPGMTAPE 마이그레이션',\n    '경쟁사 편성 마이그레이션',\n    '임베딩 생성',\n    'TAIBROADCASTS 마이그레이션 (병렬)'\n  ]\n};\n\nconsole.log('✅ 전체 워크플로우 성공:', successData);\n\nreturn successData;"
+      },
+      "id": "0c156839-0868-4213-ad82-07fba8f0eccc",
+      "name": "✅ 성공 로그",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1120, 64]
+    },
+    {
+      "parameters": {
+        "functionCode": "// 실패 로그 저장\nconst failureData = {\n  timestamp: new Date().toISOString(),\n  workflow: 'NETEZZA Full Migration with Competitor',\n  status: 'FAILED',\n  failedStep: $node['TAIGOODS 성공?'].json ? 'TAIPGMTAPE 또는 경쟁사 마이그레이션' : 'TAIGOODS 마이그레이션',\n  message: $input.item.json.message || 'Unknown error',\n  details: $input.item.json\n};\n\nconsole.error('❌ 워크플로우 실패:', failureData);\n\nreturn failureData;"
+      },
+      "id": "c5baa1a1-337d-4351-aeb4-c374df04df60",
+      "name": "❌ 실패 로그",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [800, 432]
+    },
+    {
+      "parameters": {
+        "content": "## 📝 전체 마이그레이션 워크플로우 (경쟁사 포함)\n\n**실행 시간:** 매일 새벽 2:00\n\n**처리 순서:**\n1. ✅ TAIGOODS 마이그레이션 (상품 마스터)\n2. ✅ TAIPGMTAPE 마이그레이션 (방송테이프)\n3. 🆕 경쟁사 편성 마이그레이션 (TAICOMPETITOR_BROADCASTS)\n4. ✅ 임베딩 생성 (방송 가능 상품만)\n5. ✅ TAIBROADCASTS 마이그레이션 (방송 이력, 병렬)\n6. ✅ 학습 데이터셋 생성 (TAIBROADCASTS 후)\n\n**중요:**\n- TAIGOODS가 성공해야 TAIPGMTAPE + 경쟁사 편성 실행\n- TAIPGMTAPE가 성공하면 임베딩 생성 + TAIBROADCASTS 병렬 실행\n- 경쟁사 편성은 독립적으로 실행 (다른 테이블과 의존성 없음)\n- TAIBROADCASTS 완료 후 학습 데이터셋 자동 생성\n- 중복 데이터 자동 필터링\n- 각 단계는 증분 업데이트 (어제 이후 수정분)\n\n**전체 재처리:**\n- 각 노드에서 full_sync를 true로 변경\n\n**경쟁사 편성 데이터:**\n- NETEZZA: FBD_OTENT_RST_ANAL_D 테이블\n- PostgreSQL: TAICOMPETITOR_BROADCASTS 테이블\n- 컬럼: 방송일자, 시간대, 경쟁사명, 카테고리(대/중)\n- 고유 제약: (broadcast_date, time_slot, competitor_name)"
+      },
+      "id": "d2a6b464-936e-43d5-98de-f69a01eb6111",
+      "name": "워크플로우 설명",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-208, 32]
+    }
+  ],
+  "connections": {
+    "매일 새벽 2시 실행": {
+      "main": [
+        [
+          {
+            "node": "1️⃣ TAIGOODS 마이그레이션",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1️⃣ TAIGOODS 마이그레이션": {
+      "main": [
+        [
+          {
+            "node": "TAIGOODS 성공?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TAIGOODS 성공?": {
+      "main": [
+        [
+          {
+            "node": "2️⃣ TAIPGMTAPE 마이그레이션",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "🆕 경쟁사 편성 마이그레이션",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "❌ 실패 로그",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2️⃣ TAIPGMTAPE 마이그레이션": {
+      "main": [
+        [
+          {
+            "node": "TAIPGMTAPE 성공?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TAIPGMTAPE 성공?": {
+      "main": [
+        [
+          {
+            "node": "4️⃣ 임베딩 생성 (동기)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "3️⃣ TAIBROADCASTS 마이그레이션",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "❌ 실패 로그",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3️⃣ TAIBROADCASTS 마이그레이션": {
+      "main": [
+        [
+          {
+            "node": "5️⃣ 학습 데이터셋 생성",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4️⃣ 임베딩 생성 (동기)": {
+      "main": [
+        [
+          {
+            "node": "✅ 성공 로그",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "timezone": "Asia/Seoul",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "데이터 마이그레이션",
+      "id": "migration"
+    },
+    {
+      "name": "배치 작업",
+      "id": "batch"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2025-10-27T07:34:00.000Z",
+  "versionId": "2.0.0"
+}

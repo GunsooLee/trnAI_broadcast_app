@@ -129,8 +129,22 @@ class ProductEmbedder:
         logger.info(f"전체 임베딩 완료: {processed}개 상품")
         return processed
     
-    def search_products(self, trend_keywords: List[str], top_k: int = 10, score_threshold: float = 0.7, only_ready_products: bool = True) -> List[Dict]:
-        """트렌드 키워드로 관련 상품 검색 (방송 테이프 존재하는 상품만)"""
+    def search_products(
+        self, 
+        trend_keywords: List[str], 
+        top_k: int = 10, 
+        score_threshold: float = 0.7, 
+        only_ready_products: bool = True
+    ) -> List[Dict]:
+        """
+        트렌드 키워드로 관련 상품 검색 (방송 테이프 존재하는 상품만)
+        
+        Args:
+            trend_keywords: 검색 키워드 리스트
+            top_k: 반환할 상품 개수
+            score_threshold: 유사도 임계값
+            only_ready_products: 방송테이프 존재 상품만 필터링
+        """
         if not trend_keywords:
             return []
         
