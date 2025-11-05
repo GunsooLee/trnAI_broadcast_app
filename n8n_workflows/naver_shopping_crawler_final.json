@@ -1,0 +1,90 @@
+{
+  "name": "네이버 베스트 상품 크롤러",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 2 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule",
+      "name": "매일 새벽 2시",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://fastapi_backend:8501/api/v1/external/crawl-naver-best?max_products=20",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "api_call",
+      "name": "베스트 상품 API (20개)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const products = $input.first().json.products;\nconst today = new Date().toISOString().split('T')[0];\n\n// SQL 이스케이프 함수\nfunction escapeSql(str) {\n  if (str === null || str === undefined) return 'NULL';\n  if (typeof str === 'boolean') return str;\n  if (typeof str === 'number') return str;\n  return \"'\" + String(str).replace(/'/g, \"''\") + \"'\";\n}\n\n// 각 상품을 INSERT 쿼리로 변환\nreturn products.map(p => {\n  const query = `\nINSERT INTO external_products (\n  product_id, name, sale_price, discounted_price, discount_ratio,\n  image_url, landing_url, mobile_landing_url,\n  is_delivery_free, delivery_fee, is_today_dispatch, is_sold_out,\n  cumulation_sale_count, rank_order, channel_no, landing_service, \n  review_count, review_score, mall_name,\n  collected_at, collected_date\n) VALUES (\n  ${escapeSql(p.product_id)},\n  ${escapeSql(p.name)},\n  ${p.sale_price || 0},\n  ${p.discounted_price || 0},\n  ${p.discount_ratio || 0},\n  ${escapeSql(p.image_url)},\n  ${escapeSql(p.landing_url)},\n  ${escapeSql(p.mobile_landing_url)},\n  ${p.is_delivery_free || false},\n  ${p.delivery_fee || 0},\n  ${p.is_today_dispatch || false},\n  ${p.is_sold_out || false},\n  ${p.cumulation_sale_count || 0},\n  ${p.rank_order || 0},\n  ${escapeSql(p.channel_no)},\n  ${escapeSql(p.landing_service)},\n  ${p.review_count || 0},\n  ${p.review_score || 0.0},\n  ${escapeSql(p.mall_name)},\n  ${escapeSql(p.collected_at)},\n  '${today}'\n)\nON CONFLICT (product_id, collected_date) DO UPDATE SET\n  name = EXCLUDED.name,\n  sale_price = EXCLUDED.sale_price,\n  discounted_price = EXCLUDED.discounted_price,\n  discount_ratio = EXCLUDED.discount_ratio,\n  image_url = EXCLUDED.image_url,\n  landing_url = EXCLUDED.landing_url,\n  mobile_landing_url = EXCLUDED.mobile_landing_url,\n  is_delivery_free = EXCLUDED.is_delivery_free,\n  delivery_fee = EXCLUDED.delivery_fee,\n  is_today_dispatch = EXCLUDED.is_today_dispatch,\n  is_sold_out = EXCLUDED.is_sold_out,\n  cumulation_sale_count = EXCLUDED.cumulation_sale_count,\n  rank_order = EXCLUDED.rank_order,\n  channel_no = EXCLUDED.channel_no,\n  landing_service = EXCLUDED.landing_service,\n  review_count = EXCLUDED.review_count,\n  review_score = EXCLUDED.review_score,\n  mall_name = EXCLUDED.mall_name,\n  collected_at = EXCLUDED.collected_at,\n  updated_at = CURRENT_TIMESTAMP;\n  `.trim();\n  \n  return { json: { query, product_id: p.product_id } };\n});"
+      },
+      "id": "build_queries",
+      "name": "쿼리 생성",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.query }}"
+      },
+      "id": "execute_query",
+      "name": "쿼리 실행",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [900, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres_credentials",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nreturn [{\n  json: {\n    success: true,\n    count: items.length,\n    message: `${items.length}개 상품 저장 완료`\n  }\n}];"
+      },
+      "id": "summary",
+      "name": "결과 집계",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    }
+  ],
+  "connections": {
+    "매일 새벽 2시": {
+      "main": [[{"node": "베스트 상품 API (20개)", "type": "main", "index": 0}]]
+    },
+    "베스트 상품 API (20개)": {
+      "main": [[{"node": "쿼리 생성", "type": "main", "index": 0}]]
+    },
+    "쿼리 생성": {
+      "main": [[{"node": "쿼리 실행", "type": "main", "index": 0}]]
+    },
+    "쿼리 실행": {
+      "main": [[{"node": "결과 집계", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}

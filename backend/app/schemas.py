@@ -123,11 +123,38 @@ class BroadcastRecommendation(BaseModel):
     businessMetrics: BusinessMetrics
     recommendationType: str  # "trend_match" (유사도) or "sales_prediction" (매출예측)
 
+class ExternalProduct(BaseModel):
+    """외부 상품 (네이버 베스트) 스키마"""
+    product_id: str
+    name: str
+    rank: int
+    rank_change: Optional[int] = None
+    rank_change_text: str
+    sale_price: int
+    discounted_price: int
+    discount_ratio: int
+    image_url: str
+    landing_url: str
+    mobile_landing_url: str
+    is_delivery_free: bool
+    delivery_fee: int
+    cumulation_sale_count: int
+    review_count: Optional[int] = None
+    review_score: Optional[float] = None
+    mall_name: Optional[str] = None
+    channel_no: Optional[str] = None
+    collected_at: Optional[str] = None
+    collected_date: Optional[str] = None
+
 class BroadcastResponse(BaseModel):
     """방송 추천 응답 스키마"""
     requestTime: str
     recommendedCategories: List[RecommendedCategory]
     recommendations: List[BroadcastRecommendation]
+    externalProducts: Optional[List[ExternalProduct]] = Field(
+        default=None,
+        description="네이버 베스트 상품 (외부 상품)"
+    )
 
 # --- 방송테이프 관련 스키마 ---
 class BroadcastTapeInfo(BaseModel):

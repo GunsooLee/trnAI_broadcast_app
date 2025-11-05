@@ -184,3 +184,9 @@ app.include_router(embeddings_router)
 # ========================================
 from .api.training import router as training_router
 app.include_router(training_router)
+
+# ========================================
+# 🛒 외부 상품 크롤링 API (n8n 연동용)
+# ========================================
+from .routers.external_products import router as external_products_router
+app.include_router(external_products_router)

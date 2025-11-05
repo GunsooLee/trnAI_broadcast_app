@@ -19,7 +19,8 @@ from .external_apis import ExternalAPIManager
 
 from .dependencies import get_product_embedder
 from . import broadcast_recommender as br
-from .schemas import BroadcastResponse, RecommendedCategory, BroadcastRecommendation, ProductInfo, Reasoning, BusinessMetrics
+from .schemas import BroadcastResponse, RecommendedCategory, BroadcastRecommendation, ProductInfo, Reasoning, BusinessMetrics, ExternalProduct
+from .external_products_service import ExternalProductsService
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,9 @@ class BroadcastWorkflow:
         
         # DB 연결
         self.engine = create_engine(os.getenv("POSTGRES_URI"))
+        
+        # 외부 상품 서비스
+        self.external_products_service = ExternalProductsService()
     
     async def process_broadcast_recommendation(
         self, 
@@ -853,10 +857,17 @@ JSON 형식으로 응답해주세요."""),
             )
             recommendations.append(recommendation)
         
+        # 외부 상품 (네이버 베스트) 조회 - 입력 파라미터와 무관하게 항상 TOP 20
+        external_products_data = self.external_products_service.get_latest_best_products(limit=20)
+        external_products = [ExternalProduct(**product) for product in external_products_data]
+        
+        logger.info(f"✅ 외부 상품 {len(external_products)}개 추가")
+        
         return BroadcastResponse(
             requestTime="",  # 메인에서 설정
             recommendedCategories=top_categories,
-            recommendations=recommendations
+            recommendations=recommendations,
+            externalProducts=external_products if external_products else None
         )
     
     def _generate_recommendation_reason(self, candidate: Dict[str, Any], context: Dict[str, Any] = None) -> str:

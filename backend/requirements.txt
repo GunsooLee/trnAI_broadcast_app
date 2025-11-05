@@ -23,6 +23,11 @@ qdrant-client==1.7.0
 aiohttp
 beautifulsoup4
 
+# Web Scraping (Anti-detection)
+selenium
+undetected-chromedriver
+webdriver-manager
+
 # Netezza connection
 pyodbc
 nzpy
