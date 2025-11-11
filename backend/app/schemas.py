@@ -109,11 +109,26 @@ class Reasoning(BaseModel):
     summary: str
     linkedCategories: List[str]
 
+class LastBroadcastMetrics(BaseModel):
+    """최근 방송 실적 스키마"""
+    broadcastStartTime: str = Field(description="방송시작일시")
+    orderQuantity: int = Field(description="주문수량")
+    totalProfit: float = Field(description="매출총이익(실적)")
+    profitEfficiency: float = Field(description="ONAIR매출총이익(효율)")
+    conversionWorth: float = Field(description="환산가치값(분리송출)")
+    conversionRate: float = Field(description="적용전환율")
+    realFee: float = Field(description="실질수수료")
+    mixFee: float = Field(description="혼합수수료")
+
 class BusinessMetrics(BaseModel):
     """비즈니스 지표 스키마"""
-    pastAverageSales: str
+    aiPredictedSales: str = Field(description="AI 예측 매출 (XGBoost 모델)")
     marginRate: float
     stockLevel: str
+    lastBroadcast: Optional[LastBroadcastMetrics] = Field(
+        default=None,
+        description="가장 최근 방송의 실제 실적 데이터"
+    )
 
 class BroadcastRecommendation(BaseModel):
     """방송 추천 항목 스키마"""

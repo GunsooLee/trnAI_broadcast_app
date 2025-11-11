@@ -1,0 +1,109 @@
+{
+  "requestTime": "2025-11-11T01:06:15.789012",
+  "recommendedCategories": [
+    {
+      "rank": 1,
+      "name": "건강식품",
+      "reason": "야간 시간대 최고 매출 예상 (17개 상품)",
+      "predictedSales": "2076만원"
+    },
+    {
+      "rank": 2,
+      "name": "이미용",
+      "reason": "야간 시간대 2순위 카테고리 (4개 상품)",
+      "predictedSales": "2563만원"
+    }
+  ],
+  "recommendations": [
+    {
+      "rank": 1,
+      "productInfo": {
+        "productId": "22163793",
+        "productName": "종근당건강 락토핏코어맥스 9통",
+        "category": "건강식품",
+        "brand": "락토핏",
+        "price": 129000.0,
+        "tapeCode": "0000015708",
+        "tapeName": "(특집) 종근당건강 락토핏 코어맥스"
+      },
+      "reasoning": {
+        "summary": "종근당건강 락토핏코어맥스는 건강식품 시장에서 단연 1위입니다. 야간 시간대에 8948만원의 매출을 예상하며, 소비자들의 수요가 높습니다. 클라우드 날씨 속에서도 건강을 챙기고자 하는 고객에게 최적의 선택입니다.",
+        "linkedCategories": ["건강식품"]
+      },
+      "businessMetrics": {
+        "aiPredictedSales": "8,948.1만원",
+        "predictionConfidence": "낮음 (과대예측)",
+        "marginRate": 0.25,
+        "stockLevel": "High",
+        "lastBroadcast": {
+          "broadcastStartTime": "2025-11-10 17:33:07.000000",
+          "orderQuantity": 287,
+          "totalProfit": 16466355.0,
+          "profitEfficiency": 17.3,
+          "conversionWorth": 0.95337,
+          "conversionRate": 88.19,
+          "realFee": 0.0,
+          "mixFee": 7500000.0
+        }
+      },
+      "recommendationType": "sales_prediction"
+    },
+    {
+      "rank": 2,
+      "productInfo": {
+        "productId": "24234481",
+        "productName": "세일캐나다 연어콜라겐 프리미엄 7박스",
+        "category": "건강식품",
+        "brand": "상아제약",
+        "price": 99000.0,
+        "tapeCode": "0000015710",
+        "tapeName": "(방송에서만 50%세일) 상아제약 캐나다 연어콜라겐 프리미엄"
+      },
+      "reasoning": {
+        "summary": "세일캐나다 연어콜라겐 프리미엄 7박스는 야간 시청자에게 최적화된 건강식품으로, 예측 매출 5143만원을 기록할 것으로 기대됩니다. 연어콜라겐의 효능으로 피부 건강을 지원하며, 꾸준한 수요로 인해 1위에 올라 있습니다.",
+        "linkedCategories": ["건강식품"]
+      },
+      "businessMetrics": {
+        "aiPredictedSales": "5,143.2만원",
+        "predictionConfidence": "보통 (다소 높음)",
+        "marginRate": 0.25,
+        "stockLevel": "High",
+        "lastBroadcast": {
+          "broadcastStartTime": "2025-11-10 20:33:07.000000",
+          "orderQuantity": 156,
+          "totalProfit": 8234567.0,
+          "profitEfficiency": 15.8,
+          "conversionWorth": 0.87234,
+          "conversionRate": 76.45,
+          "realFee": 0.0,
+          "mixFee": 4200000.0
+        }
+      },
+      "recommendationType": "sales_prediction"
+    }
+  ],
+  "externalProducts": [
+    {
+      "product_id": "86321126899",
+      "name": "절임배추 강원도 고랭지 김장배추 20kg 영월 절인배추 휘파람",
+      "rank": 1,
+      "rank_change": null,
+      "rank_change_text": "신규",
+      "sale_price": 59900,
+      "discounted_price": 39900,
+      "discount_ratio": 33,
+      "image_url": "https://shopping-phinf.pstatic.net/main_8632112/86321126899.jpg?type=f450",
+      "landing_url": "https://smartstore.naver.com/main/products/10776616575",
+      "mobile_landing_url": "https://smartstore.naver.com/main/products/10776616575",
+      "is_delivery_free": true,
+      "delivery_fee": 0,
+      "cumulation_sale_count": 99999,
+      "review_count": 99999,
+      "review_score": 4.9,
+      "mall_name": "휘파람농원",
+      "channel_no": "101579006",
+      "collected_at": "2025-11-10T17:00:00.343623",
+      "collected_date": "2025-11-10"
+    }
+  ]
+}

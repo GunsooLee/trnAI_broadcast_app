@@ -56,72 +56,50 @@ def load_data(engine: Engine) -> pd.DataFrame:
     """DB에서 학습용 데이터를 로드하고 기본 전처리를 수행합니다."""
     print("데이터 로딩 시작...")
 
-    # broadcast_training_dataset에서 직접 데이터 로드
+    # broadcast_training_dataset에서 직접 데이터 로드 (단순화)
     query = f"""
-    WITH base AS (
-        SELECT
-            product_code,
-            category_main as product_lgroup,
-            category_middle as product_mgroup,
-            category_sub as product_sgroup,
-            product_name,
-            brand,
-            product_type,
-            time_slot,
-            day_of_week,
-            season,
-            is_weekend,
-            hour,
-            weather,
-            temperature,
-            precipitation,
-            is_holiday,
-            holiday_name,
-            gross_profit,
-            sales_efficiency,
-            price as product_price,
-            broadcast_date
-        FROM broadcast_training_dataset
-        WHERE gross_profit IS NOT NULL
-    ),
-    product_stats AS (
-        SELECT
-            product_code,
-            AVG(gross_profit) AS product_avg_profit,
-            COUNT(*) AS product_broadcast_count
-        FROM base
-        GROUP BY product_code
-    ),
-    category_timeslot_stats AS (
-        SELECT
-            product_mgroup,
-            time_slot,
-            AVG(gross_profit) AS category_timeslot_avg_profit
-        FROM base
-        GROUP BY product_mgroup, time_slot
-    )
     SELECT
-        b.*,
-        ps.product_avg_profit,
-        ps.product_broadcast_count,
-        cts.category_timeslot_avg_profit
-    FROM base b
-    LEFT JOIN product_stats ps ON b.product_code = ps.product_code
-    LEFT JOIN category_timeslot_stats cts ON b.product_mgroup = cts.product_mgroup AND b.time_slot = cts.time_slot
+        product_code,
+        category_main as product_lgroup,
+        category_middle as product_mgroup,
+        category_sub as product_sgroup,
+        product_name,
+        brand,
+        product_type,
+        time_slot,
+        day_of_week,
+        season,
+        is_weekend,
+        hour,
+        weather,
+        temperature,
+        precipitation,
+        is_holiday,
+        holiday_name,
+        gross_profit,
+        sales_efficiency,
+        price as product_price,
+        broadcast_date
+    FROM broadcast_training_dataset
+    WHERE gross_profit IS NOT NULL
+      AND gross_profit <= 50000000  -- 이상치 제거: 5천만원 이하만
+      AND gross_profit >= 1000000   -- 하위 이상치 제거: 100만원 이상만
     """
 
     df = pd.read_sql(query, engine)
     
     # NULL 값 처리
-    df['product_avg_profit'] = df['product_avg_profit'].fillna(0)
-    df['category_timeslot_avg_profit'] = df['category_timeslot_avg_profit'].fillna(0)
-    df['product_broadcast_count'] = df['product_broadcast_count'].fillna(0)
     df['temperature'] = df['temperature'].fillna(df['temperature'].mean())
     df['precipitation'] = df['precipitation'].fillna(0)
     df['weather'] = df['weather'].fillna('Clear')
     df['brand'] = df['brand'].fillna('Unknown')
     df['product_type'] = df['product_type'].fillna('유형')
     df['holiday_name'] = df['holiday_name'].fillna('')
+    
+    # 과대예측 방지: 가격 로그 스케일링
+    print("가격 피처 로그 스케일링 적용...")
+    df['product_price_log'] = np.log1p(df['product_price'])
+    print(f"  product_price: 원본 평균 {df['product_price'].mean():,.0f}원 → 로그 {df['product_price_log'].mean():.2f}")
     
     print(f"데이터 로딩 완료. 총 {len(df)}개 행")
     return df
@@ -131,10 +109,9 @@ def build_pipeline() -> Pipeline:
     """Scikit-learn 파이프라인을 구축합니다."""
     print("모델 파이프라인 생성...")
     numeric_features = [
-        "product_price",
-        "product_avg_profit",
         "product_broadcast_count",
-        "category_timeslot_avg_profit",
+        "category_timeslot_avg_profit_log",  # 로그 스케일링 버전 사용
+        "product_price_log",  # 로그 스케일링 버전 사용
         "hour",
         "temperature",
         "precipitation",
@@ -164,9 +141,13 @@ def build_pipeline() -> Pipeline:
     model = XGBRegressor(
         n_estimators=500,
         learning_rate=0.05,
-        max_depth=6,
+        max_depth=4,  # 6 → 4 (과적합 방지)
+        min_child_weight=5,  # 1 → 5 (과적합 방지)
+        gamma=0.2,  # 분할 최소 손실 감소
         subsample=0.8,
         colsample_bytree=0.8,
+        reg_alpha=0.5,  # L1 정규화
+        reg_lambda=2.0,  # L2 정규화 강화
         random_state=42,
     )
 
@@ -211,20 +192,33 @@ def train() -> dict:
     
     X1 = df.drop(columns=existing_drop_cols1)
     y1 = df[target1]
+    
+    # 로그 변환 적용 (과대 예측 방지)
+    print("타겟 변수 로그 변환 적용...")
+    y1_log = np.log1p(y1)  # log(1 + y)
+    print(f"  원본 평균: {y1.mean():,.0f}원, 로그 평균: {y1_log.mean():.2f}")
 
-    X1_train, X1_test, y1_train, y1_test = train_test_split(
+    X1_train, X1_test, y1_train_log, y1_test_log = train_test_split(
+        X1, y1_log, test_size=0.2, random_state=42
+    )
+    
+    # 원본 y 값도 분리 (평가용)
+    _, _, y1_train_orig, y1_test_orig = train_test_split(
         X1, y1, test_size=0.2, random_state=42
     )
 
     print("모델 학습 시작...")
     pipe1 = build_pipeline()
-    pipe1.fit(X1_train, y1_train)
+    pipe1.fit(X1_train, y1_train_log)
     print("모델 학습 완료.")
 
-    y1_pred = pipe1.predict(X1_test)
-    mae1 = mean_absolute_error(y1_test, y1_pred)
-    rmse1 = np.sqrt(mean_squared_error(y1_test, y1_pred))
-    r2_1 = r2_score(y1_test, y1_pred)
+    # 예측 후 역변환
+    y1_pred_log = pipe1.predict(X1_test)
+    y1_pred = np.expm1(y1_pred_log)  # exp(y) - 1
+    
+    mae1 = mean_absolute_error(y1_test_orig, y1_pred)
+    rmse1 = np.sqrt(mean_squared_error(y1_test_orig, y1_pred))
+    r2_1 = r2_score(y1_test_orig, y1_pred)
     
     print("\n=== 모델 1 평가 (gross_profit) ===")
     print(f"MAE : {mae1:,.2f} 원")
@@ -246,56 +240,72 @@ def train() -> dict:
     }
 
     # ========================================
-    # 모델 2: sales_efficiency 예측 모델
+    # 모델 2: sales_efficiency 예측 모델 (사용 안 함 - 주석 처리)
     # ========================================
-    print("\n" + "="*60)
-    print("모델 2: 매출효율(sales_efficiency) 예측 모델 학습")
-    print("="*60)
+    # R2 Score가 0.38로 매우 낮고, 현재 API에서 사용하지 않음
+    # 필요 시 주석 해제하여 재활성화 가능
     
-    target2 = "sales_efficiency"
+    print("\n⏭️  모델 2 (sales_efficiency) 학습 스킵 (사용 안 함)")
     
-    # sales_efficiency가 NULL인 행 제거
-    df_efficiency = df[df[target2].notna()].copy()
-    print(f"sales_efficiency 유효 데이터: {len(df_efficiency)}개 행")
-    
-    drop_cols2 = common_drop_cols + ["gross_profit", target2]
-    existing_drop_cols2 = [col for col in drop_cols2 if col in df_efficiency.columns]
-    
-    X2 = df_efficiency.drop(columns=existing_drop_cols2)
-    y2 = df_efficiency[target2]
-
-    X2_train, X2_test, y2_train, y2_test = train_test_split(
-        X2, y2, test_size=0.2, random_state=42
-    )
-
-    print("모델 학습 시작...")
-    pipe2 = build_pipeline()
-    pipe2.fit(X2_train, y2_train)
-    print("모델 학습 완료.")
-
-    y2_pred = pipe2.predict(X2_test)
-    mae2 = mean_absolute_error(y2_test, y2_pred)
-    rmse2 = np.sqrt(mean_squared_error(y2_test, y2_pred))
-    r2_2 = r2_score(y2_test, y2_pred)
-    
-    print("\n=== 모델 2 평가 (sales_efficiency) ===")
-    print(f"MAE : {mae2:,.2f} 원/분")
-    print(f"RMSE: {rmse2:,.2f} 원/분")
-    print(f"R2  : {r2_2:.4f}\n")
-
-    # 모델 2 저장
-    model_path2 = Path(__file__).parent / 'app' / MODEL_FILE_EFFICIENCY
-    joblib.dump(pipe2, model_path2)
-    print(f"✅ 모델 2가 '{model_path2}'에 저장되었습니다.")
-    
-    # 통계 저장
+    # 통계 저장 (빈 값)
     training_stats["models"]["efficiency_model"] = {
-        "train_records": len(X2_train),
-        "test_records": len(X2_test),
-        "mae": round(mae2, 2),
-        "rmse": round(rmse2, 2),
-        "r2_score": round(r2_2, 4)
+        "train_records": 0,
+        "test_records": 0,
+        "mae": 0,
+        "rmse": 0,
+        "r2_score": 0,
+        "status": "skipped"
     }
+    
+    # # 아래 코드는 필요 시 주석 해제
+    # print("\n" + "="*60)
+    # print("모델 2: 매출효율(sales_efficiency) 예측 모델 학습")
+    # print("="*60)
+    # 
+    # target2 = "sales_efficiency"
+    # 
+    # # sales_efficiency가 NULL인 행 제거
+    # df_efficiency = df[df[target2].notna()].copy()
+    # print(f"sales_efficiency 유효 데이터: {len(df_efficiency)}개 행")
+    # 
+    # drop_cols2 = common_drop_cols + ["gross_profit", target2]
+    # existing_drop_cols2 = [col for col in drop_cols2 if col in df_efficiency.columns]
+    # 
+    # X2 = df_efficiency.drop(columns=existing_drop_cols2)
+    # y2 = df_efficiency[target2]
+    #
+    # X2_train, X2_test, y2_train, y2_test = train_test_split(
+    #     X2, y2, test_size=0.2, random_state=42
+    # )
+    #
+    # print("모델 학습 시작...")
+    # pipe2 = build_pipeline()
+    # pipe2.fit(X2_train, y2_train)
+    # print("모델 학습 완료.")
+    #
+    # y2_pred = pipe2.predict(X2_test)
+    # mae2 = mean_absolute_error(y2_test, y2_pred)
+    # rmse2 = np.sqrt(mean_squared_error(y2_test, y2_pred))
+    # r2_2 = r2_score(y2_test, y2_pred)
+    # 
+    # print("\n=== 모델 2 평가 (sales_efficiency) ===")
+    # print(f"MAE : {mae2:,.2f} 원/분")
+    # print(f"RMSE: {rmse2:,.2f} 원/분")
+    # print(f"R2  : {r2_2:.4f}\n")
+    #
+    # # 모델 2 저장
+    # model_path2 = Path(__file__).parent / 'app' / MODEL_FILE_EFFICIENCY
+    # joblib.dump(pipe2, model_path2)
+    # print(f"✅ 모델 2가 '{model_path2}'에 저장되었습니다.")
+    # 
+    # # 통계 저장
+    # training_stats["models"]["efficiency_model"] = {
+    #     "train_records": len(X2_train),
+    #     "test_records": len(X2_test),
+    #     "mae": round(mae2, 2),
+    #     "rmse": round(rmse2, 2),
+    #     "r2_score": round(r2_2, 4)
+    # }
     
     # 총 소요 시간
     elapsed_time = time.time() - start_time

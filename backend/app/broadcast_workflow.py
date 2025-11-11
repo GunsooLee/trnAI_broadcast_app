@@ -19,8 +19,9 @@ from .external_apis import ExternalAPIManager
 
 from .dependencies import get_product_embedder
 from . import broadcast_recommender as br
-from .schemas import BroadcastResponse, RecommendedCategory, BroadcastRecommendation, ProductInfo, Reasoning, BusinessMetrics, ExternalProduct
+from .schemas import BroadcastResponse, RecommendedCategory, BroadcastRecommendation, ProductInfo, Reasoning, BusinessMetrics, ExternalProduct, LastBroadcastMetrics
 from .external_products_service import ExternalProductsService
+from .services.broadcast_history_service import BroadcastHistoryService
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,9 @@ class BroadcastWorkflow:
         
         # 외부 상품 서비스
         self.external_products_service = ExternalProductsService()
+        
+        # 방송 이력 서비스 (Netezza)
+        self.broadcast_history_service = BroadcastHistoryService()
     
     async def process_broadcast_recommendation(
         self, 
@@ -815,6 +819,17 @@ JSON 형식으로 응답해주세요."""),
         print(f"=== [DEBUG _format_response] context keys: {context.keys() if context else 'None'} ===")
         if context:
             print(f"=== [DEBUG _format_response] generated_keywords: {context.get('generated_keywords', [])} ===")
+        
+        # 1. 테이프 코드 목록 추출
+        tape_codes = [p["product"].get("tape_code") for p in ranked_products if p["product"].get("tape_code")]
+        
+        # 2. 최근 방송 실적 배치 조회 (Netezza)
+        broadcast_history_map = {}
+        if tape_codes:
+            logger.info(f" {len(tape_codes)}개 테이프의 최근 방송 실적 조회 중...")
+            broadcast_history_map = self.broadcast_history_service.get_latest_broadcasts_batch(tape_codes)
+            logger.info(f" {sum(1 for v in broadcast_history_map.values() if v is not None)}개 테이프의 실적 조회 성공")
+        
         recommendations = []
         
         for i, candidate in enumerate(ranked_products):
@@ -833,6 +848,18 @@ JSON 형식으로 응답해주세요."""),
             # 추천 타입 결정
             recommendation_type = candidate.get("source", "sales_prediction")
             
+            # 최근 방송 실적 조회
+            tape_code = product.get("tape_code")
+            last_broadcast_data = broadcast_history_map.get(tape_code) if tape_code else None
+            last_broadcast = None
+            
+            if last_broadcast_data:
+                try:
+                    last_broadcast = LastBroadcastMetrics(**last_broadcast_data)
+                    logger.debug(f"✅ 테이프 {tape_code}의 최근 방송 실적 추가")
+                except Exception as e:
+                    logger.warning(f"⚠️ 테이프 {tape_code}의 실적 데이터 파싱 실패: {e}")
+            
             recommendation = BroadcastRecommendation(
                 rank=i+1,
                 productInfo=ProductInfo(
@@ -849,9 +876,10 @@ JSON 형식으로 응답해주세요."""),
                     linkedCategories=[product.get("category_main", "Unknown")]
                 ),
                 businessMetrics=BusinessMetrics(
-                    pastAverageSales=f"{int(candidate['predicted_sales']/10000)}만원",  # 만원 단위
+                    aiPredictedSales=f"{round(candidate['predicted_sales']/10000, 1):,.1f}만원",  # AI 예측 매출 (XGBoost, 소수점 1자리)
                     marginRate=0.25,
-                    stockLevel="High"
+                    stockLevel="High",
+                    lastBroadcast=last_broadcast  # 최근 방송 실적 추가
                 ),
                 recommendationType=recommendation_type  # 추천 타입 추가
             )
@@ -1246,12 +1274,16 @@ JSON 형식으로 응답해주세요."""),
         time_slot = context["time_slot"]
         category_timeslot_avg = self._get_category_timeslot_avg(category_main, time_slot)
         
+        # 로그 스케일링 적용 (학습 시와 동일)
+        product_price = product.get("product_price", product.get("price", 100000))
+        product_price_log = np.log1p(product_price)
+        category_timeslot_avg_profit_log = np.log1p(category_timeslot_avg)
+        
         return {
-            # Numeric features
-            "product_price": product.get("product_price", product.get("price", 100000)),
-            "product_avg_profit": product_avg_profit,
+            # Numeric features (로그 스케일링 버전 사용)
             "product_broadcast_count": product.get("broadcast_count", 1),
-            "category_timeslot_avg_profit": category_timeslot_avg,
+            "category_timeslot_avg_profit_log": category_timeslot_avg_profit_log,
+            "product_price_log": product_price_log,
             "hour": broadcast_dt.hour,
             "temperature": context["weather"].get("temperature", 20),
             "precipitation": context["weather"].get("precipitation", 0),
@@ -1350,7 +1382,9 @@ JSON 형식으로 응답해주세요."""),
             logger.info(f"날씨: {context['weather'].get('weather', 'Clear')}, {context['weather'].get('temperature', 20)}°C")
             
             # XGBoost 파이프라인으로 예측 (전처리 포함)
-            predicted_sales = self.model.predict(product_data)[0]
+            predicted_sales_log = self.model.predict(product_data)[0]
+            # 로그 역변환 (학습 시 log1p 사용)
+            predicted_sales = np.expm1(predicted_sales_log)
             logger.info(f"=== XGBoost 예측 결과 ===")
             logger.info(f"예측 매출: {predicted_sales:,.0f}원 ({predicted_sales/100000000:.2f}억)")
             
@@ -1391,7 +1425,9 @@ JSON 형식으로 응답해주세요."""),
                 print(f"    - 카테고리: {features['product_lgroup']}")
             
             # XGBoost 배치 예측 (한 번에 처리)
-            predicted_sales_array = self.model.predict(batch_df)
+            predicted_sales_log = self.model.predict(batch_df)
+            # 로그 역변환 (학습 시 log1p 사용)
+            predicted_sales_array = np.expm1(predicted_sales_log)
             
             print(f"=== [배치 예측] 완료 ===")
             print(f"  평균: {predicted_sales_array.mean()/10000:.0f}만원")

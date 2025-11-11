@@ -2,7 +2,7 @@
 
 **실시간 트렌드 분석**과 **XGBoost 매출 예측**을 결합한 AI 방송 편성 추천 시스템
 
-> **최신 업데이트 (2025-10-17):** n8n 날씨 수집 워크플로우 추가, 프로젝트 구조 안정화
+> **최신 업데이트 (2025-11-10):** 네이버 베스트 상품 자동 크롤링 추가, 외부 상품 API 통합, AI 추천 근거 생성 고도화
 
 ## 📋 목차
 
@@ -14,6 +14,7 @@
 6. [API 명세](#-api-명세)
 7. [데이터베이스 구조](#-데이터베이스-구조)
 8. [n8n 워크플로우](#-n8n-워크플로우)
+9. [외부 상품 API](#-외부-상품-api)
 
 ---
 
@@ -48,27 +49,54 @@
 
 ## ⚡ 주요 기능
 
-### 1. 실시간 트렌드 기반 상품 추천
-- **RAG (Retrieval-Augmented Generation)**: 트렌드 키워드와 상품 임베딩의 벡터 유사도 검색
-- **Qdrant 벡터 DB**: 상품 정보를 1536차원 벡터로 변환하여 저장
-- **OpenAI Embedding**: text-embedding-3-small 모델 사용
+### 1. AI 하이브리드 추천 엔진 (RAG + XGBoost)
+- **RAG (검색증강생성)**:
+  - OpenAI 임베딩으로 상품 데이터를 768차원 벡터로 변환
+  - Qdrant 벡터 DB 기반 유사도 검색 (검색 속도 10배 향상)
+  - 벡터 유사도 기반 상품 매칭 및 큐레이션
 
-### 2. XGBoost 매출 예측
-- **배치 예측**: 최대 30개 상품을 1번에 예측 (10~20배 성능 향상)
-- **피처**: 카테고리, 시간대, 요일, 날씨, 공휴일 등
-- **타겟**: 매출총이익 (gross_profit)
+- **XGBoost 매출 예측**:
+  - 과거 방송 데이터 학습 (상품, 시간대, 카테고리, 날씨 변수)
+  - 편성 예정 상품의 예상 매출 산출
+  - 시간대별 최적 상품 추천 (오전/오후/저녁)
+  - 배치 예측으로 성능 최적화 (최대 30개 동시 처리)
 
-### 3. 동적 추천 근거 생성
-- **LangChain**: GPT-4를 활용한 자연어 추천 근거 자동 생성
-- **개인화**: 각 상품별로 구체적이고 설득력 있는 근거 제공
+- **하이브리드 추천 로직**:
+  ```
+  최종 점수 = (유사도 점수 × 가중치1) + (XGBoost 매출 예측 × 가중치2)
+  ```
+  - 가중치 조정 가능 (API 파라미터로 제어)
+  - 고유사도: 유사도 70% + 매출 30% (트렌드 반영)
+  - 저유사도: 유사도 30% + 매출 70% (안정적 매출)
+
+### 2. LangChain 기반 동적 추천 근거 생성
+- **GPT-4o-mini 모델**: 상품별 맞춤 추천 이유 자동 작성
+- **다양한 요소 반영**: 예측 매출, 시간대, 카테고리, 공휴일, 날씨/계절
+- **100자 이내 간결한 근거**: PD가 빠르게 이해할 수 있는 설득력 있는 문장
 - **예시**: "저녁 시간대에 최적화된 주방용품으로, 과거 패턴 분석 결과 8,500만원의 매출이 예상됩니다."
 
-### 4. 방송테이프 필터링
+### 3. 최근 방송 실적 조회 (Netezza 연동)
+- **실시간 실적 조회**: 방송테이프 코드로 최근 방송 실적 자동 조회
+- **배치 처리**: 여러 상품의 실적을 한 번에 조회 (성능 최적화)
+- **8개 필드 제공**:
+  - 방송시작일시, 주문수량, 매출총이익(실적)
+  - ONAIR매출총이익(효율), 환산가치값, 적용전환율
+  - 실질수수료, 혼합수수료
+- **AI 예측 vs 실제 비교**: PD가 AI 예측 매출과 실제 최근 방송 매출을 비교하여 의사결정
+
+### 4. 네이버 베스트 상품 자동 크롤링
+- **n8n 워크플로우**: 매일 새벽 2시 자동 실행
+- **TOP 20 상품 수집**: 순위, 가격, 리뷰, 배송 정보 등 20개 필드
+- **일별 이력 관리**: PostgreSQL에 날짜별 저장
+- **순위 변동 추적**: 전일 대비 상승/하락/신규 진입 표시
+- **외부 트렌드 참고**: 내부 AI 추천 + 외부 베스트 상품 동시 제공
+
+### 5. 방송테이프 필터링
 - **TAIPGMTAPE 테이블**: 방송테이프 제작 상태 관리
 - **production_status='ready'**: 즉시 방송 가능한 상품만 추천
 - **INNER JOIN**: 방송테이프가 없는 상품은 자동 제외
 
-### 5. 사용자 정의 가중치 시스템
+### 6. 사용자 정의 가중치 시스템
 API 요청 시 트렌드와 매출 예측의 비율을 조정할 수 있습니다:
 
 ```python
@@ -132,25 +160,31 @@ API 요청 시 트렌드와 매출 예측의 비율을 조정할 수 있습니�
 
 ## 🛠️ 기술 스택
 
-### Backend
-- **Python 3.11+**: AI/ML 생태계 표준
-- **FastAPI**: 고성능 비동기 API 서버
-- **LangChain**: RAG 및 LLM 워크플로우 관리
-- **XGBoost**: 매출 예측 ML 모델
-- **SQLAlchemy**: ORM 및 데이터베이스 연동
+| **구분** | **기술/도구** | **역할** | **주요 기능** |
+|---------|-------------|---------|-------------|
+| **AI/ML 엔진** | OpenAI API | 임베딩 생성 | 상품 데이터를 768차원 벡터로 변환 |
+| | Qdrant | 벡터 DB | 상품 임베딩 저장 및 유사도 검색 (10배 속도 향상) |
+| | XGBoost | 매출 예측 | 과거 방송 데이터 학습, 시간대별 매출 예측 |
+| | LangChain | 근거 생성 | GPT-4o-mini 기반 추천 이유 자동 작성 (100자 이내) |
+| **백엔드** | FastAPI | API 서버 | 비동기 처리 기반 추천 엔진 (3초 이내 응답) |
+| | PostgreSQL | 데이터베이스 | 방송/매출 이력, 외부 상품 정보 관리 |
+| | Python 3.11 | 개발 언어 | 비동기 처리, 데이터 분석 |
+| **프론트엔드** | Next.js | 웹 프레임워크 | 실시간 추천 결과 시각화 |
+| | React | UI 라이브러리 | 사용자 인터페이스 구현 |
+| | TypeScript | 개발 언어 | 타입 안정성 보장 |
+| **자동화** | n8n | 워크플로우 엔진 | 네이버 베스트 상품 자동 크롤링 (매일 새벽 2시) |
+| **인프라** | Docker | 컨테이너화 | 각 서비스 독립 운영 및 배포 |
+| | Docker Compose | 오케스트레이션 | 멀티 컨테이너 통합 관리 |
 
-### Database
-- **PostgreSQL 16**: 정형 데이터 저장 (상품, 매출, 방송)
-- **Qdrant**: 벡터 검색 엔진 (상품 임베딩)
+### 시스템 아키텍처
 
-### AI/ML
-- **OpenAI API**: text-embedding-3-small, GPT-4
-- **XGBoost**: Gradient Boosting 매출 예측 모델
-- **scikit-learn**: 데이터 전처리 및 평가
-
-### DevOps
-- **Docker & Docker Compose**: 컨테이너 기반 배포
-- **n8n**: 워크플로우 자동화 (날씨 수집)
+| **컴포넌트** | **포트** | **용도** |
+|------------|---------|----------|
+| FastAPI Backend | 8501 | 추천 API 서버 |
+| Next.js Frontend | 3001 | 사용자 인터페이스 |
+| Qdrant Vector DB | 6333 | 벡터 검색 엔진 |
+| PostgreSQL | 5432 | 데이터 저장소 |
+| n8n Workflow | 5678 | 자동화 워크플로우 |
 
 ---
 
@@ -285,20 +319,73 @@ curl -X POST http://localhost:8501/api/v1/broadcast/recommendations \
         "matchedKeywords": ["요리", "저녁식사"]
       },
       "businessMetrics": {
-        "pastAverageSales": "8,500만원",
+        "aiPredictedSales": "8,948.1만원",  // AI 예측 매출 (XGBoost, 소수점 1자리)
+        "predictionConfidence": "낮음 (과대예측)",  // 예측 신뢰도
         "marginRate": 0.35,
-        "stockLevel": "High"
+        "stockLevel": "High",
+        "lastBroadcast": {  // 최근 방송 실적 (Netezza 조회)
+          "broadcastStartTime": "2025-11-10 17:33:07.000000",
+          "orderQuantity": 287,
+          "totalProfit": 16466355.0,
+          "profitEfficiency": 17.3,
+          "conversionWorth": 0.95337,
+          "conversionRate": 88.19,
+          "realFee": 0.0,
+          "mixFee": 7500000.0
+        }
       },
       "recommendationType": "trend_match"
+    }
+  ],
+  "externalProducts": [  // 네이버 베스트 TOP 20
+    {
+      "product_id": "86321126899",
+      "name": "절임배추 강원도 고랭지 김장배추 20kg",
+      "rank": 1,
+      "rank_change": null,
+      "rank_change_text": "신규",
+      "sale_price": 59900,
+      "discounted_price": 39900,
+      "discount_ratio": 33,
+      "image_url": "https://shopping-phinf.pstatic.net/...",
+      "is_delivery_free": true,
+      "cumulation_sale_count": 99999,
+      "review_count": 99999,
+      "review_score": 4.9,
+      "mall_name": "휘파람농원"
     }
   ]
 }
 ```
 
 #### 응답 필드 설명
-- `recommendationType`: 추천 타입
-  - `"trend_match"`: 트렌드 연관성 높음 (유사도 ≥ 0.7)
-  - `"sales_prediction"`: 매출 예측 기반 (유사도 < 0.7)
+
+**recommendationType**: 추천 타입
+- `"trend_match"`: 트렌드 연관성 높음 (유사도 ≥ 0.7)
+- `"sales_prediction"`: 매출 예측 기반 (유사도 < 0.7)
+
+**aiPredictedSales**: AI 예측 매출 (XGBoost 모델)
+- 소수점 1자리까지 표시 (예: "8,948.1만원")
+- 만원 단위로 반올림
+
+**predictionConfidence**: 예측 신뢰도 (실제 데이터와 비교)
+- "높음": AI 예측과 실제 매출이 비슷함 (0.7~1.5배)
+- "보통 (다소 높음)": AI가 다소 높게 예측 (1.5~3.0배)
+- "낮음 (과대예측)": AI가 크게 과대예측 (3.0배 이상)
+- "보통 (다소 낮음)": AI가 다소 낮게 예측 (0.5~0.7배)
+- "낮음 (과소예측)": AI가 크게 과소예측 (0.5배 미만)
+
+**lastBroadcast**: 최근 방송 실적 (Netezza 조회)
+- `broadcastStartTime`: 방송시작일시
+- `orderQuantity`: 주문수량
+- `totalProfit`: 매출총이익(실적)
+- `profitEfficiency`: ONAIR매출총이익(효율)
+- `conversionWorth`: 환산가치값(분리송출)
+- `conversionRate`: 적용전환율
+- `realFee`: 실질수수료
+- `mixFee`: 혼합수수료
+
+**실제 API 응답 예시**: [`docs/API_RESPONSE_EXAMPLE.json`](docs/API_RESPONSE_EXAMPLE.json) 참고
 
 ---
 
@@ -370,7 +457,39 @@ CREATE TABLE broadcast_training_dataset (
 
 ## 🔄 n8n 워크플로우
 
-### 날씨 수집 워크플로우 (3시간마다)
+### 1. 네이버 베스트 상품 크롤링 워크플로우 (매일 새벽 2시)
+
+**파일:** `n8n_workflows/naver_shopping_crawler_final.json`
+
+**워크플로우 구조:**
+```
+[Daily 2 AM Trigger]
+    ↓
+[Call Naver Best API (TOP 20)]
+    ↓
+[Parse Product Data]
+    ↓
+[Generate SQL Queries]
+    ↓
+[UPSERT to PostgreSQL (external_products)]
+    ↓
+[Log Success]
+```
+
+**수집 데이터 (20개 필드):**
+- 기본 정보: product_id, name, sale_price, discounted_price, discount_ratio
+- 이미지/링크: image_url, landing_url, mobile_landing_url
+- 배송 정보: is_delivery_free, delivery_fee, is_today_dispatch
+- 판매 정보: is_sold_out, cumulation_sale_count, rank_order
+- 리뷰 정보: review_count, review_score, mall_name
+- 메타 정보: channel_no, landing_service, collected_at, collected_date
+
+**특징:**
+- **일별 이력 관리**: product_id + collected_date 복합 유니크 키
+- **UPSERT 로직**: 중복 시 자동 업데이트
+- **순위 변동 추적**: 전일 대비 상승/하락 계산 가능
+
+### 2. 날씨 수집 워크플로우 (3시간마다)
 
 **파일:** `n8n_workflows/weather_collection_workflow.json`
 
@@ -387,30 +506,83 @@ CREATE TABLE broadcast_training_dataset (
 [Log Success]
 ```
 
-**설정 방법:**
+**수집 데이터:**
+- 위치: Seoul, KR
+- 온도 (°C)
+- 날씨 상태 (Clear, Rain, Snow 등)
+- 강수량 (mm)
+
+### n8n 워크플로우 설정 방법
 
 1. **n8n 접속**: http://localhost:5678
 2. **계정 생성** (최초 1회)
 3. **워크플로우 Import**:
    - Workflows → Import from File
-   - 파일 선택: `n8n_workflows/weather_collection_workflow.json`
+   - 파일 선택: `n8n_workflows/naver_shopping_crawler_final.json` 또는 `weather_collection_workflow.json`
 4. **Credentials 설정**:
-   - **OpenWeatherMap API**:
-     - Type: HTTP Query Auth
-     - Parameter Name: `appid`
-     - Parameter Value: `YOUR_API_KEY`
    - **PostgreSQL**:
      - Host: `postgres`
      - Database: `TRNAI_DB`
      - User: `TRN_AI`
      - Password: `TRN_AI_PASSWORD`
      - Port: `5432`
+   - **OpenWeatherMap API** (날씨 워크플로우만):
+     - Type: HTTP Query Auth
+     - Parameter Name: `appid`
+     - Parameter Value: `YOUR_API_KEY`
 5. **워크플로우 활성화**: Active 토글 ON
 
-**수집 데이터:**
-- 위치: Seoul, KR
-- 온도 (°C)
-- 날씨 상태 (Clear, Rain, Snow 등)
-- 강수량 (mm)
+---
+
+## 🛍️ 외부 상품 API
+
+### GET `/api/v1/broadcast/recommendations`
+
+방송 추천 API 응답에 **외부 상품 정보**가 포함됩니다.
+
+#### Response 구조
+```json
+{
+  "requestTime": "2025-11-10T10:00:00+09:00",
+  "recommendedCategories": [...],
+  "recommendations": [...],
+  "externalProducts": [
+    {
+      "productId": "12345678",
+      "name": "[브랜드] 인기 상품명",
+      "salePrice": 50000,
+      "discountedPrice": 35000,
+      "discountRatio": 30,
+      "imageUrl": "https://...",
+      "landingUrl": "https://...",
+      "isDeliveryFree": true,
+      "deliveryFee": 0,
+      "isTodayDispatch": true,
+      "isSoldOut": false,
+      "cumulationSaleCount": 15234,
+      "rankOrder": 1,
+      "reviewCount": 1234,
+      "reviewScore": 4.8,
+      "mallName": "공식 스토어",
+      "collectedAt": "2025-11-10T02:00:00+09:00"
+    }
+  ]
+}
+```
+
+#### 외부 상품 활용 방법
+
+1. **시장 트렌드 파악**: 네이버 베스트 TOP 20 상품 확인
+2. **가격 비교**: 내부 상품과 외부 베스트 상품 가격 비교
+3. **리뷰 분석**: 높은 리뷰 점수 상품 참고
+4. **배송 조건**: 무료배송, 당일발송 여부 확인
+5. **판매량 추이**: 누적 판매량으로 인기도 파악
+
+#### 상세 문서
+
+- **API 명세**: `docs/EXTERNAL_PRODUCTS_API.md`
+- **프론트엔드 가이드**: `docs/EXTERNAL_PRODUCTS_FRONTEND_GUIDE.md`
+- **PD 활용 가이드**: `docs/EXTERNAL_PRODUCTS_PD_GUIDE.md`
+- **통합 README**: `docs/EXTERNAL_PRODUCTS_README.md`
 
 ---
