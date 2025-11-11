@@ -71,7 +71,7 @@ interface Reasoning {
 }
 
 interface BusinessMetrics {
-  pastAverageSales: string;  // AI 예측 매출 (예: "8948만원")
+  aiPredictedSales: string;  // AI 예측 매출 (예: "8,948.1만원")
   marginRate: number;
   stockLevel: string;        // "High", "Medium", "Low"
   lastBroadcast?: LastBroadcastMetrics;  // 최근 방송 실적 (Netezza 조회)
@@ -155,7 +155,7 @@ export const RecommendationCard: React.FC<RecommendationCardProps> = ({ recommen
       <div className="business-metrics">
         <div className="metric">
           <span className="label">AI 예측 매출</span>
-          <span className="value">{businessMetrics.pastAverageSales}</span>
+          <span className="value">{businessMetrics.aiPredictedSales}</span>
         </div>
         
         {/* 최근 방송 실적 */}
@@ -309,7 +309,7 @@ const fetchRecommendations = async () => {
 ### 1. AI 예측 vs 실제 매출 비교
 ```tsx
 const ComparisonView = ({ metrics }: { metrics: BusinessMetrics }) => {
-  const aiPrediction = parseInt(metrics.pastAverageSales.replace(/[^0-9]/g, ''));
+  const aiPrediction = parseFloat(metrics.aiPredictedSales.replace(/[^0-9.]/g, ''));
   const actualSales = metrics.lastBroadcast 
     ? metrics.lastBroadcast.totalProfit / 10000 
     : null;
@@ -318,7 +318,7 @@ const ComparisonView = ({ metrics }: { metrics: BusinessMetrics }) => {
     <div className="comparison">
       <div className="ai-prediction">
         <span>AI 예측</span>
-        <strong>{metrics.pastAverageSales}</strong>
+        <strong>{metrics.aiPredictedSales}</strong>
       </div>
       {actualSales && (
         <div className="actual-sales">
