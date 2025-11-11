@@ -109,8 +109,6 @@ def build_pipeline() -> Pipeline:
     """Scikit-learn 파이프라인을 구축합니다."""
     print("모델 파이프라인 생성...")
     numeric_features = [
-        "product_broadcast_count",
-        "category_timeslot_avg_profit_log",  # 로그 스케일링 버전 사용
         "product_price_log",  # 로그 스케일링 버전 사용
         "hour",
         "temperature",
@@ -141,13 +139,13 @@ def build_pipeline() -> Pipeline:
     model = XGBRegressor(
         n_estimators=500,
         learning_rate=0.05,
-        max_depth=4,  # 6 → 4 (과적합 방지)
-        min_child_weight=5,  # 1 → 5 (과적합 방지)
-        gamma=0.2,  # 분할 최소 손실 감소
+        max_depth=4,
+        min_child_weight=5,
+        gamma=0.2,
         subsample=0.8,
         colsample_bytree=0.8,
-        reg_alpha=0.5,  # L1 정규화
-        reg_lambda=2.0,  # L2 정규화 강화
+        reg_alpha=0.5,
+        reg_lambda=2.0,
         random_state=42,
     )
 

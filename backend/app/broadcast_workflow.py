@@ -9,6 +9,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 import pandas as pd
+import numpy as np
 from sqlalchemy import create_engine, text
 import os
 
@@ -31,6 +32,10 @@ class BroadcastWorkflow:
     def __init__(self, model):
         self.model = model  # XGBoost 모델
         self.product_embedder = get_product_embedder()
+        
+        # AI 트렌드 캐시 (시간대별)
+        self._ai_trends_cache = {}
+        self._cache_ttl = 3600  # 1시간 (초)
         
         # LangChain LLM 초기화
         self.llm = ChatOpenAI(
@@ -66,6 +71,9 @@ class BroadcastWorkflow:
                 - 예: trend_weight=0.5, sales_weight=0.5 → 균형 (50:50)
         """
         
+        import time
+        workflow_start = time.time()
+        
         print("=== [DEBUG] process_broadcast_recommendation 시작 ===")
         request_time = datetime.now().isoformat()
         logger.info(f"방송 추천 워크플로우 시작: {broadcast_time}")
@@ -73,19 +81,24 @@ class BroadcastWorkflow:
         
         try:
             # 1단계: 컨텍스트 수집 및 통합 키워드 생성
+            step_start = time.time()
             print("=== [DEBUG] _collect_context_and_keywords 호출 ===")
             context = await self._collect_context_and_keywords(broadcast_time)
+            print(f"⏱️  [1단계] 컨텍스트 수집: {time.time() - step_start:.2f}초")
             print(f"=== [DEBUG] 통합 키워드: {len(context.get('unified_keywords', []))}개 ===")
             
             # 2. 통합 검색 실행 (1회)
+            step_start = time.time()
             print("=== [DEBUG] _execute_unified_search 호출 ===")
             search_result = await self._execute_unified_search(context, context.get("unified_keywords", []))
+            print(f"⏱️  [2단계] 통합 검색: {time.time() - step_start:.2f}초")
             print(f"=== [DEBUG] 검색 완료 - 직접매칭: {len(search_result['direct_products'])}개, 카테고리: {len(search_result['category_groups'])}개 ===")
             
             # 검색에 사용된 키워드를 context에 저장
             context["search_keywords"] = search_result.get("search_keywords", [])
             
             # 3. 후보군 생성 (가중치 기반 비율 조정)
+            step_start = time.time()
             print("=== [DEBUG] _generate_unified_candidates 호출 ===")
             max_trend = max(1, int(recommendation_count * trend_weight))  # 최소 1개
             max_sales = recommendation_count - max_trend + 3  # 여유분 추가
@@ -97,18 +110,26 @@ class BroadcastWorkflow:
                 max_trend_match=max_trend,
                 max_sales_prediction=max_sales
             )
+            print(f"⏱️  [3단계] 후보군 생성: {time.time() - step_start:.2f}초")
             print(f"=== [DEBUG] 후보군 생성 완료: {len(candidate_products)}개 ===")
             
             # 4. 최종 랭킹 계산
+            step_start = time.time()
             ranked_products = await self._rank_final_candidates(
                 candidate_products,
                 category_scores=category_scores,
                 context=context
             )
+            print(f"⏱️  [4단계] 최종 랭킹: {time.time() - step_start:.2f}초")
             
             # 5. API 응답 생성
+            step_start = time.time()
             response = await self._format_response(ranked_products[:recommendation_count], top_categories[:3], context)
             response.requestTime = request_time
+            print(f"⏱️  [5단계] 응답 생성: {time.time() - step_start:.2f}초")
+            
+            total_time = time.time() - workflow_start
+            print(f"⏱️  ===== 워크플로우 총 시간: {total_time:.2f}초 =====")
             
             logger.info(f"방송 추천 완료: {len(ranked_products)}개 추천")
             return response
@@ -152,25 +173,49 @@ class BroadcastWorkflow:
         context["time_slot"] = time_slot
         context["day_type"] = day_type
 
-        # AI 기반 트렌드 생성 (LLM API)
-        api_manager = ExternalAPIManager()
-        if api_manager.llm_trend_api:
-            try:
-                # 방송 시간과 날씨 정보를 전달하여 맥락 기반 트렌드 생성
-                llm_trends = await api_manager.llm_trend_api.get_trending_searches(
-                    hour=broadcast_dt.hour,
-                    weather_info=weather_info
-                )
-                # AI가 생성한 트렌드 키워드 추가
-                context["ai_trends"] = [t["keyword"] for t in llm_trends]
-                logger.info(f"AI 트렌드 생성 완료 ({broadcast_dt.hour}시, {weather_info.get('weather', 'N/A')}): {len(llm_trends)}개 키워드")
-                logger.info(f"AI 트렌드: {context['ai_trends'][:5]}...")  # 상위 5개만 로그
-            except Exception as e:
-                logger.error(f"AI 트렌드 생성 실패: {e}")
-                context["ai_trends"] = []
+        # AI 기반 트렌드 생성 (LLM API) - 캐싱 적용
+        cache_key = f"{broadcast_dt.hour}_{weather_info.get('weather', 'Clear')}"
+        current_time = datetime.now().timestamp()
+        
+        # 캐시 확인
+        if cache_key in self._ai_trends_cache:
+            cached_data, cached_time = self._ai_trends_cache[cache_key]
+            if current_time - cached_time < self._cache_ttl:
+                context["ai_trends"] = cached_data
+                logger.info(f"✅ AI 트렌드 캐시 히트 ({cache_key}): {len(cached_data)}개 키워드")
+            else:
+                # 캐시 만료
+                del self._ai_trends_cache[cache_key]
+                logger.info(f"⏰ AI 트렌드 캐시 만료 ({cache_key})")
+                context["ai_trends"] = None
         else:
-            logger.warning("OpenAI API 키 없음 - AI 트렌드 생성 건너뜀")
-            context["ai_trends"] = []
+            context["ai_trends"] = None
+        
+        # 캐시 미스 시 API 호출
+        if context["ai_trends"] is None:
+            api_manager = ExternalAPIManager()
+            if api_manager.llm_trend_api:
+                try:
+                    import time
+                    api_start = time.time()
+                    # 방송 시간과 날씨 정보를 전달하여 맥락 기반 트렌드 생성
+                    llm_trends = await api_manager.llm_trend_api.get_trending_searches(
+                        hour=broadcast_dt.hour,
+                        weather_info=weather_info
+                    )
+                    api_time = time.time() - api_start
+                    # AI가 생성한 트렌드 키워드 추가
+                    context["ai_trends"] = [t["keyword"] for t in llm_trends]
+                    # 캐시 저장
+                    self._ai_trends_cache[cache_key] = (context["ai_trends"], current_time)
+                    logger.info(f"🔥 AI 트렌드 생성 완료 ({broadcast_dt.hour}시, {weather_info.get('weather', 'N/A')}): {len(llm_trends)}개 키워드 (소요: {api_time:.2f}초)")
+                    logger.info(f"AI 트렌드: {context['ai_trends'][:5]}...")  # 상위 5개만 로그
+                except Exception as e:
+                    logger.error(f"AI 트렌드 생성 실패: {e}")
+                    context["ai_trends"] = []
+            else:
+                logger.warning("OpenAI API 키 없음 - AI 트렌드 생성 건너뜀")
+                context["ai_trends"] = []
 
         # 컨텍스트 로그 출력
         logger.info(f"컨텍스트 수집 완료 - 계절: {context['season']}, 시간대: {time_slot}, 요일: {day_type}")
@@ -1263,26 +1308,15 @@ JSON 형식으로 응답해주세요."""),
         
         print(f"=== [_prepare_features_for_product] 호출됨: {product.get('product_name', 'Unknown')[:30]} ===")
         
-        # 상품별 과거 평균 매출 조회 (DB에서)
-        product_code = product.get("product_code", product.get("productId"))
-        category_main = product.get("category_main", product.get("category", "Unknown"))
-        print(f"  product_code: {product_code}, category: {category_main}")
-        product_avg_profit = self._get_product_avg_profit(product_code, category_main)
-        
-        # 카테고리-시간대별 평균 매출 조회
-        category_main = product.get("category_main", product.get("category", "Unknown"))
-        time_slot = context["time_slot"]
-        category_timeslot_avg = self._get_category_timeslot_avg(category_main, time_slot)
-        
         # 로그 스케일링 적용 (학습 시와 동일)
         product_price = product.get("product_price", product.get("price", 100000))
         product_price_log = np.log1p(product_price)
-        category_timeslot_avg_profit_log = np.log1p(category_timeslot_avg)
+        
+        category_main = product.get("category_main", product.get("category", "Unknown"))
+        time_slot = context["time_slot"]
         
         return {
-            # Numeric features (로그 스케일링 버전 사용)
-            "product_broadcast_count": product.get("broadcast_count", 1),
-            "category_timeslot_avg_profit_log": category_timeslot_avg_profit_log,
+            # Numeric features (단순화)
             "product_price_log": product_price_log,
             "hour": broadcast_dt.hour,
             "temperature": context["weather"].get("temperature", 20),
@@ -1303,66 +1337,6 @@ JSON 형식으로 응답해주세요."""),
             "is_weekend": 1 if broadcast_dt.weekday() >= 5 else 0,
             "is_holiday": 0
         }
-    
-    def _get_product_avg_profit(self, product_code: str, category: str = None) -> float:
-        """상품별 과거 평균 매출 조회 (없으면 카테고리 평균 사용)"""
-        try:
-            # 1. 상품별 평균 조회
-            query = text(f"""
-            SELECT COALESCE(AVG(gross_profit), 0) as avg_profit, COUNT(*) as cnt
-            FROM broadcast_training_dataset
-            WHERE product_code = '{product_code}'
-            """)
-            with self.engine.connect() as conn:
-                result = conn.execute(query).fetchone()
-            avg_profit = float(result[0]) if result and result[0] else 0
-            count = int(result[1]) if result else 0
-            
-            if count > 0:
-                print(f"✅ 상품 '{product_code}': 평균 {avg_profit/10000:.0f}만원 ({count}건)")
-                return avg_profit
-            
-            # 2. 과거 데이터 없으면 카테고리 평균 사용
-            if category:
-                query = text(f"""
-                SELECT COALESCE(AVG(gross_profit), 0) as avg_profit, COUNT(*) as cnt
-                FROM broadcast_training_dataset
-                WHERE category_main = '{category}'
-                """)
-                with self.engine.connect() as conn:
-                    result = conn.execute(query).fetchone()
-                category_avg = float(result[0]) if result and result[0] else 100000000  # 기본 1억
-                cat_count = int(result[1]) if result else 0
-                print(f"📊 상품 '{product_code}': 과거 데이터 없음 → 카테고리 '{category}' 평균 {category_avg/10000:.0f}만원 사용 ({cat_count}건)")
-                return category_avg
-            
-            # 3. 카테고리도 없으면 전체 평균
-            query = text("SELECT AVG(gross_profit) FROM broadcast_training_dataset")
-            with self.engine.connect() as conn:
-                result = conn.execute(query).fetchone()
-            overall_avg = float(result[0]) if result and result[0] else 100000000
-            print(f"📊 상품 '{product_code}': 전체 평균 {overall_avg/10000:.0f}만원 사용")
-            return overall_avg
-            
-        except Exception as e:
-            logger.warning(f"상품 평균 매출 조회 실패 ({product_code}): {e}")
-            return 100000000  # 기본 1억
-    
-    def _get_category_timeslot_avg(self, category: str, time_slot: str) -> float:
-        """카테고리-시간대별 평균 매출 조회"""
-        try:
-            query = text(f"""
-            SELECT COALESCE(AVG(gross_profit), 0) as avg_profit
-            FROM broadcast_training_dataset
-            WHERE category_main = '{category}'
-              AND time_slot = '{time_slot}'
-            """)
-            with self.engine.connect() as conn:
-                result = conn.execute(query).fetchone()
-            return float(result[0]) if result and result[0] else 0
-        except Exception as e:
-            logger.warning(f"카테고리-시간대 평균 조회 실패 ({category}, {time_slot}): {e}")
-            return 0
     
     async def _predict_product_sales(self, product: Dict[str, Any], context: Dict[str, Any]) -> float:
         """개별 상품 XGBoost 매출 예측"""
@@ -1419,9 +1393,8 @@ JSON 형식으로 응답해주세요."""),
             print(f"=== [입력 피처 샘플] ===")
             for i, (product, features) in enumerate(zip(products[:3], features_list[:3])):
                 print(f"  상품 {i+1}: {product.get('product_name', '')[:30]}")
-                print(f"    - product_avg_profit: {features['product_avg_profit']:,.0f}원")
-                print(f"    - category_timeslot_avg: {features['category_timeslot_avg_profit']:,.0f}원")
-                print(f"    - product_price: {features['product_price']:,.0f}원")
+                print(f"    - product_price_log: {features['product_price_log']:.2f}")
+                print(f"    - hour: {features['hour']}")
                 print(f"    - 카테고리: {features['product_lgroup']}")
             
             # XGBoost 배치 예측 (한 번에 처리)

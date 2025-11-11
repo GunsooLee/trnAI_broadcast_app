@@ -320,7 +320,6 @@ curl -X POST http://localhost:8501/api/v1/broadcast/recommendations \
       },
       "businessMetrics": {
         "aiPredictedSales": "8,948.1만원",  // AI 예측 매출 (XGBoost, 소수점 1자리)
-        "predictionConfidence": "낮음 (과대예측)",  // 예측 신뢰도
         "marginRate": 0.35,
         "stockLevel": "High",
         "lastBroadcast": {  // 최근 방송 실적 (Netezza 조회)
@@ -367,13 +366,7 @@ curl -X POST http://localhost:8501/api/v1/broadcast/recommendations \
 **aiPredictedSales**: AI 예측 매출 (XGBoost 모델)
 - 소수점 1자리까지 표시 (예: "8,948.1만원")
 - 만원 단위로 반올림
-
-**predictionConfidence**: 예측 신뢰도 (실제 데이터와 비교)
-- "높음": AI 예측과 실제 매출이 비슷함 (0.7~1.5배)
-- "보통 (다소 높음)": AI가 다소 높게 예측 (1.5~3.0배)
-- "낮음 (과대예측)": AI가 크게 과대예측 (3.0배 이상)
-- "보통 (다소 낮음)": AI가 다소 낮게 예측 (0.5~0.7배)
-- "낮음 (과소예측)": AI가 크게 과소예측 (0.5배 미만)
+- 로그 변환 기반 학습으로 과대예측 방지
 
 **lastBroadcast**: 최근 방송 실적 (Netezza 조회)
 - `broadcastStartTime`: 방송시작일시

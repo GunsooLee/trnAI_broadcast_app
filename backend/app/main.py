@@ -49,6 +49,9 @@ async def broadcast_recommendations(payload: BroadcastRequest, workflow: Broadca
     실시간 트렌드 분석 + XGBoost 매출 예측 + 방송테이프 필터링을 통한
     최적의 홈쇼핑 방송 편성을 추천합니다.
     """
+    import time
+    start_time = time.time()
+    
     print(f"--- API Endpoint /api/v1/broadcast/recommendations received a request: {payload.broadcastTime} ---")
     print(f"--- 가중치 설정: 트렌드 {payload.trendWeight:.0%} / 매출 {payload.salesWeight:.0%} ---")
     try:
@@ -58,6 +61,9 @@ async def broadcast_recommendations(payload: BroadcastRequest, workflow: Broadca
             payload.trendWeight,
             payload.salesWeight
         )
+        
+        elapsed_time = time.time() - start_time
+        print(f"⏱️  총 응답 시간: {elapsed_time:.2f}초")
 
         # 빈 추천 결과 체크
         has_recommendations = response_data.recommendations and len(response_data.recommendations) > 0
