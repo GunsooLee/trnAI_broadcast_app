@@ -20,7 +20,7 @@ from .external_apis import ExternalAPIManager
 
 from .dependencies import get_product_embedder
 from . import broadcast_recommender as br
-from .schemas import BroadcastResponse, RecommendedCategory, BroadcastRecommendation, ProductInfo, Reasoning, BusinessMetrics, ExternalProduct, LastBroadcastMetrics
+from .schemas import BroadcastResponse, BroadcastRecommendation, ProductInfo, Reasoning, BusinessMetrics, NaverProduct, LastBroadcastMetrics
 from .external_products_service import ExternalProductsService
 from .services.broadcast_history_service import BroadcastHistoryService
 
@@ -58,7 +58,7 @@ class BroadcastWorkflow:
         broadcast_time: str, 
         recommendation_count: int = 5,
         trend_weight: float = 0.3,  # 트렌드 가중치 (0.3 = 30%)
-        sales_weight: float = 0.7   # 매출 예측 가중치 (0.7 = 70%)
+        selling_weight: float = 0.7   # 매출 예측 가중치 (0.7 = 70%)
     ) -> BroadcastResponse:
         """메인 워크플로우: 방송 시간 기반 추천
         
@@ -66,9 +66,9 @@ class BroadcastWorkflow:
             broadcast_time: 방송 시간
             recommendation_count: 추천 개수
             trend_weight: 트렌드 가중치 (0.0~1.0, 기본 0.3)
-            sales_weight: 매출 예측 가중치 (0.0~1.0, 기본 0.7)
-                - 예: trend_weight=0.3, sales_weight=0.7 → 트렌드 30%, 매출 70%
-                - 예: trend_weight=0.5, sales_weight=0.5 → 균형 (50:50)
+            selling_weight: 매출 예측 가중치 (0.0~1.0, 기본 0.7)
+                - 예: trend_weight=0.3, selling_weight=0.7 → 트렌드 30%, 매출 70%
+                - 예: trend_weight=0.5, selling_weight=0.5 → 균형 (50:50)
         """
         
         import time
@@ -102,9 +102,9 @@ class BroadcastWorkflow:
             print("=== [DEBUG] _generate_unified_candidates 호출 ===")
             max_trend = max(1, int(recommendation_count * trend_weight))  # 최소 1개
             max_sales = recommendation_count - max_trend + 3  # 여유분 추가
-            print(f"=== [DEBUG] 가중치 적용: 트렌드 {max_trend}개 ({trend_weight:.0%}), 매출 {max_sales}개 ({sales_weight:.0%}) ===")
+            print(f"=== [DEBUG] 가중치 적용: 트렌드 {max_trend}개 ({trend_weight:.0%}), 매출 {max_sales}개 ({selling_weight:.0%}) ===")
             
-            candidate_products, category_scores, top_categories = await self._generate_unified_candidates(
+            candidate_products, category_scores = await self._generate_unified_candidates(
                 search_result,
                 context,
                 max_trend_match=max_trend,
@@ -124,7 +124,7 @@ class BroadcastWorkflow:
             
             # 5. API 응답 생성
             step_start = time.time()
-            response = await self._format_response(ranked_products[:recommendation_count], top_categories[:3], context)
+            response = await self._format_response(ranked_products[:recommendation_count], context)
             response.requestTime = request_time
             print(f"⏱️  [5단계] 응답 생성: {time.time() - step_start:.2f}초")
             
@@ -731,49 +731,22 @@ JSON 형식으로 응답해주세요."""),
         
         print(f"=== [DEBUG] 총 {len(candidates)}개 후보 생성 완료, 점수순 정렬됨 ===")
         
-        # 5. 상위 카테고리 추출 (API 응답용)
+        # 5. 카테고리별 점수 계산 (내부 사용용)
         category_scores = {}
-        top_categories = []
-        
-        # 카테고리별 평균 점수 계산 (category_main 사용)
         category_sales = {}
         for candidate in candidates:
             category = candidate["product"].get("category_main", "기타")
-            # "기타" 카테고리는 제외
             if category == "기타" or not category:
                 continue
             if category not in category_sales:
                 category_sales[category] = []
             category_sales[category].append(candidate["predicted_sales"])
         
-        # 상위 3개 카테고리
-        sorted_categories = sorted(
-            category_sales.items(),
-            key=lambda x: sum(x[1]) / len(x[1]),  # 평균 매출
-            reverse=True
-        )[:3]
-        
-        for i, (category, sales_list) in enumerate(sorted_categories):
+        for category, sales_list in category_sales.items():
             avg_sales = sum(sales_list) / len(sales_list)
-            product_count = len(sales_list)
             category_scores[category] = {"predicted_sales": avg_sales}
-            
-            # 동적 근거 생성 (순위 기반)
-            if i == 0:
-                reason = f"{context['time_slot']} 시간대 최고 매출 예상 ({product_count}개 상품)"
-            elif i == 1:
-                reason = f"{context['time_slot']} 시간대 2순위 카테고리 ({product_count}개 상품)"
-            else:
-                reason = f"{context['time_slot']} 시간대 유망 카테고리 ({product_count}개 상품)"
-            
-            top_categories.append(RecommendedCategory(
-                rank=i+1,
-                name=category,
-                reason=reason,
-                predictedSales=f"{int(avg_sales/10000)}만원"
-            ))
         
-        return candidates, category_scores, top_categories
+        return candidates, category_scores
     
     async def _predict_categories_with_xgboost(
         self, 
@@ -859,7 +832,7 @@ JSON 형식으로 응답해주세요."""),
         else:
             return 0.2
     
-    async def _format_response(self, ranked_products: List[Dict[str, Any]], top_categories: List[RecommendedCategory], context: Dict[str, Any] = None) -> BroadcastResponse:
+    async def _format_response(self, ranked_products: List[Dict[str, Any]], context: Dict[str, Any] = None) -> BroadcastResponse:
         """API 응답 생성 (비동기)"""
         print(f"=== [DEBUG _format_response] context keys: {context.keys() if context else 'None'} ===")
         if context:
@@ -890,9 +863,6 @@ JSON 형식으로 응답해주세요."""),
                 context or {"time_slot": "저녁", "weather": {"weather": "폭염"}}
             )
             
-            # 추천 타입 결정
-            recommendation_type = candidate.get("source", "sales_prediction")
-            
             # 최근 방송 실적 조회
             tape_code = product.get("tape_code")
             last_broadcast_data = broadcast_history_map.get(tape_code) if tape_code else None
@@ -917,30 +887,29 @@ JSON 형식으로 응답해주세요."""),
                     tapeName=product.get("tape_name")
                 ),
                 reasoning=Reasoning(
-                    summary=reasoning_summary,
-                    linkedCategories=[product.get("category_main", "Unknown")]
+                    summary=reasoning_summary
                 ),
                 businessMetrics=BusinessMetrics(
                     aiPredictedSales=f"{round(candidate['predicted_sales']/10000, 1):,.1f}만원",  # AI 예측 매출 (XGBoost, 소수점 1자리)
-                    marginRate=0.25,
-                    stockLevel="High",
                     lastBroadcast=last_broadcast  # 최근 방송 실적 추가
-                ),
-                recommendationType=recommendation_type  # 추천 타입 추가
+                )
             )
             recommendations.append(recommendation)
         
-        # 외부 상품 (네이버 베스트) 조회 - 입력 파라미터와 무관하게 항상 TOP 20
-        external_products_data = self.external_products_service.get_latest_best_products(limit=20)
-        external_products = [ExternalProduct(**product) for product in external_products_data]
+        # 네이버 베스트 상품 조회 - 입력 파라미터와 무관하게 항상 TOP 10
+        naver_products_data = self.external_products_service.get_latest_best_products(limit=10)
+        naver_products = [NaverProduct(**product) for product in naver_products_data]
         
-        logger.info(f"✅ 외부 상품 {len(external_products)}개 추가")
+        logger.info(f"✅ 네이버 상품 {len(naver_products)}개 추가")
+        
+        # 타 홈쇼핑사 편성 상품 (현재는 빈 배열)
+        competitor_products = []  # TODO: 크롤링 서버에서 DB 조회 예정
         
         return BroadcastResponse(
             requestTime="",  # 메인에서 설정
-            recommendedCategories=top_categories,
             recommendations=recommendations,
-            externalProducts=external_products if external_products else None
+            naverProducts=naver_products if naver_products else None,
+            competitorProducts=competitor_products if competitor_products else None
         )
     
     def _generate_recommendation_reason(self, candidate: Dict[str, Any], context: Dict[str, Any] = None) -> str:

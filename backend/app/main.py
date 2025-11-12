@@ -53,13 +53,13 @@ async def broadcast_recommendations(payload: BroadcastRequest, workflow: Broadca
     start_time = time.time()
     
     print(f"--- API Endpoint /api/v1/broadcast/recommendations received a request: {payload.broadcastTime} ---")
-    print(f"--- 가중치 설정: 트렌드 {payload.trendWeight:.0%} / 매출 {payload.salesWeight:.0%} ---")
+    print(f"--- 가중치 설정: 트렌드 {payload.trendWeight:.0%} / 매출 {payload.sellingWeight:.0%} ---")
     try:
         response_data = await workflow.process_broadcast_recommendation(
             payload.broadcastTime,
             payload.recommendationCount,
             payload.trendWeight,
-            payload.salesWeight
+            payload.sellingWeight
         )
         
         elapsed_time = time.time() - start_time

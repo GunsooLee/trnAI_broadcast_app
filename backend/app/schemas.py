@@ -70,7 +70,7 @@ class BroadcastRequest(BaseModel):
         description="트렌드 가중치 (0.0~1.0). 예: 0.3=트렌드 30%",
         example=0.3
     )
-    salesWeight: float = Field(
+    sellingWeight: float = Field(
         default=0.7, 
         ge=0.0, 
         le=1.0,
@@ -78,21 +78,14 @@ class BroadcastRequest(BaseModel):
         example=0.7
     )
     
-    @validator('salesWeight')
+    @validator('sellingWeight')
     def validate_weights_sum(cls, v, values):
         """트렌드 + 매출 가중치 합이 1.0인지 검증"""
         if 'trendWeight' in values:
             total = values['trendWeight'] + v
             if not (0.99 <= total <= 1.01):  # 부동소수점 오차 허용
-                raise ValueError(f"trendWeight + salesWeight는 1.0이어야 합니다 (현재: {total:.2f})")
+                raise ValueError(f"trendWeight + sellingWeight는 1.0이어야 합니다 (현재: {total:.2f})")
         return v
-
-class RecommendedCategory(BaseModel):
-    """추천 카테고리 스키마"""
-    rank: int
-    name: str
-    reason: str
-    predictedSales: str
 
 class ProductInfo(BaseModel):
     """상품 정보 스키마"""
@@ -107,7 +100,6 @@ class ProductInfo(BaseModel):
 class Reasoning(BaseModel):
     """추천 근거 스키마"""
     summary: str
-    linkedCategories: List[str]
 
 class LastBroadcastMetrics(BaseModel):
     """최근 방송 실적 스키마"""
@@ -123,8 +115,6 @@ class LastBroadcastMetrics(BaseModel):
 class BusinessMetrics(BaseModel):
     """비즈니스 지표 스키마"""
     aiPredictedSales: str = Field(description="AI 예측 매출 (XGBoost 모델)")
-    marginRate: float
-    stockLevel: str
     lastBroadcast: Optional[LastBroadcastMetrics] = Field(
         default=None,
         description="가장 최근 방송의 실제 실적 데이터"
@@ -136,10 +126,9 @@ class BroadcastRecommendation(BaseModel):
     productInfo: ProductInfo
     reasoning: Reasoning
     businessMetrics: BusinessMetrics
-    recommendationType: str  # "trend_match" (유사도) or "sales_prediction" (매출예측)
 
-class ExternalProduct(BaseModel):
-    """외부 상품 (네이버 베스트) 스키마"""
+class NaverProduct(BaseModel):
+    """네이버 베스트 상품 스키마"""
     product_id: str
     name: str
     rank: int
@@ -161,14 +150,22 @@ class ExternalProduct(BaseModel):
     collected_at: Optional[str] = None
     collected_date: Optional[str] = None
 
+class CompetitorProduct(BaseModel):
+    """타 홈쇼핑사 편성 상품 스키마"""
+    # TODO: 크롤링 서버에서 데이터 받으면 필드 정의 예정
+    pass
+
 class BroadcastResponse(BaseModel):
     """방송 추천 응답 스키마"""
     requestTime: str
-    recommendedCategories: List[RecommendedCategory]
     recommendations: List[BroadcastRecommendation]
-    externalProducts: Optional[List[ExternalProduct]] = Field(
+    naverProducts: Optional[List[NaverProduct]] = Field(
         default=None,
-        description="네이버 베스트 상품 (외부 상품)"
+        description="네이버 베스트 상품 TOP 10"
+    )
+    competitorProducts: Optional[List[CompetitorProduct]] = Field(
+        default=None,
+        description="타 홈쇼핑사 편성 상품 (최대 10개)"
     )
 
 # --- 방송테이프 관련 스키마 ---

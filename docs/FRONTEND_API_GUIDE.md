@@ -14,7 +14,7 @@ interface BroadcastRequest {
   broadcastTime: string;        // ISO 8601 형식 (예: "2025-11-11T22:00:00+09:00")
   recommendationCount: number;  // 추천 개수 (기본값: 5)
   trendWeight?: number;         // 트렌드 가중치 0.0~1.0 (기본값: 0.3)
-  salesWeight?: number;         // 매출 가중치 0.0~1.0 (기본값: 0.7)
+  sellingWeight?: number;       // 매출 가중치 0.0~1.0 (기본값: 0.7)
 }
 ```
 
@@ -24,7 +24,7 @@ interface BroadcastRequest {
   "broadcastTime": "2025-11-11T22:00:00+09:00",
   "recommendationCount": 3,
   "trendWeight": 0.3,
-  "salesWeight": 0.7
+  "sellingWeight": 0.7
 }
 ```
 
@@ -35,16 +35,9 @@ interface BroadcastRequest {
 ```typescript
 interface BroadcastResponse {
   requestTime: string;
-  recommendedCategories: RecommendedCategory[];
   recommendations: BroadcastRecommendation[];
-  externalProducts: ExternalProduct[] | null;
-}
-
-interface RecommendedCategory {
-  rank: number;
-  name: string;
-  reason: string;
-  predictedSales: string;  // 예: "2076만원"
+  naverProducts: NaverProduct[] | null;
+  competitorProducts: CompetitorProduct[] | null;
 }
 
 interface BroadcastRecommendation {
@@ -52,7 +45,6 @@ interface BroadcastRecommendation {
   productInfo: ProductInfo;
   reasoning: Reasoning;
   businessMetrics: BusinessMetrics;
-  recommendationType: "trend_match" | "sales_prediction";
 }
 
 interface ProductInfo {
@@ -66,14 +58,11 @@ interface ProductInfo {
 }
 
 interface Reasoning {
-  summary: string;           // LangChain이 생성한 추천 근거 (100자 이내)
-  linkedCategories: string[];
+  summary: string;           // LangChain이 생성한 추천 근거 (50자 이내)
 }
 
 interface BusinessMetrics {
-  aiPredictedSales: string;  // AI 예측 매출 (예: "8,948.1만원")
-  marginRate: number;
-  stockLevel: string;        // "High", "Medium", "Low"
+  aiPredictedSales: string;  // AI 예측 매출 (예: "850.0만원")
   lastBroadcast?: LastBroadcastMetrics;  // 최근 방송 실적 (Netezza 조회)
 }
 
@@ -88,7 +77,7 @@ interface LastBroadcastMetrics {
   mixFee: number;              // 혼합수수료
 }
 
-interface ExternalProduct {
+interface NaverProduct {
   product_id: string;
   name: string;
   rank: number;
@@ -110,6 +99,10 @@ interface ExternalProduct {
   collected_at: string | null;
   collected_date: string | null;
 }
+
+interface CompetitorProduct {
+  // TODO: 크롤링 서버에서 데이터 받으면 필드 정의 예정
+}
 ```
 
 ---
@@ -126,16 +119,13 @@ interface RecommendationCardProps {
 }
 
 export const RecommendationCard: React.FC<RecommendationCardProps> = ({ recommendation }) => {
-  const { productInfo, reasoning, businessMetrics, recommendationType } = recommendation;
+  const { productInfo, reasoning, businessMetrics } = recommendation;
   
   return (
     <div className="recommendation-card">
       {/* 헤더 */}
       <div className="card-header">
         <span className="rank-badge">#{recommendation.rank}</span>
-        <span className={`type-badge ${recommendationType}`}>
-          {recommendationType === 'trend_match' ? '트렌드' : '매출예측'}
-        </span>
       </div>
 
       {/* 상품 정보 */}
@@ -272,7 +262,7 @@ export const getBroadcastRecommendations = async (
   broadcastTime: string,
   recommendationCount: number = 5,
   trendWeight: number = 0.3,
-  salesWeight: number = 0.7
+  sellingWeight: number = 0.7
 ): Promise<BroadcastResponse> => {
   try {
     const response = await axios.post<BroadcastResponse>(
@@ -281,7 +271,7 @@ export const getBroadcastRecommendations = async (
         broadcastTime,
         recommendationCount,
         trendWeight,
-        salesWeight,
+        sellingWeight,
       }
     );
     return response.data;
@@ -296,9 +286,9 @@ const fetchRecommendations = async () => {
   const broadcastTime = '2025-11-11T22:00:00+09:00';
   const data = await getBroadcastRecommendations(broadcastTime, 5);
   
-  console.log('추천 카테고리:', data.recommendedCategories);
   console.log('추천 상품:', data.recommendations);
-  console.log('외부 상품:', data.externalProducts);
+  console.log('네이버 상품:', data.naverProducts);
+  console.log('경쟁사 상품:', data.competitorProducts);
 };
 ```
 
@@ -331,20 +321,7 @@ const ComparisonView = ({ metrics }: { metrics: BusinessMetrics }) => {
 };
 ```
 
-### 2. 추천 타입별 스타일링
-```css
-.type-badge.trend_match {
-  background-color: #4CAF50;
-  color: white;
-}
-
-.type-badge.sales_prediction {
-  background-color: #2196F3;
-  color: white;
-}
-```
-
-### 3. 순위 변동 표시
+### 2. 순위 변동 표시
 ```tsx
 const RankChangeIcon = ({ text }: { text: string }) => {
   if (text === '신규') return <span className="new-badge">NEW</span>;
@@ -359,6 +336,8 @@ const RankChangeIcon = ({ text }: { text: string }) => {
 ## 📝 실제 응답 예시
 
 전체 응답 예시는 [`API_RESPONSE_EXAMPLE.json`](./API_RESPONSE_EXAMPLE.json) 파일을 참고하세요.
+
+**현업 담당자를 위한 한국어 설명서**: [`API_결과_필드_설명서.md`](./API_결과_필드_설명서.md)
 
 ---
 
@@ -391,3 +370,4 @@ try {
 - [ ] 이미지 로딩 실패 처리
 - [ ] 외부 링크 새 탭에서 열기 (`target="_blank"`)
 - [ ] 반응형 디자인 (모바일/태블릿/데스크톱)
+- [ ] `competitorProducts`는 현재 빈 배열로 반환됨 (향후 데이터 추가 예정)
