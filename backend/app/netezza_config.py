@@ -46,8 +46,8 @@ class NetezzaConnection:
                 else:
                     cursor.execute(query)
 
-                # 컬럼 이름 가져오기
-                columns = [desc[0] for desc in cursor.description]
+                # 컬럼 이름 가져오기 (소문자로 변환)
+                columns = [desc[0].lower() for desc in cursor.description]
 
                 # 결과를 딕셔너리 리스트로 변환
                 results = []
@@ -80,6 +80,44 @@ class NetezzaConnection:
         """
 
         return await self.execute_query(query)
+
+    async def get_competitor_schedules(self, broadcast_time: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """특정 시간대의 타사 편성 정보를 가져옵니다
+        
+        Args:
+            broadcast_time: 방송 시간 (ISO 8601 형식, 예: "2025-09-15T22:40:00+09:00")
+            limit: 최대 조회 개수 (기본값: 10)
+        
+        Returns:
+            타사 편성 정보 리스트
+        """
+        # ISO 8601 형식을 Netezza TIMESTAMP 형식으로 변환
+        # 예: "2025-09-15T22:40:00+09:00" -> "2025-09-15 22:40:00"
+        from datetime import datetime
+        try:
+            dt = datetime.fromisoformat(broadcast_time)
+            formatted_time = dt.strftime('%Y-%m-%d %H:%M:%S')
+        except Exception as e:
+            logger.error(f"Invalid broadcast_time format: {broadcast_time}, error: {str(e)}")
+            formatted_time = broadcast_time.replace('T', ' ').split('+')[0]
+        
+        query = """
+        SELECT
+            CMPNY_NM as company_name,
+            BDCAST_SUBJ as broadcast_title,
+            STRT_DTTM as start_time,
+            END_DTTM as end_time,
+            BDCAST_MIN as duration_minutes,
+            LCLS_CTGR as category_main
+        FROM SNTDM.SNTADM.FBD_OTENT_RST_ANAL_D_NEW
+        WHERE STRT_DTTM <= ?
+          AND END_DTTM >= ?
+        ORDER BY STRT_DTTM
+        LIMIT ?
+        """
+        
+        logger.info(f"Fetching competitor schedules for time: {formatted_time}")
+        return await self.execute_query(query, (formatted_time, formatted_time, limit))
 
     async def upsert_tapes_to_postgres(self, tapes: List) -> int:
         """PostgreSQL TAIPGMTAPE 테이블에 방송테이프 정보를 Upsert합니다"""

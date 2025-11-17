@@ -65,16 +65,9 @@ async def broadcast_recommendations(payload: BroadcastRequest, workflow: Broadca
         elapsed_time = time.time() - start_time
         print(f"⏱️  총 응답 시간: {elapsed_time:.2f}초")
 
-        # 빈 추천 결과 체크
-        has_recommendations = response_data.recommendations and len(response_data.recommendations) > 0
-        has_categories = response_data.recommendedCategories and len(response_data.recommendedCategories) > 0
-
-        if not has_recommendations and not has_categories:
-            print(f"--- 빈 결과 감지: recommendations={len(response_data.recommendations) if response_data.recommendations else 0}, categories={len(response_data.recommendedCategories) if response_data.recommendedCategories else 0} ---")
-            raise HTTPException(
-                status_code=503,
-                detail="추천 결과를 생성할 수 없습니다. AI 서비스가 일시적으로 이용 불가능합니다."
-            )
+        # 빈 추천 결과도 정상 응답으로 처리 (200 OK)
+        if not response_data.recommendations or len(response_data.recommendations) == 0:
+            print(f"⚠️  추천 결과 0개 - 정상 응답 반환 (빈 배열)")
 
         return response_data
 

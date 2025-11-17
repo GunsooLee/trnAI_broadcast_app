@@ -20,9 +20,10 @@ from .external_apis import ExternalAPIManager
 
 from .dependencies import get_product_embedder
 from . import broadcast_recommender as br
-from .schemas import BroadcastResponse, BroadcastRecommendation, ProductInfo, Reasoning, BusinessMetrics, NaverProduct, LastBroadcastMetrics
+from .schemas import BroadcastResponse, BroadcastRecommendation, ProductInfo, Reasoning, BusinessMetrics, NaverProduct, CompetitorProduct, LastBroadcastMetrics
 from .external_products_service import ExternalProductsService
 from .services.broadcast_history_service import BroadcastHistoryService
+from .netezza_config import netezza_conn
 
 logger = logging.getLogger(__name__)
 
@@ -644,7 +645,7 @@ JSON 형식으로 응답해주세요."""),
         context: Dict[str, Any],
         max_trend_match: int = 3,  # 유사도 기반 최대 개수
         max_sales_prediction: int = 10  # 매출예측 기반 최대 개수
-    ) -> tuple[List[Dict[str, Any]], Dict[str, Any], List[RecommendedCategory]]:
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """통합 후보군 생성 - 모든 상품 XGBoost 예측 후 가중치 조정"""
         
         candidates = []
@@ -788,7 +789,7 @@ JSON 형식으로 응답해주세요."""),
         
         return category_scores
     
-    async def _generate_candidates(self, promising_categories: List[RecommendedCategory], trend_products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    async def _generate_candidates(self, promising_categories: List[Any], trend_products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """후보군 생성 및 통합 (레거시, 사용 안 함)"""
         candidates = []
         
@@ -902,8 +903,29 @@ JSON 형식으로 응답해주세요."""),
         
         logger.info(f"✅ 네이버 상품 {len(naver_products)}개 추가")
         
-        # 타 홈쇼핑사 편성 상품 (현재는 빈 배열)
-        competitor_products = []  # TODO: 크롤링 서버에서 DB 조회 예정
+        # 타 홈쇼핑사 편성 상품 조회 - Netezza에서 실시간 조회
+        print("=== [DEBUG] 타사 편성 조회 시작 ===")
+        try:
+            # context에서 broadcast_time 가져오기
+            broadcast_time_str = context.get("broadcast_time") if context else None
+            print(f"=== [DEBUG] broadcast_time_str: {broadcast_time_str} ===")
+            if broadcast_time_str:
+                print(f"=== [DEBUG] Netezza 쿼리 실행 중... ===")
+                competitor_data = await netezza_conn.get_competitor_schedules(broadcast_time_str, limit=10)
+                print(f"=== [DEBUG] Netezza 응답: {len(competitor_data)}개 ===")
+                competitor_products = [CompetitorProduct(**comp) for comp in competitor_data]
+                logger.info(f"✅ 타사 편성 {len(competitor_products)}개 추가")
+                print(f"✅ 타사 편성 {len(competitor_products)}개 추가")
+            else:
+                logger.warning(f"⚠️ broadcast_time이 context에 없음")
+                print(f"⚠️ broadcast_time이 context에 없음")
+                competitor_products = []
+        except Exception as e:
+            logger.warning(f"⚠️ 타사 편성 조회 실패: {str(e)}")
+            print(f"⚠️ 타사 편성 조회 실패: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            competitor_products = []
         
         return BroadcastResponse(
             requestTime="",  # 메인에서 설정
@@ -1035,24 +1057,15 @@ JSON 형식으로 응답해주세요."""),
         ]
         templates.extend(category_templates)
         
-        # 시간대/상황 기반 템플릿들
+        # 날씨 기반 템플릿 (선택적, AI가 판단 못할 때만 사용)
         if context:
-            time_slot = context.get("time_slot", "")
             weather = context.get("weather", {}).get("weather", "")
             
-            if time_slot == "저녁":
-                time_templates = [
-                    "저녁 시간대 시청자 특성에 최적화된 상품",
-                    "퇴근 후 관심도 높은 저녁 타임 맞춤 상품",
-                    "저녁 시간 구매 패턴 분석 결과 선정"
-                ]
-                templates.extend(time_templates)
-            
-            if weather == "폭염":
+            # 극단적 날씨만 템플릿 제공 (AI 폴백용)
+            if weather in ["폭염", "한파", "폭우", "폭설"]:
                 weather_templates = [
-                    "폭염 특수 수요 급증 예상 상품",
-                    "무더위 해결사로 시의적절한 편성",
-                    "폭염 대비 필수 아이템으로 구매 욕구 자극"
+                    f"{weather} 특수 상황 대응 상품",
+                    f"현재 {weather} 상황에 필요한 아이템"
                 ]
                 templates.extend(weather_templates)
         
@@ -1110,13 +1123,6 @@ JSON 형식으로 응답해주세요."""),
             }
             mock_candidates.append(candidate)
         
-        # 임시 카테고리 데이터
-        mock_categories = [
-            RecommendedCategory(rank=1, name="건강식품", reason="트렌드 급상승", predictedSales="높음"),
-            RecommendedCategory(rank=2, name="스포츠용품", reason="시즌 적합성", predictedSales="안정적"),
-            RecommendedCategory(rank=3, name="가전제품", reason="날씨 연관성", predictedSales="보통")
-        ]
-        
         # 컨텍스트 생성
         context = {
             "time_slot": "저녁",
@@ -1125,7 +1131,7 @@ JSON 형식으로 응답해주세요."""),
         }
         
         # 개선된 추천 근거 시스템으로 응답 생성
-        response = await self._format_response(mock_candidates, mock_categories, context)
+        response = await self._format_response(mock_candidates, context)
         response.requestTime = request_time
         
         logger.info(f"폴백 응답 생성 완료: {len(mock_candidates)}개 추천 (추천 근거 시스템 테스트)")
@@ -1190,12 +1196,15 @@ JSON 형식으로 응답해주세요."""),
 5. 같은 패턴이나 문구 반복 절대 금지
 
 # 활용 가능한 요소들
-- 예측 매출 수치
-- 시간대 특성 (저녁/오전/오후)
-- 카테고리 특성
+- 예측 매출 수치 (필수)
+- 카테고리 특성 (필수)
 - 점수 구성 비율 (유사도 vs 매출)
 - 트렌드 키워드 (있을 경우)
 - 공휴일 (있을 경우 필수 언급)
+- 시간대 특성 (저녁/오전/오후) - **신중하게 판단**
+  * 이 상품 카테고리가 해당 시간대에 실제로 적합한지 스스로 판단하세요
+  * 예: 건강식품은 아침/저녁 적합, 의류는 낮 시간 적합, 가전은 저녁 적합
+  * 확신이 없으면 시간대 언급하지 말고 다른 근거 사용
 - 날씨/계절 (선택적, 과도한 반복 금지)
 
 # 금지 사항 (답변에 절대 포함하지 말 것)

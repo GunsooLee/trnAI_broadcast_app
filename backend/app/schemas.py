@@ -152,8 +152,12 @@ class NaverProduct(BaseModel):
 
 class CompetitorProduct(BaseModel):
     """타 홈쇼핑사 편성 상품 스키마"""
-    # TODO: 크롤링 서버에서 데이터 받으면 필드 정의 예정
-    pass
+    company_name: str = Field(description="경쟁사명", example="CJ온스타일")
+    broadcast_title: str = Field(description="방송 제목", example="프리미엄 건강식품 특가전")
+    start_time: str = Field(description="방송 시작 시간", example="2025-09-15 22:00:00")
+    end_time: str = Field(description="방송 종료 시간", example="2025-09-15 23:00:00")
+    duration_minutes: Optional[int] = Field(default=None, description="방송 시간(분)", example=60)
+    category_main: Optional[str] = Field(default=None, description="대분류 카테고리", example="건강식품")
 
 class BroadcastResponse(BaseModel):
     """방송 추천 응답 스키마"""
