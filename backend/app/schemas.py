@@ -61,8 +61,8 @@ class TrendAnalysisResponse(BaseModel):
 # --- 새로운 방송 추천 API 스키마 ---
 class BroadcastRequest(BaseModel):
     """방송 추천 요청 스키마"""
-    broadcastTime: str = Field(..., description="방송 시간", example="2025-09-15T22:40:00+09:00")
-    recommendationCount: int = Field(default=5, description="추천 개수", example=5)
+    broadcastTime: str = Field(..., description="방송 시간", example="2025-11-19T14:00:00+09:00")
+    recommendationCount: int = Field(default=10, description="추천 개수", example=10)
     trendWeight: float = Field(
         default=0.3, 
         ge=0.0, 
@@ -97,9 +97,7 @@ class ProductInfo(BaseModel):
     tapeCode: Optional[str] = Field(default=None, description="방송테이프 코드", example="T001")
     tapeName: Optional[str] = Field(default=None, description="방송테이프명", example="프리미엄 다이어트 보조제 방송테이프")
 
-class Reasoning(BaseModel):
-    """추천 근거 스키마"""
-    summary: str
+# Reasoning 스키마 제거 - 단순 문자열로 변경
 
 class LastBroadcastMetrics(BaseModel):
     """최근 방송 실적 스키마"""
@@ -124,7 +122,7 @@ class BroadcastRecommendation(BaseModel):
     """방송 추천 항목 스키마"""
     rank: int
     productInfo: ProductInfo
-    reasoning: Reasoning
+    reasoning: str = Field(description="추천 근거")
     businessMetrics: BusinessMetrics
 
 class NaverProduct(BaseModel):
@@ -151,25 +149,21 @@ class NaverProduct(BaseModel):
     collected_date: Optional[str] = None
 
 class CompetitorProduct(BaseModel):
-    """타 홈쇼핑사 편성 상품 스키마"""
-    company_name: str = Field(description="경쟁사명", example="CJ온스타일")
-    broadcast_title: str = Field(description="방송 제목", example="프리미엄 건강식품 특가전")
-    start_time: str = Field(description="방송 시작 시간", example="2025-09-15 22:00:00")
-    end_time: str = Field(description="방송 종료 시간", example="2025-09-15 23:00:00")
+    """타 홈쇼핑사 편성 상품 스키마 (네이버 상품 포함)"""
+    company_name: str = Field(description="경쟁사명 또는 '네이버 스토어'", example="CJ온스타일")
+    broadcast_title: str = Field(description="방송 제목 또는 상품명", example="프리미엄 건강식품 특가전")
+    start_time: Optional[str] = Field(default="", description="방송 시작 시간 (네이버 상품은 빈칸)", example="2025-11-19 14:00:00")
+    end_time: Optional[str] = Field(default="", description="방송 종료 시간 (네이버 상품은 빈칸)", example="2025-11-19 15:00:00")
     duration_minutes: Optional[int] = Field(default=None, description="방송 시간(분)", example=60)
-    category_main: Optional[str] = Field(default=None, description="대분류 카테고리", example="건강식품")
+    category_main: Optional[str] = Field(default="", description="대분류 카테고리", example="건강식품")
 
 class BroadcastResponse(BaseModel):
     """방송 추천 응답 스키마"""
     requestTime: str
     recommendations: List[BroadcastRecommendation]
-    naverProducts: Optional[List[NaverProduct]] = Field(
-        default=None,
-        description="네이버 베스트 상품 TOP 10"
-    )
     competitorProducts: Optional[List[CompetitorProduct]] = Field(
         default=None,
-        description="타 홈쇼핑사 편성 상품 (최대 10개)"
+        description="네이버 인기 상품 + 타사 편성 통합 (AI 선택 10개, 5:5 비율 유지)"
     )
 
 # --- 방송테이프 관련 스키마 ---

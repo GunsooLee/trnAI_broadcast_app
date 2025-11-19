@@ -6,6 +6,7 @@ LangChain 기반 2단계 워크플로우: AI 방향 탐색 + 고속 랭킹
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 import pandas as pd
@@ -20,7 +21,7 @@ from .external_apis import ExternalAPIManager
 
 from .dependencies import get_product_embedder
 from . import broadcast_recommender as br
-from .schemas import BroadcastResponse, BroadcastRecommendation, ProductInfo, Reasoning, BusinessMetrics, NaverProduct, CompetitorProduct, LastBroadcastMetrics
+from .schemas import BroadcastResponse, BroadcastRecommendation, ProductInfo, BusinessMetrics, NaverProduct, CompetitorProduct, LastBroadcastMetrics
 from .external_products_service import ExternalProductsService
 from .services.broadcast_history_service import BroadcastHistoryService
 from .netezza_config import netezza_conn
@@ -127,7 +128,8 @@ class BroadcastWorkflow:
             step_start = time.time()
             response = await self._format_response(ranked_products[:recommendation_count], context)
             response.requestTime = request_time
-            print(f"⏱️  [5단계] 응답 생성: {time.time() - step_start:.2f}초")
+            step_time = time.time() - step_start
+            print(f"⏱️  [5단계] 응답 생성 총: {step_time:.2f}초")
             
             total_time = time.time() - workflow_start
             print(f"⏱️  ===== 워크플로우 총 시간: {total_time:.2f}초 =====")
@@ -851,18 +853,25 @@ JSON 형식으로 응답해주세요."""),
         
         recommendations = []
         
+        # 순위 정보 추가 (배치 처리 전)
         for i, candidate in enumerate(ranked_products):
-            product = candidate["product"]
-            
-            # 순위 정보 추가
             candidate["rank"] = i + 1
             candidate["total_count"] = len(ranked_products)
-            
-            # LangChain 기반 동적 근거 생성 (비동기)
-            reasoning_summary = await self._generate_dynamic_reason_with_langchain(
-                candidate, 
-                context or {"time_slot": "저녁", "weather": {"weather": "폭염"}}
-            )
+        
+        # [5-1단계] 배치로 모든 상품의 추천 근거 생성 (한 번의 LLM 호출)
+        step_5_1_start = time.time()
+        print("\n" + "=" * 80)
+        print(f"[5-1단계] LLM 배치 처리 - {len(ranked_products)}개 상품의 추천 근거 생성")
+        print("=" * 80)
+        reasoning_list = await self._generate_batch_reasons_with_langchain(
+            ranked_products,
+            context or {"time_slot": "저녁", "weather": {"weather": "폭염"}}
+        )
+        print(f"⏱️  [5-1단계] 추천 근거 생성: {time.time() - step_5_1_start:.2f}초")
+        
+        for i, candidate in enumerate(ranked_products):
+            product = candidate["product"]
+            reasoning_summary = reasoning_list[i] if i < len(reasoning_list) else f"{product.get('category_main', '상품')} 추천"
             
             # 최근 방송 실적 조회
             tape_code = product.get("tape_code")
@@ -887,52 +896,239 @@ JSON 형식으로 응답해주세요."""),
                     tapeCode=product.get("tape_code"),
                     tapeName=product.get("tape_name")
                 ),
-                reasoning=Reasoning(
-                    summary=reasoning_summary
-                ),
+                reasoning=reasoning_summary,
                 businessMetrics=BusinessMetrics(
                     aiPredictedSales=f"{round(candidate['predicted_sales']/10000, 1):,.1f}만원",  # AI 예측 매출 (XGBoost, 소수점 1자리)
                     lastBroadcast=last_broadcast  # 최근 방송 실적 추가
                 )
             )
+
+            # 추천 결과 요약 로그 (시연/분석용) - 다른 단계 로그와 동일하게 print 사용
+            try:
+                print(
+                    f"[RECOMMENDATION] #{recommendation.rank} "
+                    f"{recommendation.productInfo.productName} | "
+                    f"카테고리: {recommendation.productInfo.category} | "
+                    f"예측매출: {recommendation.businessMetrics.aiPredictedSales} | "
+                    f"최종점수: {candidate.get('final_score', 0.0):.3f} | "
+                    f"근거: {recommendation.reasoning}"
+                )
+            except Exception:
+                # 로깅 오류가 추천 로직에 영향 주지 않도록 방어
+                pass
+
             recommendations.append(recommendation)
         
-        # 네이버 베스트 상품 조회 - 입력 파라미터와 무관하게 항상 TOP 10
+        # [5-2단계] 네이버/타사 편성 조회 및 AI 선택
+        step_5_2_start = time.time()
+        print("\n" + "=" * 80)
+        print(f"[5-2단계] 네이버/타사 편성 조회 및 AI 선택")
+        print("=" * 80)
+        
+        # 네이버 베스트 상품 조회
         naver_products_data = self.external_products_service.get_latest_best_products(limit=10)
         naver_products = [NaverProduct(**product) for product in naver_products_data]
-        
-        logger.info(f"✅ 네이버 상품 {len(naver_products)}개 추가")
+        logger.info(f"✅ 네이버 상품 {len(naver_products)}개 수집")
+        print(f"✅ 네이버 상품 {len(naver_products)}개 수집")
         
         # 타 홈쇼핑사 편성 상품 조회 - Netezza에서 실시간 조회
-        print("=== [DEBUG] 타사 편성 조회 시작 ===")
         try:
-            # context에서 broadcast_time 가져오기
             broadcast_time_str = context.get("broadcast_time") if context else None
-            print(f"=== [DEBUG] broadcast_time_str: {broadcast_time_str} ===")
             if broadcast_time_str:
-                print(f"=== [DEBUG] Netezza 쿼리 실행 중... ===")
-                competitor_data = await netezza_conn.get_competitor_schedules(broadcast_time_str, limit=10)
-                print(f"=== [DEBUG] Netezza 응답: {len(competitor_data)}개 ===")
+                competitor_data = await netezza_conn.get_competitor_schedules(broadcast_time_str)
                 competitor_products = [CompetitorProduct(**comp) for comp in competitor_data]
-                logger.info(f"✅ 타사 편성 {len(competitor_products)}개 추가")
-                print(f"✅ 타사 편성 {len(competitor_products)}개 추가")
+                logger.info(f"✅ 타사 편성 {len(competitor_products)}개 수집")
+                print(f"✅ 타사 편성 {len(competitor_products)}개 수집")
             else:
                 logger.warning(f"⚠️ broadcast_time이 context에 없음")
-                print(f"⚠️ broadcast_time이 context에 없음")
                 competitor_products = []
         except Exception as e:
             logger.warning(f"⚠️ 타사 편성 조회 실패: {str(e)}")
-            print(f"⚠️ 타사 편성 조회 실패: {str(e)}")
-            import traceback
-            traceback.print_exc()
             competitor_products = []
+        
+        # AI 기반 네이버/타사 편성 10개 선택 및 통합
+        selected_competitor_products = await self._select_and_merge_top_10(
+            naver_products=naver_products,
+            competitor_products=competitor_products,
+            broadcast_time=broadcast_time_str,
+            context=context
+        )
+        print(f"⏱️  [5-2단계] 네이버/타사 선택: {time.time() - step_5_2_start:.2f}초")
         
         return BroadcastResponse(
             requestTime="",  # 메인에서 설정
             recommendations=recommendations,
-            naverProducts=naver_products if naver_products else None,
-            competitorProducts=competitor_products if competitor_products else None
+            competitorProducts=selected_competitor_products
         )
+    
+    async def _select_and_merge_top_10(
+        self,
+        naver_products: List[NaverProduct],
+        competitor_products: List[CompetitorProduct],
+        broadcast_time: str,
+        context: Dict[str, Any] = None
+    ) -> List[CompetitorProduct]:
+        """
+        AI를 활용하여 네이버/타사 편성 중 10개를 선택하고 통합
+        네이버:타사 = 5:5 비율 유지 (한쪽이 부족하면 다른쪽으로 채움)
+        """
+        try:
+            # 1. 네이버 상품을 타사 편성 형식으로 변환
+            naver_as_competitor = [
+                self._convert_naver_to_competitor(naver, idx)
+                for idx, naver in enumerate(naver_products)
+            ]
+            
+            # 2. AI에게 10개 선택 요청
+            selected_indices = await self._ai_select_top_10(
+                naver_products=naver_products,
+                competitor_products=competitor_products,
+                broadcast_time=broadcast_time,
+                context=context
+            )
+            
+            # 3. 선택된 항목 추출
+            result = []
+            
+            # 네이버 선택 항목
+            for idx in selected_indices.get("naver_indices", []):
+                if 0 <= idx < len(naver_as_competitor):
+                    result.append(naver_as_competitor[idx])
+            
+            # 타사 선택 항목
+            for idx in selected_indices.get("competitor_indices", []):
+                if 0 <= idx < len(competitor_products):
+                    result.append(competitor_products[idx])
+            
+            logger.info(f"✅ AI 선택 완료: 네이버 {len(selected_indices.get('naver_indices', []))}개 + 타사 {len(selected_indices.get('competitor_indices', []))}개 = 총 {len(result)}개")
+            
+            return result[:10]  # 최대 10개
+            
+        except Exception as e:
+            logger.error(f"⚠️ AI 선택 실패, 폴백 로직 사용: {str(e)}")
+            # 폴백: 네이버 5개 + 타사 5개 단순 선택
+            return self._fallback_select_top_10(naver_products, competitor_products)
+    
+    def _convert_naver_to_competitor(self, naver: NaverProduct, index: int) -> CompetitorProduct:
+        """네이버 상품을 타사 편성 형식(CompetitorProduct)으로 변환"""
+        return CompetitorProduct(
+            company_name="네이버 스토어",
+            broadcast_title=f"[네이버 인기 {index + 1}위] {naver.name[:50]}",
+            start_time="",  # 빈칸
+            end_time="",    # 빈칸
+            duration_minutes=None,
+            category_main=""  # 네이버 상품에는 카테고리 정보 없음
+        )
+    
+    async def _ai_select_top_10(
+        self,
+        naver_products: List[NaverProduct],
+        competitor_products: List[CompetitorProduct],
+        broadcast_time: str,
+        context: Dict[str, Any] = None
+    ) -> Dict[str, List[int]]:
+        """
+        AI를 활용하여 네이버/타사 편성 중 10개의 인덱스를 선택
+        """
+        # 프롬프트 구성
+        prompt_template = ChatPromptTemplate.from_messages([
+            ("system", """당신은 20년 경력의 홈쇼핑 방송 편성 전문가입니다.
+
+# 데이터 이해
+- **네이버 인기 상품**: 현재 시점의 시장 트렌드를 반영한 실시간 베스트 상품 (시간 무관)
+- **타사 홈쇼핑 편성**: 특정 방송 시간대의 실제 편성 정보 (시간 기반)
+
+# 선택 기준
+1. **비율**: 네이버:타사 = 5:5를 최대한 유지 (한쪽 부족 시 다른쪽으로 채움)
+2. **시간 적합성**: 요청된 방송 시간대에 적합한 상품/편성 선택
+3. **트렌드 반영**: 네이버 인기 상품을 통해 현재 시장 트렌드 파악
+4. **카테고리 균형**: 다양한 카테고리로 시청자 선택폭 확대
+5. **경쟁 분석**: 타사 편성을 참고하여 차별화 또는 벤치마킹
+
+# 선택 전략
+- 네이버 인기 상품 중 방송 시간대와 어울리는 트렌드 상품 선택
+- 타사 편성 중 해당 시간대에 검증된 상품 카테고리 참고
+- 현재 트렌드(네이버)와 실제 편성(타사)의 균형 유지
+
+JSON 형식으로 응답:
+{{
+  "naver_indices": [인덱스 배열],
+  "competitor_indices": [인덱스 배열],
+  "selection_summary": {{
+    "time_match": "시간대 적합성 판단",
+    "diversity": "선택한 상품들의 다양성 설명",
+    "trend_analysis": "트렌드 반영 방식"
+  }},
+  "selection_reason": "전체 선택 근거 2-3문장"
+}}"""),
+            ("user", """방송 시간: {broadcast_time}
+
+네이버 인기 상품 ({naver_count}개):
+{naver_summary}
+
+타사 홈쇼핑 편성 ({competitor_count}개):
+{competitor_summary}
+
+위 정보를 종합하여 방송 시간({broadcast_time})에 최적화된 10개를 선택하세요.""")
+        ])
+        
+        # 네이버 상품 요약
+        naver_summary = "\n".join([
+            f"[{i}] {p.name[:40]} | 가격: {p.sale_price:,}원 | 할인: {p.discount_ratio}% | 판매량: {p.cumulation_sale_count}"
+            for i, p in enumerate(naver_products[:20])  # 최대 20개만 전달
+        ])
+        
+        # 타사 편성 요약
+        competitor_summary = "\n".join([
+            f"[{i}] {c.company_name} | {c.broadcast_title[:40]} | {c.start_time} ~ {c.end_time} | {c.category_main or '미분류'}"
+            for i, c in enumerate(competitor_products[:20])  # 최대 20개만 전달
+        ])
+        
+        # LLM 호출
+        chain = prompt_template | self.llm | JsonOutputParser()
+        
+        result = await chain.ainvoke({
+            "broadcast_time": broadcast_time or "미지정",
+            "naver_count": len(naver_products),
+            "competitor_count": len(competitor_products),
+            "naver_summary": naver_summary or "없음",
+            "competitor_summary": competitor_summary or "없음"
+        })
+        
+        logger.info(f"AI 선택 근거: {result.get('selection_reason', '없음')}")
+        
+        return result
+    
+    def _fallback_select_top_10(
+        self,
+        naver_products: List[NaverProduct],
+        competitor_products: List[CompetitorProduct]
+    ) -> List[CompetitorProduct]:
+        """AI 실패 시 폴백: 단순 5:5 선택"""
+        result = []
+        
+        # 네이버 5개 (또는 가능한 만큼)
+        naver_count = min(5, len(naver_products))
+        for i in range(naver_count):
+            result.append(self._convert_naver_to_competitor(naver_products[i], i))
+        
+        # 타사 5개 (또는 가능한 만큼)
+        competitor_count = min(5, len(competitor_products))
+        for i in range(competitor_count):
+            result.append(competitor_products[i])
+        
+        # 10개 미만이면 나머지로 채움
+        if len(result) < 10:
+            remaining = 10 - len(result)
+            if naver_count < len(naver_products):
+                for i in range(naver_count, min(naver_count + remaining, len(naver_products))):
+                    result.append(self._convert_naver_to_competitor(naver_products[i], i))
+            elif competitor_count < len(competitor_products):
+                for i in range(competitor_count, min(competitor_count + remaining, len(competitor_products))):
+                    result.append(competitor_products[i])
+        
+        logger.info(f"폴백 선택: 총 {len(result)}개")
+        return result[:10]
     
     def _generate_recommendation_reason(self, candidate: Dict[str, Any], context: Dict[str, Any] = None) -> str:
         """개선된 추천 근거 생성"""
@@ -1137,8 +1333,122 @@ JSON 형식으로 응답해주세요."""),
         logger.info(f"폴백 응답 생성 완료: {len(mock_candidates)}개 추천 (추천 근거 시스템 테스트)")
         return response
     
+    async def _generate_batch_reasons_with_langchain(self, candidates: List[Dict[str, Any]], context: Dict[str, Any] = None) -> List[str]:
+        """배치로 여러 상품의 추천 근거를 한 번에 생성 (속도 개선)"""
+        try:
+            # 컨텍스트 정보
+            time_slot = context.get("time_slot", "") if context else ""
+            weather = context.get("weather", {}).get("weather", "") if context else ""
+            holiday_name = context.get("holiday_name") if context else None
+            
+            # 상품 정보 요약
+            products_summary = []
+            for candidate in candidates:
+                product = candidate["product"]
+                rank = candidate.get("rank", 0)
+                predicted_sales = candidate.get("predicted_sales", 0)
+                similarity_score = candidate.get("similarity_score", 0)
+                final_score = candidate.get("final_score", 0)
+                
+                products_summary.append({
+                    "rank": rank,
+                    "product_name": product.get("product_name", ""),
+                    "category": product.get("category_main", ""),
+                    "predicted_sales": int(predicted_sales/10000) if predicted_sales else 0,
+                    "similarity_score": f"{similarity_score:.3f}",
+                    "final_score": f"{final_score:.3f}",
+                    "trend_keyword": candidate.get("trend_keyword", "")
+                })
+            
+            # 배치 프롬프트 생성
+            batch_prompt = ChatPromptTemplate.from_messages([
+                ("system", """당신은 홈쇼핑 방송 편성 전문가입니다.
+여러 상품의 추천 근거를 한 번에 작성하세요.
+
+# 핵심 원칙
+1. **각 상품마다 100자 이내** 간결하게 작성
+2. 전문적이고 객관적인 톤 유지
+3. 구체적인 수치와 데이터 활용
+4. **각 상품마다 완전히 다른 관점과 표현 사용**
+5. 같은 패턴이나 문구 반복 절대 금지
+
+# 활용 가능한 요소들
+- 예측 매출 수치 (필수)
+- 카테고리 특성 (필수)
+- 트렌드 키워드 (있을 경우)
+- 공휴일 (있을 경우 필수 언급)
+- 시간대 특성 (저녁/오전/오후) - 신중하게 판단
+- 날씨/계절 (선택적)
+
+# 금지 사항
+- "AI 분석 결과"로 시작하지 마세요
+- 템플릿처럼 보이는 반복적 표현 금지
+- 과장된 표현 금지
+- 기술 용어 절대 사용 금지 (유사도, 점수, 비율 등)
+
+JSON 형식으로 응답:
+{{
+  "reasons": [
+    "1번 상품 추천 근거",
+    "2번 상품 추천 근거",
+    ...
+  ]
+}}""")
+,
+                ("human", """시간대: {time_slot}
+날씨: {weather}
+공휴일: {holiday_name}
+
+추천 상품 목록:
+{products_info}
+
+위 {count}개 상품 각각에 대해 독창적인 추천 근거를 작성하세요.""")
+            ])
+            
+            # 상품 정보 포맷팅
+            products_info = "\n".join([
+                f"{p['rank']}. {p['product_name'][:40]} | 카테고리: {p['category']} | 예측매출: {p['predicted_sales']}만원 | 트렌드: {p['trend_keyword'] or '없음'}"
+                for p in products_summary
+            ])
+            
+            chain = batch_prompt | self.llm | JsonOutputParser()
+            
+            result = await chain.ainvoke({
+                "time_slot": time_slot or "미지정",
+                "weather": weather or "보통",
+                "holiday_name": holiday_name if holiday_name else "없음",
+                "products_info": products_info,
+                "count": len(candidates)
+            })
+            
+            reasons = result.get("reasons", [])
+            print(f"✅ 배치 처리 완료: {len(reasons)}개 근거 생성")
+            
+            # 개수가 부족하면 기본 메시지로 채움
+            while len(reasons) < len(candidates):
+                idx = len(reasons)
+                reasons.append(f"{candidates[idx]['product'].get('category_main', '상품')} 추천")
+            
+            return reasons[:len(candidates)]
+            
+        except Exception as e:
+            logger.error(f"배치 근거 생성 오류: {e}")
+            import traceback
+            traceback.print_exc()
+            # 폴백: 개별 생성
+            print("⚠️ 배치 처리 실패, 개별 생성으로 폴백...")
+            return await self._generate_reasons_fallback(candidates, context)
+    
+    async def _generate_reasons_fallback(self, candidates: List[Dict[str, Any]], context: Dict[str, Any] = None) -> List[str]:
+        """배치 실패 시 폴백: 개별 생성"""
+        reasons = []
+        for candidate in candidates:
+            reason = await self._generate_dynamic_reason_with_langchain(candidate, context)
+            reasons.append(reason)
+        return reasons
+    
     async def _generate_dynamic_reason_with_langchain(self, candidate: Dict[str, Any], context: Dict[str, Any] = None) -> str:
-        """LangChain을 활용한 동적 추천 근거 생성"""
+        """LangChain을 활용한 동적 추천 근거 생성 (개별, 폴백용)"""
         try:
             product = candidate["product"]
             source = candidate["source"]
