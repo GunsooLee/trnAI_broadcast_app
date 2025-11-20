@@ -50,7 +50,9 @@ interface BroadcastRecommendation {
 interface ProductInfo {
   productId: string;
   productName: string;
-  category: string;
+  category: string;              // 대분류 카테고리
+  categoryMiddle?: string;       // 중분류 카테고리
+  categorySub?: string;          // 소분류 카테고리
   brand?: string;
   price?: number;
   tapeCode?: string;
@@ -101,8 +103,15 @@ interface NaverProduct {
 }
 
 interface CompetitorProduct {
-  // TODO: 크롤링 서버에서 데이터 받으면 필드 정의 예정
+  company_name: string;           // "네이버 스토어" 또는 타사명
+  broadcast_title: string;        // 방송 제목 또는 상품명
+  start_time: string | null;      // 방송 시작 시간 (타사만)
+  end_time: string | null;        // 방송 종료 시간 (타사만)
+  duration_minutes: number | null; // 방송 시간(분, 타사만)
+  category_main: string;          // 대분류 카테고리
 }
+
+// ⚠️ 배치 순서: 타사 편성이 먼저, 네이버가 나중에 배치됩니다
 ```
 
 ---
@@ -131,7 +140,15 @@ export const RecommendationCard: React.FC<RecommendationCardProps> = ({ recommen
       {/* 상품 정보 */}
       <div className="product-info">
         <h3>{productInfo.productName}</h3>
-        <p className="category">{productInfo.category}</p>
+        <div className="categories">
+          <span className="category-main">{productInfo.category}</span>
+          {productInfo.categoryMiddle && (
+            <span className="category-middle"> &gt; {productInfo.categoryMiddle}</span>
+          )}
+          {productInfo.categorySub && (
+            <span className="category-sub"> &gt; {productInfo.categorySub}</span>
+          )}
+        </div>
         {productInfo.brand && <p className="brand">{productInfo.brand}</p>}
         {productInfo.price && <p className="price">{productInfo.price.toLocaleString()}원</p>}
       </div>

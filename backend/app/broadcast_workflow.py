@@ -226,24 +226,25 @@ class BroadcastWorkflow:
             logger.info(f"🎉 공휴일: {holiday_name}")
         logger.info(f"날씨: {weather_info.get('weather', 'N/A')}")
         
-        # 통합 키워드 생성 (AI 트렌드 + 컨텍스트 키워드)
+        # 통합 키워드 생성 (컨텍스트 우선, AI 트렌드는 보조)
         unified_keywords = []
         
-        # 1. AI 트렌드 키워드 추가
-        if context.get("ai_trends"):
-            unified_keywords.extend(context["ai_trends"][:10])  # 상위 10개
-            logger.info(f"AI 트렌드 키워드 {len(context['ai_trends'][:10])}개 추가")
-        
-        # 2. 컨텍스트 기반 키워드 생성
+        # 1. 컨텍스트 기반 키워드 생성 (날짜/시간/날씨 기반 - 우선순위 높음)
         context_keywords = await self._generate_context_keywords(context)
         if context_keywords:
             unified_keywords.extend(context_keywords)
-            logger.info(f"컨텍스트 키워드 {len(context_keywords)}개 추가")
+            logger.info(f"[우선순위 1] 컨텍스트 키워드 {len(context_keywords)}개 추가")
+        
+        # 2. AI 트렌드 키워드 추가 (실시간 트렌드 - 보조 역할, 개수 제한)
+        if context.get("ai_trends"):
+            ai_trend_limit = 3  # 10개 → 3개로 축소
+            unified_keywords.extend(context["ai_trends"][:ai_trend_limit])
+            logger.info(f"[우선순위 2] AI 트렌드 키워드 {len(context['ai_trends'][:ai_trend_limit])}개 추가 (보조)")
         
         # 3. 중복 제거 및 저장
         context["unified_keywords"] = list(dict.fromkeys(unified_keywords))  # 순서 유지 중복 제거
         logger.info(f"통합 키워드 생성 완료: 총 {len(context['unified_keywords'])}개")
-        logger.info(f"통합 키워드: {context['unified_keywords']}")
+        logger.info(f"통합 키워드 (우선순위순): {context['unified_keywords']}")
 
         return context
     
@@ -292,120 +293,133 @@ class BroadcastWorkflow:
         else:
             return "새벽"
 
-    async def _classify_keywords_with_langchain(self, context: Dict[str, Any]) -> Dict[str, List[str]]:
-        """LangChain을 사용한 키워드 분류"""
-        
-        # 모든 키워드 수집
-        all_keywords = []
-        
-        # 날씨 키워드
-        if context["weather"].get("weather"):
-            all_keywords.append(context["weather"]["weather"])
-        
-        # 시간/날짜 키워드
-        all_keywords.extend([context["time_slot"], context["day_type"], context["season"]])
-        
-        # AI 생성 트렌드 추가! (날씨/시간 기반 트렌드)
-        if "ai_trends" in context and context["ai_trends"]:
-            all_keywords.extend(context["ai_trends"][:10])  # 상위 10개만 포함
-            logger.info(f"AI 트렌드 키워드 {len(context['ai_trends'][:10])}개 추가됨")
-
-        # 수집된 키워드들 로그 출력
-        logger.info(f"키워드 분류 시작 - 총 {len(all_keywords)}개 키워드: {all_keywords}")
-
-        # LangChain 프롬프트
-        classification_prompt = ChatPromptTemplate.from_messages([
-            ("system", """당신은 홈쇼핑 방송 편성 전문가입니다. 
-주어진 키워드들을 다음 두 그룹으로 분류해주세요:
-
-1. category_keywords: 상품 카테고리와 연관된 키워드 (예: 흐린날씨, 캠핑, 건강식품, 겨울)
-2. product_keywords: 특정 상품을 지칭하는 키워드 (예: 아이폰, 라부부, 정관장)
-
-JSON 형식으로 응답해주세요."""),
-            ("human", "키워드 목록: {keywords}")
-        ])
-         
-        chain = classification_prompt | self.llm | JsonOutputParser()
-        
-        try:
-            result = await chain.ainvoke({"keywords": ", ".join(all_keywords)})
-            logger.info(f"키워드 분류 완료: 카테고리 {len(result.get('category_keywords', []))}개, 상품 {len(result.get('product_keywords', []))}개")
-            logger.info(f"분류된 카테고리 키워드: {result.get('category_keywords', [])}")
-            logger.info(f"분류된 상품 키워드: {result.get('product_keywords', [])}")
-            return result
-        except Exception as e:
-            logger.error(f"키워드 분류 오류: {e}")
-            # OpenAI API 할당량 소진 또는 API 오류 시 예외 발생
-            if "insufficient_quota" in str(e) or "429" in str(e):
-                raise Exception(f"AI 서비스 일시 중단 - OpenAI API 할당량 소진: {e}")
-            elif "api" in str(e).lower() or "openai" in str(e).lower():
-                raise Exception(f"AI 서비스 연결 오류: {e}")
-            else:
-                # 기타 오류는 폴백 로직 사용
-                return {
-                    "category_keywords": all_keywords[:10],
-                    "product_keywords": []
-                }
+    # _classify_keywords_with_langchain 함수 제거됨
+    # 이제 _generate_base_context_keywords에서 키워드 생성과 확장을 통합 처리
     
     async def _execute_unified_search(self, context: Dict[str, Any], unified_keywords: List[str]) -> Dict[str, Any]:
-        """통합 검색: 1회 Qdrant 검색으로 직접매칭/카테고리 상품 분류"""
+        """다단계 Qdrant 검색: 키워드를 그룹별로 나눠서 검색하여 임베딩 희석 방지"""
         
-        print(f"=== [DEBUG Unified Search] 시작, keywords: {len(unified_keywords)}개 ===")
+        print(f"=== [DEBUG Multi-Stage Search] 시작, keywords: {len(unified_keywords)}개 ===")
         
         if not unified_keywords:
             logger.warning("통합 키워드 없음 - 빈 결과 반환")
             return {"direct_products": [], "category_groups": {}}
         
-        query = " ".join(unified_keywords)
-        print(f"=== [DEBUG Unified Search] Qdrant 검색 쿼리: '{query}' ===")
-        
         try:
-            # Qdrant 통합 검색 (1회)
-            all_results = self.product_embedder.search_products(
-                trend_keywords=[query],
-                top_k=50,  # 후보군
-                score_threshold=0.3,
-                only_ready_products=True
-            )
-            print(f"=== [DEBUG Unified Search] 검색 결과: {len(all_results)}개 상품 ===")
+            # 키워드를 3개 그룹으로 나누기
+            # 1단계: 핵심 키워드 (처음 5개)
+            # 2단계: 중간 키워드 (다음 5개)
+            # 3단계: 보완 키워드 (나머지)
+            
+            group1 = unified_keywords[:5]   # 핵심
+            group2 = unified_keywords[5:10]  # 중간
+            group3 = unified_keywords[10:]   # 보완
+            
+            all_results = []
+            seen_products = set()
+            
+            # 1단계: 핵심 키워드 검색 (고유사도 기대)
+            if group1:
+                query1 = " ".join(group1)
+                print(f"=== [1단계 검색] 핵심 키워드: {group1} ===")
+                results1 = self.product_embedder.search_products(
+                    trend_keywords=[query1],
+                    top_k=30,  # 20 → 30 증가
+                    score_threshold=0.4,
+                    only_ready_products=True
+                )
+                for r in results1:
+                    code = r.get("product_code")
+                    if code not in seen_products:
+                        all_results.append(r)
+                        seen_products.add(code)
+                print(f"  → {len(results1)}개 발견 (누적: {len(all_results)}개)")
+            
+            # 2단계: 중간 키워드 검색
+            if group2:
+                query2 = " ".join(group2)
+                print(f"=== [2단계 검색] 중간 키워드: {group2} ===")
+                results2 = self.product_embedder.search_products(
+                    trend_keywords=[query2],
+                    top_k=30,  # 20 → 30 증가
+                    score_threshold=0.3,
+                    only_ready_products=True
+                )
+                for r in results2:
+                    code = r.get("product_code")
+                    if code not in seen_products:
+                        all_results.append(r)
+                        seen_products.add(code)
+                print(f"  → {len(results2)}개 발견 (누적: {len(all_results)}개)")
+            
+            # 3단계: 보완 키워드 검색
+            if group3:
+                query3 = " ".join(group3)
+                print(f"=== [3단계 검색] 보완 키워드: {group3} ===")
+                results3 = self.product_embedder.search_products(
+                    trend_keywords=[query3],
+                    top_k=25,  # 15 → 25 증가
+                    score_threshold=0.3,
+                    only_ready_products=True
+                )
+                for r in results3:
+                    code = r.get("product_code")
+                    if code not in seen_products:
+                        all_results.append(r)
+                        seen_products.add(code)
+                print(f"  → {len(results3)}개 발견 (누적: {len(all_results)}개)")
+            
+            print(f"=== [다단계 검색 완료] 총 {len(all_results)}개 상품 ===")
+            
+            # 유사도 분포 확인 (디버깅)
+            if all_results:
+                similarities = [p.get("similarity_score", 0) for p in all_results]
+                print(f"[유사도 분포] 최고: {max(similarities):.3f}, 평균: {sum(similarities)/len(similarities):.3f}, 최저: {min(similarities):.3f}")
+                print(f"[상위 5개 유사도]")
+                for i, p in enumerate(all_results[:5], 1):
+                    sim = p.get("similarity_score", 0)
+                    name = p.get("product_name", "")[:40]
+                    tape = "📼" if (p.get("tape_code") and p.get("tape_name")) else "❌"
+                    print(f"  {i}. {name} | 유사도: {sim:.3f} | 테이프: {tape}")
             
             # 유사도 기반 분류
             direct_products = []      # 고유사도: 직접 추천
             category_groups = {}      # 중유사도: 카테고리별 그룹
             
             # 유사도 임계값
-            HIGH_SIMILARITY_THRESHOLD = 0.7
+            HIGH_SIMILARITY_THRESHOLD = 0.45  # 실제 유사도 분포(최고 0.498)에 맞춤
             
             for product in all_results:
                 similarity = product.get("similarity_score", 0)
                 category = product.get("category_main", "기타")
                 
-                # 고유사도 상품: 직접 매칭 (XGBoost 건너뛰기 후보)
+                # 고유사도 상품: 직접 매칭
                 if similarity >= HIGH_SIMILARITY_THRESHOLD:
-                    # 보완: 안전장치 - 방송테이프 확인
                     if product.get("tape_code") and product.get("tape_name"):
                         direct_products.append({
                             **product,
                             "source": "direct_match",
                             "similarity_score": similarity
                         })
-                        print(f"  - 직접매칭: {product.get('product_name')} (유사도: {similarity:.2f})")
+                        print(f"  ✅ 직접매칭: {product.get('product_name')[:30]} (유사도: {similarity:.2f})")
                 
                 # 중유사도: 카테고리 그룹핑
                 if category not in category_groups:
                     category_groups[category] = []
                 category_groups[category].append(product)
             
-            print(f"=== [DEBUG Unified Search] 직접매칭: {len(direct_products)}개, 카테고리: {len(category_groups)}개 ===")
+            print(f"=== [분류 완료] 직접매칭: {len(direct_products)}개, 카테고리: {len(category_groups)}개 ===")
             
             return {
                 "direct_products": direct_products,
                 "category_groups": category_groups,
-                "search_keywords": unified_keywords[:5]  # 검색에 사용된 키워드 상위 5개
+                "search_keywords": unified_keywords[:5]
             }
             
         except Exception as e:
-            logger.error(f"통합 검색 오류: {e}")
+            logger.error(f"다단계 검색 오류: {e}")
+            import traceback
+            logger.error(f"상세 에러:\n{traceback.format_exc()}")
             return {"direct_products": [], "category_groups": {}}
     
     async def _get_realtime_trend_keywords(self) -> List[str]:
@@ -415,7 +429,7 @@ JSON 형식으로 응답해주세요."""),
         try:
             client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
             
-            prompt = """당신은 한국 쇼핑 트렌드 분석 전문가입니다.
+            prompt = """당신은 20년차 한국 쇼핑 트렌드 분석 전문가입니다.
 
 **임무: 지금 이 순간 한국에서 인기 있는 쇼핑 관련 키워드를 찾으세요**
 
@@ -502,35 +516,113 @@ JSON 형식으로 응답해주세요."""),
             temperature = 20
         
         time_slot = context.get("time_slot", "저녁")
-        season = context.get("season", "봄")
         day_type = context.get("day_type", "평일")
         holiday_name = context.get("holiday_name")  # 공휴일 정보
         
-        logger.info(f"추출된 정보 - weather: {weather}, temp: {temperature}, time_slot: {time_slot}, season: {season}, day_type: {day_type}, holiday: {holiday_name}")
+        # 날짜 정보 추출
+        broadcast_dt = context.get("broadcast_dt")
+        month = broadcast_dt.month if broadcast_dt else 11
+        day = broadcast_dt.day if broadcast_dt else 19
         
-        # LangChain 프롬프트
+        logger.info(f"추출된 정보 - weather: {weather}, temp: {temperature}, time_slot: {time_slot}, month: {month}, day: {day}, day_type: {day_type}, holiday: {holiday_name}")
+        
+        # LangChain 프롬프트 (키워드 생성 + 확장 통합)
         keyword_prompt = ChatPromptTemplate.from_messages([
-            ("system", """당신은 홈쇼핑 방송 편성 전문가입니다. 
-주어진 컨텍스트 정보를 분석하여, 해당 시간/날씨/상황에 적합한 상품 검색 키워드를 생성해주세요.
+            ("system", """당신은 20년차 홈쇼핑 상품 검색 전문가입니다. 
+주어진 상황에 맞는 **구체적인 상품명 키워드**를 생성하고, 추상적인 키워드는 확장해주세요.
 
-예시:
-- 날씨가 '비'이고 저녁 시간 → "우산", "방수", "실내활동", "따뜻한음식", "집콕", "요리도구"
-- 날씨가 '맑음'이고 오후 시간 → "야외활동", "운동", "캠핑", "레저", "자외선차단"
-- 겨울철 저녁 시간 → "난방", "보온", "따뜻한", "겨울의류", "온열", "찜질"
-- 크리스마스 → "선물", "파티", "케이크", "장식", "가족모임", "연말선물"
-- 추석 → "선물세트", "한복", "송편", "귀성", "명절음식", "차례상"
+**2단계 작업:**
+1. 상황에 맞는 키워드 10-15개 생성
+2. 추상적 키워드를 구체적 상품명으로 확장
 
-**중요: 공휴일이 있으면 반드시 공휴일 관련 키워드를 우선적으로 포함하세요!**
+**핵심 원칙: 실제 상품명처럼 구체적으로!**
 
-5-10개의 키워드를 JSON 배열로 반환해주세요."""),
-            ("human", """날씨: {weather}
+❌ 나쁜 예 (추상적):
+- "겨울준비", "건강관리", "가족모임", "따뜻한", "편리한"
+
+✅ 좋은 예 (구체적):
+- "패딩", "기모바지", "담요", "오메가3", "락토핏", "온열기", "전기장판"
+
+**시즌별 구체적 키워드 예시:**
+
+11월-12월 (겨울):
+- 의류: "패딩", "기모", "목도리", "장갑", "겨울코트"
+- 가전: "온열기", "전기장판", "히터", "가습기"
+- 건강: "오메가3", "유산균", "홍삼", "비타민", "면역"
+- 식품: "군고구마", "호빵", "어묵", "핫팩"
+
+7-8월 (여름):
+- 의류: "반팔", "반바지", "원피스", "샌들"
+- 가전: "선풍기", "에어컨", "제습기", "냉풍기"
+- 건강: "수분크림", "자외선차단제", "비타민C"
+- 식품: "아이스크림", "냉면", "수박", "음료"
+
+**확장 규칙:**
+- "수능 간식" → ["초콜릿", "견과류", "에너지바", "홍삼"]
+- "블랙프라이데이" → ["할인", "특가", "세일"]
+- "김장 재료" → ["김치냉장고", "절임배추", "고춧가루"]
+- "겨울 패션" → ["패딩", "기모", "코트", "목도리"]
+- 이미 구체적이면 확장 불필요
+
+**중요 지침:**
+1. 브랜드명도 포함 가능: "락토핏", "종근당", "쿠쿠", "해피콜"
+2. 상품 카테고리명: "건강식품", "생활가전", "의류", "식품"
+3. 시즌 특화 상품: 11-12월이면 "크리스마스", "연말선물", "수능간식"
+4. 다양한 카테고리 포함 (최소 3개 이상 카테고리)
+
+**시간대별 카테고리 우선순위 및 가중치 (중요!):**
+
+🌅 아침 (06:00-09:59):
+- 매우 적합 (1.2): 건강식품, 일반식품, 주방용품
+- 보통 (0.9): 의류, 가전
+- 부적합 (0.8): 패션잡화, 신발
+- 예: "오메가3"(1.2), "유산균"(1.2), "커피"(1.2), "패딩"(0.9)
+
+🌞 점심 (10:00-13:59):
+- 매우 적합 (1.2): 일반식품, 주방용품, 생활용품
+- 보통 (0.9): 의류, 가전, 건강식품
+- 부적합 (0.8): 패션잡화, 신발
+- 예: "간편식"(1.2), "도시락"(1.2), "청소용품"(1.2), "패딩"(0.9)
+
+🌤️ 오후 (14:00-17:59):
+- 매우 적합 (1.2): 가구/침구, 생활용품, 가전
+- 보통 (1.0): 건강식품, 의류, 식품
+- 예: "침대"(1.2), "매트리스"(1.2), "청소기"(1.2), "패딩"(1.0)
+
+🌙 저녁/밤 (18:00-05:59):
+- 매우 적합 (1.2): 의류, 패션잡화/보석, 신발, 화장품/뷰티
+- 적합 (1.1): 건강식품, 가전, 가구/침구
+- 보통 (0.9): 식품, 주방용품
+- 예: "패딩"(1.2), "기모"(1.2), "목도리"(1.2), "스킨케어"(1.2), "화장품"(1.2), "홍삼"(1.1)
+
+**가중치 규칙:**
+- 1.2: 해당 시간대에 매우 적합한 카테고리
+- 1.1: 적합한 카테고리
+- 1.0: 보통 (기본값)
+- 0.9: 다소 부적합
+- 0.8: 부적합
+
+JSON 형식으로 반환 (각 키워드에 가중치 포함):
+{{
+  "keywords": [
+    {{"keyword": "키워드1", "weight": 1.2}},
+    {{"keyword": "키워드2", "weight": 1.0}},
+    {{"keyword": "키워드3", "weight": 0.9}}
+  ],
+  "expanded": {{
+    "추상키워드1": ["구체1", "구체2", "구체3"],
+    "추상키워드2": ["구체1", "구체2"]
+  }}
+}}"""),
+            ("human", """날짜: {month}월 {day}일
+날씨: {weather}
 기온: {temperature}도
 시간대: {time_slot}
-계절: {season}
 요일 타입: {day_type}
 공휴일: {holiday_name}
 
-위 상황에 적합한 상품 검색 키워드를 생성해주세요. 공휴일이 있다면 공휴일 관련 키워드를 반드시 포함하세요!""")
+위 상황에 적합한 상품 검색 키워드를 생성해주세요. 
+**특히 시간대({time_slot})를 고려해서 해당 시간대에 적합한 카테고리의 키워드를 우선적으로 생성하세요!**""")
         ])
         
         chain = keyword_prompt | self.llm | JsonOutputParser()
@@ -538,10 +630,11 @@ JSON 형식으로 응답해주세요."""),
         try:
             # 프롬프트 로깅 (눈에 띄게)
             prompt_vars = {
+                "month": month,
+                "day": day,
                 "weather": weather,
                 "temperature": temperature,
                 "time_slot": time_slot,
-                "season": season,
                 "day_type": day_type,
                 "holiday_name": holiday_name if holiday_name else "없음"
             }
@@ -555,28 +648,127 @@ JSON 형식으로 응답해주세요."""),
             logger.info(f"[1단계] 기본 컨텍스트 프롬프트 변수: {prompt_vars}")
             
             result = await chain.ainvoke({
+                "month": month,
+                "day": day,
                 "weather": weather,
                 "temperature": temperature,
                 "time_slot": time_slot,
-                "season": season,
                 "day_type": day_type,
                 "holiday_name": holiday_name if holiday_name else "없음"
             })
-            # result가 리스트일 수도 있고 딕셔너리일 수도 있음
-            if isinstance(result, list):
-                keywords = result
-            elif isinstance(result, dict):
-                keywords = result.get("keywords", [])
-            else:
+            
+            # 결과 파싱
+            keyword_weights = {}  # 키워드별 가중치 저장
+            
+            if isinstance(result, dict):
+                keywords_data = result.get("keywords", [])
+                expansion_map = result.get("expanded", {})
+                
+                # 키워드와 가중치 분리
                 keywords = []
+                for item in keywords_data:
+                    if isinstance(item, dict):
+                        kw = item.get("keyword", "")
+                        weight = item.get("weight", 1.0)
+                        keywords.append(kw)
+                        keyword_weights[kw] = weight
+                    else:
+                        # 폴백: 문자열로 온 경우
+                        keywords.append(item)
+                        keyword_weights[item] = 1.0
+            else:
+                # 폴백: 리스트로 온 경우
+                keywords = result if isinstance(result, list) else []
+                expansion_map = {}
+                for kw in keywords:
+                    keyword_weights[kw] = 1.0
             
             print("=" * 80)
-            print(f"[1단계 - 응답] LLM 생성 키워드: {keywords}")
+            print(f"[1단계 - 응답] LLM 생성 키워드 (가중치 포함):")
+            for kw in keywords[:10]:
+                weight = keyword_weights.get(kw, 1.0)
+                print(f"  - {kw}: {weight}x")
             print(f"[1단계 - 결과] 총 {len(keywords)}개 키워드")
             print("=" * 80)
+            
+            # 확장 키워드 처리 및 매핑 생성
+            expanded_keywords = []
+            keyword_mapping = {}
+            
+            print(f"[1단계 - 확장] LLM 확장 결과:")
+            for original_kw in keywords:
+                # 원본 키워드 추가 (가중치 유지)
+                expanded_keywords.append(original_kw)
+                keyword_mapping[original_kw] = original_kw
+                
+                # 확장된 키워드 추가
+                if original_kw in expansion_map:
+                    expanded_list = expansion_map[original_kw]
+                    print(f"  🔄 '{original_kw}' → {expanded_list}")
+                    expanded_keywords.extend(expanded_list)
+                    
+                    # 매핑 저장
+                    for exp_kw in expanded_list:
+                        keyword_mapping[exp_kw] = original_kw
+            
+            # 중복 제거
+            expanded_keywords = list(dict.fromkeys(expanded_keywords))
+            
+            print("=" * 80)
+            print(f"[1단계 - LLM 확장 완료] 원본 {len(keywords)}개 → 확장 {len(expanded_keywords)}개")
+            print(f"[1단계 - 확장 키워드] {expanded_keywords}")
+            print("=" * 80)
+            
+            # RAG 방식: 실제 DB 상품명 기반 키워드 재확장
+            rag_keywords = await self._extract_keywords_from_actual_products(expanded_keywords)
+            
+            # RAG 키워드도 매핑에 추가 (원본 키워드로 역추적)
+            for rag_kw in rag_keywords:
+                if rag_kw not in keyword_mapping:
+                    # RAG로 추출된 키워드는 가장 관련 있는 원본 키워드로 매핑
+                    # 간단하게 첫 번째 원본 키워드로 매핑 (개선 가능)
+                    keyword_mapping[rag_kw] = keywords[0] if keywords else rag_kw
+            
+            # 최종 키워드 순서 최적화:
+            # 1. RAG 키워드 (최우선! 실제 DB 상품명 기반)
+            # 2. 원본 키워드 (LLM 생성)
+            # 3. LLM 확장 키워드 (보완)
+            final_keywords = []
+            
+            # 1순위: RAG 키워드 (최우선!)
+            final_keywords.extend(rag_keywords)
+            
+            # 2순위: 원본 키워드 (RAG에 없는 것만)
+            for orig_kw in keywords:
+                if orig_kw not in final_keywords:
+                    final_keywords.append(orig_kw)
+            
+            # 3순위: LLM 확장 키워드 (RAG/원본에 없는 것만)
+            for exp_kw in expanded_keywords:
+                if exp_kw not in final_keywords:
+                    final_keywords.append(exp_kw)
+            
+            # context에 매핑 정보 및 가중치 저장
+            context["keyword_mapping"] = keyword_mapping
+            context["original_keywords"] = keywords
+            context["keyword_weights"] = keyword_weights  # 시간대별 가중치
+            
+            print("=" * 80)
+            print(f"[1단계 - 최종 완료] 원본 {len(keywords)}개 → LLM {len(expanded_keywords)}개 → RAG {len(rag_keywords)}개 → 최종 {len(final_keywords)}개")
+            print(f"[키워드 순서 최적화 - RAG 최우선!]")
+            print(f"  🥇 1순위 (RAG): {rag_keywords[:5]}...")
+            print(f"  🥈 2순위 (원본): {[k for k in keywords if k not in rag_keywords][:5]}...")
+            print(f"  🥉 3순위 (확장): {[k for k in expanded_keywords if k not in rag_keywords and k not in keywords][:5]}...")
+            print(f"[1단계 - 최종 키워드 순서] {final_keywords[:20]}...")
+            print(f"[1단계 - 매핑] {len(keyword_mapping)}개 매핑 저장")
+            print("=" * 80)
+            
             logger.info(f"[1단계] 컨텍스트 기반 키워드 생성 완료: {keywords}")
-            logger.info(f"[1단계] 반환할 키워드 개수: {len(keywords)}")
-            return keywords
+            logger.info(f"[1단계] LLM 확장: {expanded_keywords}")
+            logger.info(f"[1단계] RAG 추출: {rag_keywords[:10]}")
+            logger.info(f"[1단계] 최종 키워드: {final_keywords[:15]}")
+            logger.info(f"[1단계] 키워드 매핑: {len(keyword_mapping)}개")
+            return final_keywords
         except Exception as e:
             logger.error(f"컨텍스트 키워드 생성 오류: {e}")
             import traceback
@@ -609,6 +801,106 @@ JSON 형식으로 응답해주세요."""),
             logger.info(f"[1단계] 폴백 키워드 개수: {len(fallback_keywords)}")
             return fallback_keywords
     
+    # 주석: _expand_keywords_to_product_terms 함수는 제거됨
+    # 이제 _generate_base_context_keywords에서 키워드 생성과 확장을 한 번에 처리
+    
+    async def _extract_keywords_from_actual_products(self, trend_keywords: List[str]) -> List[str]:
+        """
+        RAG 방식: 실제 DB 상품명 기반 키워드 추출
+        
+        1. 트렌드 키워드로 느슨하게 검색
+        2. 검색된 실제 상품명 분석
+        3. LLM으로 유용한 키워드 추출
+        
+        Returns:
+            실제 DB에 존재하는 상품 기반 키워드 리스트
+        """
+        
+        print("=" * 80)
+        print("[RAG 키워드 추출] 실제 상품명 기반 키워드 추출 시작")
+        print("=" * 80)
+        
+        try:
+            # 1단계: 느슨한 검색 (상위 5개 키워드만 사용)
+            query = " ".join(trend_keywords[:5])
+            print(f"[1단계] 느슨한 검색 쿼리: {query}")
+            
+            search_results = self.product_embedder.search_products(
+                trend_keywords=[query],
+                top_k=30,  # 충분한 샘플
+                score_threshold=0.25,  # 매우 낮은 threshold
+                only_ready_products=True
+            )
+            
+            if not search_results:
+                print("[RAG] 검색 결과 없음 - 원본 키워드 반환")
+                return trend_keywords
+            
+            # 2단계: 실제 상품명 추출
+            actual_product_names = [
+                result.get("product_name", "")
+                for result in search_results[:20]  # 상위 20개만
+            ]
+            
+            print(f"[2단계] 검색된 상품 {len(actual_product_names)}개:")
+            for i, name in enumerate(actual_product_names[:5], 1):
+                print(f"  {i}. {name[:50]}")
+            
+            # 3단계: LLM으로 키워드 추출
+            extraction_prompt = ChatPromptTemplate.from_messages([
+                ("system", """당신은 홈쇼핑 상품 검색 전문가입니다.
+
+**임무**: 실제 DB 상품명들을 분석해서 검색에 유용한 키워드를 추출하세요.
+
+**추출 규칙**:
+1. 브랜드명 추출 (예: "쿠쿠", "필립스", "락토핏")
+2. 상품 카테고리 (예: "압력솥", "에어프라이어", "유산균")
+3. 핵심 키워드 (예: "IH", "XXL", "프로바이오틱스")
+4. 중복 제거
+
+**예시**:
+상품명: "쿠쿠 IH 10인용 압력밥솥"
+추출: ["쿠쿠", "압력솥", "밥솥", "IH"]
+
+상품명: "필립스 에어프라이어 XXL 7.3L"
+추출: ["필립스", "에어프라이어", "튀김기", "XXL"]
+
+JSON 형식:
+{{"keywords": ["키워드1", "키워드2", ...]}}""")
+,
+                ("human", """트렌드 키워드: {trend_keywords}
+
+우리 DB에서 검색된 실제 상품명들:
+{product_names}
+
+위 상품명들을 분석해서 검색에 유용한 키워드 15-20개를 추출하세요.""")
+            ])
+            
+            chain = extraction_prompt | self.llm | JsonOutputParser()
+            
+            result = await chain.ainvoke({
+                "trend_keywords": ", ".join(trend_keywords[:5]),
+                "product_names": "\n".join([f"{i+1}. {name}" for i, name in enumerate(actual_product_names)])
+            })
+            
+            extracted_keywords = result.get("keywords", [])
+            
+            print("=" * 80)
+            print(f"[3단계] LLM 추출 완료: {len(extracted_keywords)}개 키워드")
+            print(f"[추출 키워드] {extracted_keywords[:10]}...")
+            print("=" * 80)
+            
+            return extracted_keywords
+            
+        except Exception as e:
+            logger.error(f"RAG 키워드 추출 오류: {e}")
+            import traceback
+            logger.error(f"상세 에러:\n{traceback.format_exc()}")
+            
+            # 폴백: 원본 키워드 반환
+            print(f"[RAG 실패] 원본 키워드 사용: {trend_keywords}")
+            return trend_keywords
+    
     async def _generate_context_keywords(self, context: Dict[str, Any]) -> List[str]:
         """통합 키워드 생성: 1단계(기본 컨텍스트) + 2단계(실시간 트렌드)"""
         
@@ -628,16 +920,21 @@ JSON 형식으로 응답해주세요."""),
         realtime_keywords = await self._get_realtime_trend_keywords()
         logger.info(f"2단계 실시간 트렌드: {realtime_keywords}")
         
-        # 통합: 실시간 트렌드 우선 + 기본 컨텍스트
-        combined_keywords = realtime_keywords + base_keywords
+        # 통합: RAG 최우선 유지! (base_keywords 내부 순서: RAG → 원본 → 확장)
+        # 웹 트렌드는 보완용으로 뒤에 배치
+        combined_keywords = base_keywords + realtime_keywords
         
         # 중복 제거 (순서 유지)
         unique_keywords = list(dict.fromkeys(combined_keywords))
         
         print("=" * 80)
-        print(f"[통합 키워드] 최종 {len(unique_keywords)}개: {unique_keywords}")
+        print(f"[통합 키워드 순서] RAG 최우선 → 원본 → 확장 → 웹 트렌드")
+        print(f"  1순위 (RAG): {base_keywords[:5]}...")
+        print(f"  보완 (웹): {realtime_keywords[:3]}...")
+        print(f"[통합 키워드] 최종 {len(unique_keywords)}개")
+        print(f"[최종 순서] {unique_keywords[:15]}...")
         print("=" * 80)
-        logger.info(f"통합 키워드 생성 완료: {unique_keywords}")
+        logger.info(f"통합 키워드 생성 완료: {unique_keywords[:20]}")
         
         return unique_keywords
     
@@ -645,8 +942,8 @@ JSON 형식으로 응답해주세요."""),
         self,
         search_result: Dict[str, Any],
         context: Dict[str, Any],
-        max_trend_match: int = 3,  # 유사도 기반 최대 개수
-        max_sales_prediction: int = 10  # 매출예측 기반 최대 개수
+        max_trend_match: int = 8,  # 유사도 기반 최대 개수 (의류 편중 방지)
+        max_sales_prediction: int = 32  # 매출예측 기반 최대 개수 (다양성 확보)
     ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """통합 후보군 생성 - 모든 상품 XGBoost 예측 후 가중치 조정"""
         
@@ -691,8 +988,8 @@ JSON 형식으로 응답해주세요."""),
         
         print(f"=== [DEBUG] 중복 제거 후: {len(unique_products)}개 (소분류+브랜드 다양성 보장) ===")
         
-        # 3. 배치 예측 준비 (상위 30개만)
-        products_list = list(unique_products.values())[:30]
+        # 3. 배치 예측 준비 (상위 40개 - 의류 편중 방지)
+        products_list = list(unique_products.values())[:40]
         print(f"=== [DEBUG] 배치 예측 대상: {len(products_list)}개 ===")
         
         # 4. 배치 XGBoost 예측 (한 번에 처리)
@@ -810,17 +1107,179 @@ JSON 형식으로 응답해주세요."""),
         return candidates
     
     async def _rank_final_candidates(self, candidates: List[Dict[str, Any]], category_scores: Dict[str, Any], context: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """최종 랭킹 계산 - 이미 정렬된 candidates 반환 (XGBoost 예측 완료됨)"""
+        """최종 랭킹 계산 - 시즌 적합성 + 카테고리+브랜드 다양성 적용"""
         
         print(f"=== [DEBUG _rank_final_candidates] 이미 점수순으로 정렬된 {len(candidates)}개 후보 수신 ===")
         
-        # 이미 _generate_unified_candidates에서 final_score 계산 및 정렬 완료
-        # 여기서는 추가 처리 없이 그대로 반환
+        # 0. 시즌 적합성 필터링 (LLM 배치 판단) - 상위 40개 후보에 대해
+        top_candidates = candidates[:40]  # 충분한 후보군 준비 (시즌 필터 + 중복 제거 고려)
+        print(f"\n=== [시즌 적합성 검사] 상위 {len(top_candidates)}개 후보 검사 시작 ===")
         
-        for i, candidate in enumerate(candidates[:5]):
-            print(f"  {i+1}위: {candidate['product'].get('product_name')[:25]} (점수: {candidate['final_score']:.3f}, 타입: {candidate['source']})")
+        season_filtered = await self._filter_by_season_suitability(top_candidates, context)
+        print(f"=== [시즌 적합성 검사] {len(top_candidates)}개 → {len(season_filtered)}개 (부적합 {len(top_candidates) - len(season_filtered)}개 제거) ===\n")
         
-        return candidates
+        # 1. 카테고리+브랜드 중복 제거 + 대분류 카테고리 쿼터 제한
+        category_brand_seen = set()
+        category_count = {}  # 대분류 카테고리별 개수
+        filtered_candidates = []
+        
+        for candidate in season_filtered:
+            product = candidate["product"]
+            category = product.get("category_main", "Unknown")
+            brand = product.get("brand", "Unknown")
+            key = f"{category}_{brand}"
+            
+            # 1-1. 같은 카테고리+브랜드 조합은 1개만 허용 (다양성 보장)
+            if key in category_brand_seen:
+                print(f"  ⚠️ 브랜드 중복 제거: {product.get('product_name')[:30]} (카테고리: {category}, 브랜드: {brand})")
+                continue
+            
+            # 1-2. 같은 대분류 카테고리는 최대 4개까지만 허용
+            current_count = category_count.get(category, 0)
+            if current_count >= 4:
+                print(f"  ⚠️ 카테고리 쿼터 초과: {product.get('product_name')[:30]} (카테고리: {category}, 이미 {current_count}개)")
+                continue
+            
+            # 통과: 후보에 추가
+            filtered_candidates.append(candidate)
+            category_brand_seen.add(key)
+            category_count[category] = current_count + 1
+        
+        print(f"=== [다양성 필터링] {len(season_filtered)}개 → {len(filtered_candidates)}개 (중복 {len(season_filtered) - len(filtered_candidates)}개 제거) ===")
+        print(f"=== [카테고리 분포] {category_count} ===")
+        
+        for i, candidate in enumerate(filtered_candidates[:5]):
+            product = candidate['product']
+            print(f"  {i+1}위: {product.get('product_name')[:25]} | {product.get('category_main', 'N/A')} | {product.get('brand', 'N/A')} (점수: {candidate['final_score']:.3f})")
+        
+        return filtered_candidates
+    
+    async def _filter_by_season_suitability(self, candidates: List[Dict[str, Any]], context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """시즌 적합성 필터링 - LLM 배치 판단"""
+        
+        if not candidates:
+            return []
+        
+        # 현재 날짜 정보 추출
+        broadcast_dt = context.get("broadcast_dt")
+        month = broadcast_dt.month if broadcast_dt else 11
+        day = broadcast_dt.day if broadcast_dt else 19
+        holiday_name = context.get("holiday_name")
+        
+        # 상품 정보 준비 (상품명 + 테이프명)
+        products_info = []
+        for i, candidate in enumerate(candidates):
+            product = candidate["product"]
+            products_info.append({
+                "index": i,
+                "product_name": product.get("product_name", ""),
+                "tape_name": product.get("tape_name", ""),
+                "category": product.get("category_main", "")
+            })
+        
+        # LLM 프롬프트
+        season_prompt = ChatPromptTemplate.from_messages([
+            ("system", """당신은 20년차 홈쇼핑 방송 편성 전문가입니다.
+현재 날짜/계절에 어울리지 않는 상품을 찾아주세요.
+
+**제외 기준 (상품의 실제 특성 중심):**
+
+1. 명절 불일치: 특정 명절 상품인데 현재 명절과 맞지 않는 경우
+   - 예: 11월에 "신년특집", "설날", "추석" 포함 상품
+   - 예: 7월에 "크리스마스" 포함 상품
+   - 선행 판매 허용: 12월 말 신년특집 ⭕, 12월 중순 크리스마스 ⭕, 8월 말 추석 ⭕
+
+2. 계절/날씨 부적합 상품 (상품 특성으로만 판단):
+   
+   **겨울철(11월~2월) - 추운 날씨에 제외할 것:**
+   - 여름 냉방: "냉감", "쿨링", "시원한", "냉방", "피서용", "여름용"
+   - 여름 의류: "반팔", "반바지", "민소매", "샌들" (실내용 제외)
+   - 여름 침구: "냉감 패드", "쿨매트"
+   - 예: "쿨드림 냉감패드", "여름 반팔티", "피서용 선풍기"
+   
+   **겨울철(11월~2월) - 추운 날씨에 적합 (허용):**
+   - 난방 상품: "전기장판", "전기담요", "온열", "난방", "보온"
+   - 겨울 의류: "패딩", "기모", "겨울", "코트", "목도리", "장갑", "두꺼운"
+   - 예: "전기매트", "온열마사지기", "패딩", "기모바지" → 모두 OK!
+   
+   **여름철(6월~8월) - 더운 날씨에 제외할 것:**
+   - 난방 상품: "전기장판", "전기담요", "온열", "난방"
+   - 겨울 의류: "패딩", "기모", "겨울", "두꺼운 코트", "목도리"
+   - 예: "겨울 패딩", "기모 바지", "전기장판"
+   
+   **봄/가을(3~5월, 9~10월) - 환절기:**
+   - 3~5월: 겨울 난방 상품 제외, 여름 냉방 상품 OK
+   - 9~10월: 여름 냉방 상품 제외, 겨울 난방 상품 OK
+
+**중요 - 시즌 코드(SS/FW)는 무시하세요:**
+- "25SS", "24FW" 같은 코드는 참고만 하고, 상품의 실제 특성으로 판단
+- 예: "25SS 기모 바지" → 기모가 있으면 겨울에 OK
+- 예: "24FW 반팔티" → 반팔이면 겨울에 제외
+- 예: "23SS 패딩" → 패딩이면 여름에 제외
+
+# 선행 판매는 허용 (1~2주 전)
+- 12월 말 신년특집 ⭕
+- 12월 중순 크리스마스 케이크 ⭕
+- 8월 말 추석선물세트 ⭕
+
+**제외하지 말 것:**
+- 사계절 상품: 건강식품, 생활용품, 식품, 가전 등
+- 시즌 키워드가 없는 일반 상품
+
+JSON 형식으로 제외할 상품의 인덱스 배열을 반환하세요:
+{{
+  "exclude_indices": [인덱스 배열],
+  "reasons": {{
+    "인덱스": "제외 이유"
+  }}
+}}"""),
+            ("human", """현재 정보:
+- 날짜: {month}월 {day}일
+- 공휴일: {holiday_name}
+
+상품 목록:
+{products_list}
+
+위 상품 중 현재 날짜/시즌에 적합하지 않은 상품의 인덱스를 찾아주세요.
+예: 11월 중순이면 겨울 상품은 OK, 추석/설날 상품은 제외""")
+        ])
+        
+        # 상품 목록 문자열 생성 (상품명 + 테이프명)
+        products_list_str = "\n".join([
+            f"{p['index']}. {p['product_name']}\n   테이프명: {p['tape_name']}\n   카테고리: {p['category']}"
+            for p in products_info
+        ])
+        
+        chain = season_prompt | self.llm | JsonOutputParser()
+        
+        try:
+            result = await chain.ainvoke({
+                "month": month,
+                "day": day,
+                "holiday_name": holiday_name if holiday_name else "없음",
+                "products_list": products_list_str
+            })
+            
+            exclude_indices = set(result.get("exclude_indices", []))
+            reasons = result.get("reasons", {})
+            
+            # 제외된 상품 로그
+            for idx in exclude_indices:
+                if idx < len(candidates):
+                    product_name = candidates[idx]["product"].get("product_name", "")[:40]
+                    reason = reasons.get(str(idx), "시즌 부적합")
+                    print(f"  ❌ 제외: {product_name} - {reason}")
+            
+            # 필터링
+            filtered = [c for i, c in enumerate(candidates) if i not in exclude_indices]
+            return filtered
+            
+        except Exception as e:
+            logger.error(f"시즌 적합성 판단 오류: {e}")
+            import traceback
+            logger.error(f"상세 에러:\n{traceback.format_exc()}")
+            # 오류 시 모든 후보 반환 (안전장치)
+            return candidates
     
     def _calculate_competition_penalty(self, product: Dict[str, Any], all_candidates: List[Dict[str, Any]]) -> float:
         """경쟁 페널티 점수 계산"""
@@ -891,6 +1350,8 @@ JSON 형식으로 응답해주세요."""),
                     productId=product.get("product_code", "Unknown"),
                     productName=product.get("product_name", "Unknown"),
                     category=product.get("category_main", "Unknown"),
+                    categoryMiddle=product.get("category_middle"),
+                    categorySub=product.get("category_sub"),
                     brand=product.get("brand"),
                     price=product.get("price"),
                     tapeCode=product.get("tape_code"),
@@ -987,18 +1448,18 @@ JSON 형식으로 응답해주세요."""),
                 context=context
             )
             
-            # 3. 선택된 항목 추출
+            # 3. 선택된 항목 추출 (타사 편성 먼저, 네이버 나중)
             result = []
             
-            # 네이버 선택 항목
-            for idx in selected_indices.get("naver_indices", []):
-                if 0 <= idx < len(naver_as_competitor):
-                    result.append(naver_as_competitor[idx])
-            
-            # 타사 선택 항목
+            # 타사 선택 항목 (우선 배치)
             for idx in selected_indices.get("competitor_indices", []):
                 if 0 <= idx < len(competitor_products):
                     result.append(competitor_products[idx])
+            
+            # 네이버 선택 항목 (뒤에 배치)
+            for idx in selected_indices.get("naver_indices", []):
+                if 0 <= idx < len(naver_as_competitor):
+                    result.append(naver_as_competitor[idx])
             
             logger.info(f"✅ AI 선택 완료: 네이버 {len(selected_indices.get('naver_indices', []))}개 + 타사 {len(selected_indices.get('competitor_indices', []))}개 = 총 {len(result)}개")
             
@@ -1104,30 +1565,30 @@ JSON 형식으로 응답:
         naver_products: List[NaverProduct],
         competitor_products: List[CompetitorProduct]
     ) -> List[CompetitorProduct]:
-        """AI 실패 시 폴백: 단순 5:5 선택"""
+        """AI 실패 시 폴백: 단순 5:5 선택 (타사 먼저, 네이버 나중)"""
         result = []
         
-        # 네이버 5개 (또는 가능한 만큼)
-        naver_count = min(5, len(naver_products))
-        for i in range(naver_count):
-            result.append(self._convert_naver_to_competitor(naver_products[i], i))
-        
-        # 타사 5개 (또는 가능한 만큼)
+        # 타사 5개 (또는 가능한 만큼) - 우선 배치
         competitor_count = min(5, len(competitor_products))
         for i in range(competitor_count):
             result.append(competitor_products[i])
         
+        # 네이버 5개 (또는 가능한 만큼) - 뒤에 배치
+        naver_count = min(5, len(naver_products))
+        for i in range(naver_count):
+            result.append(self._convert_naver_to_competitor(naver_products[i], i))
+        
         # 10개 미만이면 나머지로 채움
         if len(result) < 10:
             remaining = 10 - len(result)
-            if naver_count < len(naver_products):
-                for i in range(naver_count, min(naver_count + remaining, len(naver_products))):
-                    result.append(self._convert_naver_to_competitor(naver_products[i], i))
-            elif competitor_count < len(competitor_products):
+            if competitor_count < len(competitor_products):
                 for i in range(competitor_count, min(competitor_count + remaining, len(competitor_products))):
                     result.append(competitor_products[i])
+            elif naver_count < len(naver_products):
+                for i in range(naver_count, min(naver_count + remaining, len(naver_products))):
+                    result.append(self._convert_naver_to_competitor(naver_products[i], i))
         
-        logger.info(f"폴백 선택: 총 {len(result)}개")
+        logger.info(f"폴백 선택: 타사 우선, 총 {len(result)}개")
         return result[:10]
     
     def _generate_recommendation_reason(self, candidate: Dict[str, Any], context: Dict[str, Any] = None) -> str:
@@ -1341,6 +1802,10 @@ JSON 형식으로 응답:
             weather = context.get("weather", {}).get("weather", "") if context else ""
             holiday_name = context.get("holiday_name") if context else None
             
+            # 키워드 매핑 정보 (확장된 키워드 → 원본 키워드)
+            keyword_mapping = context.get("keyword_mapping", {}) if context else {}
+            original_keywords = context.get("original_keywords", []) if context else []
+            
             # 상품 정보 요약
             products_summary = []
             for candidate in candidates:
@@ -1349,6 +1814,10 @@ JSON 형식으로 응답:
                 predicted_sales = candidate.get("predicted_sales", 0)
                 similarity_score = candidate.get("similarity_score", 0)
                 final_score = candidate.get("final_score", 0)
+                trend_keyword = candidate.get("trend_keyword", "")
+                
+                # 트렌드 키워드의 원본 키워드 찾기
+                original_keyword = keyword_mapping.get(trend_keyword, trend_keyword) if trend_keyword else ""
                 
                 products_summary.append({
                     "rank": rank,
@@ -1357,7 +1826,8 @@ JSON 형식으로 응답:
                     "predicted_sales": int(predicted_sales/10000) if predicted_sales else 0,
                     "similarity_score": f"{similarity_score:.3f}",
                     "final_score": f"{final_score:.3f}",
-                    "trend_keyword": candidate.get("trend_keyword", "")
+                    "trend_keyword": trend_keyword,
+                    "original_keyword": original_keyword  # 원본 키워드 추가
                 })
             
             # 배치 프롬프트 생성
@@ -1375,7 +1845,11 @@ JSON 형식으로 응답:
 # 활용 가능한 요소들
 - 예측 매출 수치 (필수)
 - 카테고리 특성 (필수)
-- 트렌드 키워드 (있을 경우)
+- **원본 키워드** (매우 중요! 있을 경우 반드시 활용)
+  * 예: 상품이 "초콜릿"이고 원본 키워드가 "수능 간식"이면
+    → "수능 간식으로 적합한 초콜릿"처럼 표현
+  * 예: 상품이 "패딩"이고 원본 키워드가 "겨울 패션"이면
+    → "겨울 패션 트렌드에 맞는 패딩"처럼 표현
 - 공휴일 (있을 경우 필수 언급)
 - 시간대 특성 (저녁/오전/오후) - 신중하게 판단
 - 날씨/계절 (선택적)
@@ -1402,12 +1876,13 @@ JSON 형식으로 응답:
 추천 상품 목록:
 {products_info}
 
-위 {count}개 상품 각각에 대해 독창적인 추천 근거를 작성하세요.""")
+위 {count}개 상품 각각에 대해 독창적인 추천 근거를 작성하세요.
+**원본 키워드가 있으면 반드시 활용하세요!**""")
             ])
             
-            # 상품 정보 포맷팅
+            # 상품 정보 포맷팅 (원본 키워드 포함)
             products_info = "\n".join([
-                f"{p['rank']}. {p['product_name'][:40]} | 카테고리: {p['category']} | 예측매출: {p['predicted_sales']}만원 | 트렌드: {p['trend_keyword'] or '없음'}"
+                f"{p['rank']}. {p['product_name'][:40]} | 카테고리: {p['category']} | 예측매출: {p['predicted_sales']}만원 | 원본키워드: {p['original_keyword'] or '없음'}"
                 for p in products_summary
             ])
             

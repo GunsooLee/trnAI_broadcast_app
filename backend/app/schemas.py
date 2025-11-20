@@ -91,7 +91,9 @@ class ProductInfo(BaseModel):
     """상품 정보 스키마"""
     productId: str
     productName: str
-    category: str
+    category: str = Field(description="대분류 카테고리", example="건강식품")
+    categoryMiddle: Optional[str] = Field(default=None, description="중분류 카테고리", example="건강보조식품")
+    categorySub: Optional[str] = Field(default=None, description="소분류 카테고리", example="다이어트")
     brand: Optional[str] = Field(default=None, description="브랜드", example="해피콜")
     price: Optional[float] = Field(default=None, description="상품 가격", example=99000.0)
     tapeCode: Optional[str] = Field(default=None, description="방송테이프 코드", example="T001")
