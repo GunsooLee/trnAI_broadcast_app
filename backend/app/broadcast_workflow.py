@@ -438,10 +438,22 @@ class BroadcastWorkflow:
 - 현재 이슈가 되는 이벤트 (스포츠, 날씨 이슈, 사회 이벤트 등)
 - 쇼핑 트렌드 키워드
 
+**출력 형식 (반드시 아래 형식을 따르세요):**
+
+1. 먼저 JSON 배열로 키워드 반환:
+```json
+["키워드1", "키워드2", "키워드3", "키워드4", "키워드5"]
+```
+
+2. 그 다음 각 키워드별 선정 이유 설명:
+- **키워드1**: 선정 이유 (출처 포함)
+- **키워드2**: 선정 이유 (출처 포함)
+...
+
 **중요:**
 - 쇼핑/상품과 연관 가능한 키워드만 추출
 - 3-5개의 핵심 키워드만 선별
-- 반드시 JSON 배열로만 반환: ["키워드1", "키워드2", ...]
+- JSON 배열은 반드시 ```json 코드블록 안에 작성
 
 **예시:**
 - 가을야구 경기 중 → ["야구", "치킨", "맥주", "응원용품"]
@@ -457,9 +469,9 @@ class BroadcastWorkflow:
             logger.info(f"[2단계] 실시간 트렌드 프롬프트: {prompt[:200]}...")
             
             response = client.responses.create(
-                model="gpt-4o",
+                model="gpt-4o-mini",
                 tools=[{
-                    "type": "web_search_preview",
+                    "type": "web_search",
                     "search_context_size": "medium",
                     "user_location": {
                         "type": "approximate",
@@ -468,13 +480,15 @@ class BroadcastWorkflow:
                     }
                 }],
                 input=prompt,
-                max_output_tokens=200
+                max_output_tokens=1500  # 키워드 + 상세 설명까지 포함
             )
             
             result_text = response.output_text
             print("=" * 80)
-            print(f"[2단계 - 응답] {result_text}")
-            print("=" * 80)
+            print(f"[2단계 - 응답 (전체)]")
+            print("-" * 80)
+            print(result_text)
+            print("-" * 80)
             logger.info(f"[2단계] 실시간 트렌드 응답: {result_text}")
             
             # JSON 배열 추출
