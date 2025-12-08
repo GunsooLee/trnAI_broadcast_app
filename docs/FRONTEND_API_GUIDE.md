@@ -1,6 +1,6 @@
-# 프론트엔드 개발자를 위한 API 가이드
+# 프론트엔드 API 가이드
 
-## 📡 방송 편성 추천 API
+## 방송 편성 추천 API
 
 ### Endpoint
 ```
@@ -11,8 +11,8 @@ POST /api/v1/broadcast/recommendations
 
 ```typescript
 interface BroadcastRequest {
-  broadcastTime: string;        // ISO 8601 형식 (예: "2025-11-11T22:00:00+09:00")
-  recommendationCount: number;  // 추천 개수 (기본값: 5)
+  broadcastTime: string;        // ISO 8601 형식
+  recommendationCount: number;  // 추천 개수 (기본값: 10)
   trendWeight?: number;         // 트렌드 가중치 0.0~1.0 (기본값: 0.3)
   sellingWeight?: number;       // 매출 가중치 0.0~1.0 (기본값: 0.7)
 }
@@ -21,8 +21,8 @@ interface BroadcastRequest {
 **예시:**
 ```json
 {
-  "broadcastTime": "2025-11-11T22:00:00+09:00",
-  "recommendationCount": 3,
+  "broadcastTime": "2025-12-08T22:00:00+09:00",
+  "recommendationCount": 10,
   "trendWeight": 0.3,
   "sellingWeight": 0.7
 }
@@ -36,355 +36,126 @@ interface BroadcastRequest {
 interface BroadcastResponse {
   requestTime: string;
   recommendations: BroadcastRecommendation[];
-  naverProducts: NaverProduct[] | null;
-  competitorProducts: CompetitorProduct[] | null;
+  competitorProducts: CompetitorProduct[] | null;  // 네이버 + 타사 통합
 }
 
 interface BroadcastRecommendation {
   rank: number;
   productInfo: ProductInfo;
-  reasoning: Reasoning;
+  reasoning: string;  // 추천 근거 (100자 이내)
   businessMetrics: BusinessMetrics;
 }
 
 interface ProductInfo {
   productId: string;
   productName: string;
-  category: string;              // 대분류 카테고리
-  categoryMiddle?: string;       // 중분류 카테고리
-  categorySub?: string;          // 소분류 카테고리
+  category: string;
+  categoryMiddle?: string;
+  categorySub?: string;
   brand?: string;
   price?: number;
   tapeCode?: string;
   tapeName?: string;
 }
 
-interface Reasoning {
-  summary: string;           // LangChain이 생성한 추천 근거 (50자 이내)
-}
-
 interface BusinessMetrics {
-  aiPredictedSales: string;  // AI 예측 매출 (예: "850.0만원")
-  lastBroadcast?: LastBroadcastMetrics;  // 최근 방송 실적 (Netezza 조회)
+  aiPredictedSales: string;
+  lastBroadcast?: LastBroadcastMetrics;
 }
 
 interface LastBroadcastMetrics {
-  broadcastStartTime: string;  // 방송시작일시
-  orderQuantity: number;       // 주문수량
-  totalProfit: number;         // 매출총이익(실적)
-  profitEfficiency: number;    // ONAIR매출총이익(효율)
-  conversionWorth: number;     // 환산가치값(분리송출)
-  conversionRate: number;      // 적용전환율
-  realFee: number;             // 실질수수료
-  mixFee: number;              // 혼합수수료
-}
-
-interface NaverProduct {
-  product_id: string;
-  name: string;
-  rank: number;
-  rank_change: number | null;
-  rank_change_text: string;    // "↑2", "↓3", "신규", "-"
-  sale_price: number;
-  discounted_price: number;
-  discount_ratio: number;
-  image_url: string;
-  landing_url: string;
-  mobile_landing_url: string;
-  is_delivery_free: boolean;
-  delivery_fee: number;
-  cumulation_sale_count: number;
-  review_count: number | null;
-  review_score: number | null;
-  mall_name: string | null;
-  channel_no: string | null;
-  collected_at: string | null;
-  collected_date: string | null;
+  broadcastStartTime: string;
+  orderQuantity: number;
+  totalProfit: number;
+  profitEfficiency: number;
+  conversionWorth: number;
+  conversionRate: number;
+  realFee: number;
+  mixFee: number;
 }
 
 interface CompetitorProduct {
-  company_name: string;           // "네이버 스토어" 또는 타사명
-  broadcast_title: string;        // 방송 제목 또는 상품명
-  start_time: string | null;      // 방송 시작 시간 (타사만)
-  end_time: string | null;        // 방송 종료 시간 (타사만)
-  duration_minutes: number | null; // 방송 시간(분, 타사만)
-  category_main: string;          // 대분류 카테고리
+  company_name: string;            // "네이버 스토어" 또는 타사명
+  broadcast_title: string;
+  start_time: string | null;       // 타사만
+  end_time: string | null;         // 타사만
+  duration_minutes: number | null; // 타사만
+  category_main: string;
 }
-
-// ⚠️ 배치 순서: 타사 편성이 먼저, 네이버가 나중에 배치됩니다
 ```
 
 ---
 
-## 🎨 UI 구현 예시
+## UI 구현 예시
 
-### 1. 추천 상품 카드
+### 추천 상품 카드
 
 ```tsx
-import React from 'react';
-
-interface RecommendationCardProps {
-  recommendation: BroadcastRecommendation;
-}
-
-export const RecommendationCard: React.FC<RecommendationCardProps> = ({ recommendation }) => {
+export const RecommendationCard = ({ recommendation }) => {
   const { productInfo, reasoning, businessMetrics } = recommendation;
   
   return (
     <div className="recommendation-card">
-      {/* 헤더 */}
-      <div className="card-header">
-        <span className="rank-badge">#{recommendation.rank}</span>
-      </div>
-
-      {/* 상품 정보 */}
-      <div className="product-info">
-        <h3>{productInfo.productName}</h3>
-        <div className="categories">
-          <span className="category-main">{productInfo.category}</span>
-          {productInfo.categoryMiddle && (
-            <span className="category-middle"> &gt; {productInfo.categoryMiddle}</span>
-          )}
-          {productInfo.categorySub && (
-            <span className="category-sub"> &gt; {productInfo.categorySub}</span>
-          )}
-        </div>
-        {productInfo.brand && <p className="brand">{productInfo.brand}</p>}
-        {productInfo.price && <p className="price">{productInfo.price.toLocaleString()}원</p>}
-      </div>
-
-      {/* 추천 근거 */}
-      <div className="reasoning">
-        <p className="summary">{reasoning.summary}</p>
-      </div>
-
-      {/* 비즈니스 지표 */}
-      <div className="business-metrics">
-        <div className="metric">
-          <span className="label">AI 예측 매출</span>
-          <span className="value">{businessMetrics.aiPredictedSales}</span>
-        </div>
-        
-        {/* 최근 방송 실적 */}
+      <span className="rank-badge">#{recommendation.rank}</span>
+      <h3>{productInfo.productName}</h3>
+      <p className="category">{productInfo.category}</p>
+      <p className="reasoning">{reasoning}</p>
+      <div className="metrics">
+        <span>AI 예측: {businessMetrics.aiPredictedSales}</span>
         {businessMetrics.lastBroadcast && (
-          <div className="last-broadcast">
-            <h4>최근 방송 실적</h4>
-            <div className="broadcast-date">
-              {new Date(businessMetrics.lastBroadcast.broadcastStartTime).toLocaleDateString('ko-KR')}
-            </div>
-            <div className="metrics-grid">
-              <div className="metric">
-                <span className="label">주문수량</span>
-                <span className="value">{businessMetrics.lastBroadcast.orderQuantity.toLocaleString()}개</span>
-              </div>
-              <div className="metric">
-                <span className="label">매출총이익</span>
-                <span className="value">{businessMetrics.lastBroadcast.totalProfit.toLocaleString()}원</span>
-              </div>
-              <div className="metric">
-                <span className="label">효율</span>
-                <span className="value">{businessMetrics.lastBroadcast.profitEfficiency}</span>
-              </div>
-              <div className="metric">
-                <span className="label">전환율</span>
-                <span className="value">{businessMetrics.lastBroadcast.conversionRate}%</span>
-              </div>
-            </div>
-          </div>
+          <span>최근 실적: {businessMetrics.lastBroadcast.totalProfit.toLocaleString()}원</span>
         )}
       </div>
-
-      {/* 방송테이프 정보 */}
-      {productInfo.tapeCode && (
-        <div className="tape-info">
-          <span className="tape-code">{productInfo.tapeCode}</span>
-          <span className="tape-name">{productInfo.tapeName}</span>
-        </div>
-      )}
     </div>
   );
 };
 ```
 
-### 2. 외부 상품 (네이버 베스트) 카드
-
-```tsx
-interface ExternalProductCardProps {
-  product: ExternalProduct;
-}
-
-export const ExternalProductCard: React.FC<ExternalProductCardProps> = ({ product }) => {
-  return (
-    <div className="external-product-card">
-      {/* 순위 및 변동 */}
-      <div className="rank-section">
-        <span className="rank">{product.rank}위</span>
-        <span className={`rank-change ${product.rank_change_text}`}>
-          {product.rank_change_text}
-        </span>
-      </div>
-
-      {/* 상품 이미지 */}
-      <img src={product.image_url} alt={product.name} />
-
-      {/* 상품 정보 */}
-      <h4>{product.name}</h4>
-      
-      {/* 가격 정보 */}
-      <div className="price-section">
-        {product.discount_ratio > 0 && (
-          <>
-            <span className="original-price">{product.sale_price.toLocaleString()}원</span>
-            <span className="discount-badge">{product.discount_ratio}%</span>
-          </>
-        )}
-        <span className="discounted-price">{product.discounted_price.toLocaleString()}원</span>
-      </div>
-
-      {/* 배송 정보 */}
-      <div className="delivery-info">
-        {product.is_delivery_free && <span className="badge">무료배송</span>}
-      </div>
-
-      {/* 리뷰 정보 */}
-      {product.review_count && (
-        <div className="review-info">
-          <span className="rating">⭐ {product.review_score}</span>
-          <span className="count">({product.review_count.toLocaleString()})</span>
-        </div>
-      )}
-
-      {/* 판매량 */}
-      <div className="sales-info">
-        누적 판매: {product.cumulation_sale_count.toLocaleString()}개
-      </div>
-
-      {/* 링크 */}
-      <a href={product.landing_url} target="_blank" rel="noopener noreferrer">
-        상품 보기
-      </a>
-    </div>
-  );
-};
-```
-
-### 3. API 호출 예시
+### API 호출
 
 ```typescript
-import axios from 'axios';
-
 const API_BASE_URL = 'http://localhost:8501';
 
 export const getBroadcastRecommendations = async (
   broadcastTime: string,
-  recommendationCount: number = 5,
-  trendWeight: number = 0.3,
-  sellingWeight: number = 0.7
+  recommendationCount: number = 10
 ): Promise<BroadcastResponse> => {
-  try {
-    const response = await axios.post<BroadcastResponse>(
-      `${API_BASE_URL}/api/v1/broadcast/recommendations`,
-      {
-        broadcastTime,
-        recommendationCount,
-        trendWeight,
-        sellingWeight,
-      }
-    );
-    return response.data;
-  } catch (error) {
-    console.error('API 호출 실패:', error);
-    throw error;
-  }
-};
-
-// 사용 예시
-const fetchRecommendations = async () => {
-  const broadcastTime = '2025-11-11T22:00:00+09:00';
-  const data = await getBroadcastRecommendations(broadcastTime, 5);
-  
-  console.log('추천 상품:', data.recommendations);
-  console.log('네이버 상품:', data.naverProducts);
-  console.log('경쟁사 상품:', data.competitorProducts);
+  const response = await fetch(`${API_BASE_URL}/api/v1/broadcast/recommendations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      broadcastTime,
+      recommendationCount,
+      trendWeight: 0.3,
+      sellingWeight: 0.7,
+    }),
+  });
+  return response.json();
 };
 ```
 
 ---
 
-## 💡 주요 포인트
+## 에러 처리
 
-### 1. AI 예측 vs 실제 매출 비교
-```tsx
-const ComparisonView = ({ metrics }: { metrics: BusinessMetrics }) => {
-  const aiPrediction = parseFloat(metrics.aiPredictedSales.replace(/[^0-9.]/g, ''));
-  const actualSales = metrics.lastBroadcast 
-    ? metrics.lastBroadcast.totalProfit / 10000 
-    : null;
-  
-  return (
-    <div className="comparison">
-      <div className="ai-prediction">
-        <span>AI 예측</span>
-        <strong>{metrics.aiPredictedSales}</strong>
-      </div>
-      {actualSales && (
-        <div className="actual-sales">
-          <span>최근 실적</span>
-          <strong>{actualSales.toFixed(0)}만원</strong>
-        </div>
-      )}
-    </div>
-  );
-};
-```
-
-### 2. 순위 변동 표시
-```tsx
-const RankChangeIcon = ({ text }: { text: string }) => {
-  if (text === '신규') return <span className="new-badge">NEW</span>;
-  if (text.startsWith('↑')) return <span className="rank-up">{text}</span>;
-  if (text.startsWith('↓')) return <span className="rank-down">{text}</span>;
-  return <span className="rank-same">-</span>;
-};
-```
+| 상태 코드 | 원인 | 처리 |
+|----------|------|------|
+| 400 | 잘못된 요청 (가중치 합 ≠ 1.0) | 입력값 검증 |
+| 500 | 서버 오류 | 재시도 안내 |
+| 503 | AI 서비스 일시 중단 | 잠시 후 재시도 |
 
 ---
 
-## 📝 실제 응답 예시
+## 체크리스트
 
-전체 응답 예시는 [`API_RESPONSE_EXAMPLE.json`](./API_RESPONSE_EXAMPLE.json) 파일을 참고하세요.
-
-**현업 담당자를 위한 한국어 설명서**: [`API_결과_필드_설명서.md`](./API_결과_필드_설명서.md)
-
----
-
-## 🔧 에러 처리
-
-```typescript
-try {
-  const data = await getBroadcastRecommendations(broadcastTime, 5);
-  // 성공 처리
-} catch (error) {
-  if (axios.isAxiosError(error)) {
-    if (error.response?.status === 400) {
-      // 잘못된 요청 (예: trendWeight + salesWeight != 1.0)
-      alert('가중치 합이 1.0이 되어야 합니다.');
-    } else if (error.response?.status === 500) {
-      // 서버 오류
-      alert('서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요.');
-    }
-  }
-}
-```
-
----
-
-## 🎯 체크리스트
-
-- [ ] `lastBroadcast` 필드가 `null`일 수 있음을 고려한 UI 처리
+- [ ] `lastBroadcast` 필드 null 처리
 - [ ] 날짜/시간 포맷팅 (ISO 8601 → 한국 시간)
 - [ ] 숫자 포맷팅 (천 단위 콤마)
-- [ ] 이미지 로딩 실패 처리
-- [ ] 외부 링크 새 탭에서 열기 (`target="_blank"`)
-- [ ] 반응형 디자인 (모바일/태블릿/데스크톱)
-- [ ] `competitorProducts`는 현재 빈 배열로 반환됨 (향후 데이터 추가 예정)
+- [ ] 반응형 디자인
+
+---
+
+## 관련 문서
+
+- `docs/API_RESPONSE_EXAMPLE.json` - 실제 응답 예시
+- `docs/API_결과_필드_설명서.md` - 현업 담당자용 설명서

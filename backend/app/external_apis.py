@@ -6,6 +6,7 @@
 """
 
 import os
+import re
 import requests
 import json
 import logging
@@ -97,28 +98,32 @@ class LLMTrendAPI:
             logger.warning("POSTGRES_URI 환경 변수가 설정되지 않음 - 공휴일 조회 비활성화")
             self.engine = None
 
-    async def get_trending_searches(self, geo: str = 'KR', weather_info: Dict[str, Any] = None, hour: Optional[int] = None) -> List[Dict[str, Any]]:
-        """LLM을 사용한 트렌딩 검색어 생성"""
+    async def get_trending_searches(self, geo: str = 'KR', weather_info: Dict[str, Any] = None, hour: Optional[int] = None, broadcast_date: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """LLM을 사용한 트렌딩 검색어 생성
+        
+        Args:
+            broadcast_date: 방송 날짜 (None이면 현재 날짜 사용)
+        """
         try:
             from openai import AsyncOpenAI
             client = AsyncOpenAI(api_key=self.openai_api_key)
 
-            # 현재 날짜와 계절 정보
-            now = datetime.now()
-            current_date = now.strftime("%Y년 %m월 %d일")
-            month = now.month
+            # 방송 날짜 사용 (없으면 현재 날짜)
+            target_date = broadcast_date if broadcast_date else datetime.now()
+            current_date = target_date.strftime("%Y년 %m월 %d일")
+            month = target_date.month
             season = self._get_season(month)
             
             # 요일 정보
             weekday_names = ["월", "화", "수", "목", "금", "토", "일"]
-            weekday_kr = weekday_names[now.weekday()]
+            weekday_kr = weekday_names[target_date.weekday()]
             
-            # 시간대 정보 (hour가 없으면 현재 시각 사용)
-            current_hour = hour if hour is not None else now.hour
+            # 시간대 정보 (hour가 없으면 방송 날짜의 시각 사용)
+            current_hour = hour if hour is not None else target_date.hour
             time_slot_info = self._get_time_slot_info(current_hour)
 
             # 시기적 특성 (공휴일 DB 활용)
-            seasonal_context = self._get_seasonal_context(now)
+            seasonal_context = self._get_seasonal_context(target_date)
 
             # 날씨 정보
             weather_condition = weather_info.get("weather", "맑음") if weather_info else "정보 없음"
@@ -197,6 +202,8 @@ class LLMTrendAPI:
                         parts = line.split(',')
                         if len(parts) >= 3:  # 키워드,점수,이유
                             keyword = parts[0].strip()
+                            # 숫자 접두사 제거 ("1. 전기난로" -> "전기난로")
+                            keyword = re.sub(r'^\d+\.\s*', '', keyword)
                             score = int(float(parts[1].strip()))
                             reason = parts[2].strip()
                             
