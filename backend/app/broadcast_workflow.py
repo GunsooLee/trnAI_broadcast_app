@@ -4,10 +4,11 @@ LangChain 기반 2단계 워크플로우: AI 방향 탐색 + 고속 랭킹
 """
 
 import asyncio
+import calendar
 import json
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import List, Dict, Any, Optional, Tuple
 import pandas as pd
 import numpy as np
@@ -21,7 +22,7 @@ from .external_apis import ExternalAPIManager
 
 from .dependencies import get_product_embedder
 from . import broadcast_recommender as br
-from .schemas import BroadcastResponse, BroadcastRecommendation, ProductInfo, BusinessMetrics, NaverProduct, CompetitorProduct, LastBroadcastMetrics
+from .schemas import BroadcastResponse, BroadcastRecommendation, ProductInfo, BusinessMetrics, NaverProduct, CompetitorProduct, LastBroadcastMetrics, RecommendationSource
 from .external_products_service import ExternalProductsService
 from .services.broadcast_history_service import BroadcastHistoryService
 from .netezza_config import netezza_conn
@@ -249,16 +250,29 @@ class BroadcastWorkflow:
         print("[통합 키워드 생성] 2단계: 실시간 웹 검색 트렌드")
         print("=" * 80)
         try:
-            realtime_keywords = await self._get_realtime_trend_keywords()
+            realtime_result = await self._get_realtime_trend_keywords()
+            # 튜플 반환 처리 (키워드, 뉴스출처)
+            if isinstance(realtime_result, tuple):
+                realtime_keywords, news_sources = realtime_result
+            else:
+                realtime_keywords = realtime_result if realtime_result else []
+                news_sources = {}
+            
             if realtime_keywords:
                 unified_keywords.extend(realtime_keywords)
                 context["realtime_trends"] = realtime_keywords  # 컨텍스트에도 저장
+                context["news_sources"] = news_sources  # 뉴스 출처 정보 저장
                 print(f"[2단계 완료] 실시간 웹 검색 키워드 {len(realtime_keywords)}개: {realtime_keywords}")
+                print(f"[2단계 완료] 뉴스 출처 {len(news_sources)}개: {list(news_sources.keys())}")
                 logger.info(f"[우선순위 3] 실시간 웹 검색 키워드 {len(realtime_keywords)}개 추가: {realtime_keywords}")
+            else:
+                context["realtime_trends"] = []
+                context["news_sources"] = {}
         except Exception as e:
             print(f"[2단계 실패] {e}")
             logger.warning(f"실시간 웹 검색 트렌드 수집 실패 (무시): {e}")
             context["realtime_trends"] = []
+            context["news_sources"] = {}
         
         # 4. 중복 제거 및 저장
         context["unified_keywords"] = list(dict.fromkeys(unified_keywords))  # 순서 유지 중복 제거
@@ -318,12 +332,74 @@ class BroadcastWorkflow:
             return "저녁"
         else:
             return "새벽"
+    
+    def _get_historical_broadcast_periods(
+        self, 
+        target_date: date, 
+        years_back: int = 5
+    ) -> List[Tuple[date, date]]:
+        """
+        입력 날짜 기준 앞뒤 1개월씩 총 2개월 기간을 모든 과거 연도에 대해 생성
+        
+        Args:
+            target_date: 기준 날짜
+            years_back: 몇 년 전까지 조회할지 (기본 5년)
+            
+        Returns:
+            [(시작일, 종료일), ...] 리스트
+            
+        Example:
+            target_date = 2025-03-15 → 
+            [(2024-02-15, 2024-04-15), (2023-02-15, 2023-04-15), ...]
+        """
+        periods = []
+        current_year = target_date.year
+        print(f"=== [DEBUG _get_historical_broadcast_periods] target_date: {target_date}, years_back: {years_back} ===")
+        
+        for year_offset in range(1, years_back + 1):
+            target_year = current_year - year_offset
+            
+            try:
+                # 1개월 전 계산
+                start_month = target_date.month - 1
+                start_year = target_year
+                if start_month < 1:
+                    start_month = 12
+                    start_year -= 1
+                
+                # 1개월 후 계산
+                end_month = target_date.month + 1
+                end_year = target_year
+                if end_month > 12:
+                    end_month = 1
+                    end_year += 1
+                
+                # 일자 처리 (월말 초과 방지)
+                start_day = min(target_date.day, calendar.monthrange(start_year, start_month)[1])
+                end_day = min(target_date.day, calendar.monthrange(end_year, end_month)[1])
+                
+                start_date = date(start_year, start_month, start_day)
+                end_date = date(end_year, end_month, end_day)
+                
+                periods.append((start_date, end_date))
+                
+            except Exception as e:
+                logger.warning(f"기간 계산 오류 (year_offset={year_offset}): {e}")
+                print(f"=== [DEBUG] 기간 계산 오류: {e} ===")
+                import traceback
+                print(traceback.format_exc())
+                continue
+        
+        print(f"=== [DEBUG _get_historical_broadcast_periods] 생성된 기간: {len(periods)}개 ===", flush=True)
+        if periods:
+            print(f"  첫 번째 기간: {periods[0]}", flush=True)
+        return periods
 
     # _classify_keywords_with_langchain 함수 제거됨
     # 이제 _generate_base_context_keywords에서 키워드 생성과 확장을 통합 처리
     
     async def _execute_unified_search(self, context: Dict[str, Any], unified_keywords: List[str]) -> Dict[str, Any]:
-        """다단계 Qdrant 검색: 키워드를 그룹별로 나눠서 검색하여 임베딩 희석 방지"""
+        """다단계 Qdrant 검색: 과거 동일 시기 방송 상품 후보군 내에서 키워드 검색"""
         
         print(f"=== [DEBUG Multi-Stage Search] 시작, keywords: {len(unified_keywords)}개 ===")
         
@@ -332,17 +408,56 @@ class BroadcastWorkflow:
             return {"direct_products": [], "category_groups": {}}
         
         try:
+            # [주석처리] 0단계: 방송 기간 필터 계산 (입력 날짜 기준 앞뒤 1개월, 과거 5년)
+            # TODO: 요구사항 확정 후 다시 활성화
+            # broadcast_periods = None
+            # target_date_str = context.get("broadcast_time", "")
+            # print(f"=== [DEBUG] broadcast_time from context: {target_date_str} ===")
+            # 
+            # if target_date_str:
+            #     try:
+            #         # broadcast_time에서 날짜 추출 (예: "2025-03-15 20:00:00" → date(2025, 3, 15))
+            #         if isinstance(target_date_str, str):
+            #             target_dt = datetime.fromisoformat(target_date_str.replace("Z", "+00:00"))
+            #         else:
+            #             target_dt = target_date_str
+            #         target_date = target_dt.date()
+            #         
+            #         # 과거 5년간 동일 시기 방송 기간 계산
+            #         broadcast_periods = self._get_historical_broadcast_periods(target_date, years_back=5)
+            #         
+            #         if broadcast_periods:
+            #             print(f"=== [방송 기간 필터] 기준일: {target_date}, {len(broadcast_periods)}개 기간 ===")
+            #             for i, (start, end) in enumerate(broadcast_periods[:3]):
+            #                 print(f"  - {start} ~ {end}")
+            #             if len(broadcast_periods) > 3:
+            #                 print(f"  - ... 외 {len(broadcast_periods) - 3}개 기간")
+            #     except Exception as e:
+            #         logger.warning(f"방송 기간 필터 계산 실패: {e}, 필터 없이 검색")
+            #         broadcast_periods = None
+            
             # 모든 키워드를 개별적으로 검색 (키워드별 다양성 확보)
             all_results = []
             seen_products = set()
             keyword_results = {}  # 키워드별 검색 결과 추적
+            product_matched_keywords = {}  # 상품별 매칭된 키워드 추적
             
             print(f"=== [개별 키워드 검색] 총 {len(unified_keywords)}개 키워드 ===")
             
             for keyword in unified_keywords:
+                # [주석처리] 방송 기간 필터 적용 로직 - 요구사항 확정 후 활성화
+                # if broadcast_periods:
+                #     results = self.product_embedder.search_products_with_broadcast_filter(
+                #         trend_keywords=[keyword],
+                #         broadcast_periods=broadcast_periods,
+                #         top_k=10,
+                #         score_threshold=0.3,
+                #         only_ready_products=True
+                #     )
+                # else:
                 results = self.product_embedder.search_products(
                     trend_keywords=[keyword],
-                    top_k=5,  # 키워드당 5개씩
+                    top_k=5,
                     score_threshold=0.3,
                     only_ready_products=True
                 )
@@ -351,9 +466,15 @@ class BroadcastWorkflow:
                 for r in results:
                     code = r.get("product_code")
                     if code not in seen_products:
+                        # 상품에 매칭된 키워드 정보 추가
+                        r["matched_keyword"] = keyword
                         all_results.append(r)
                         seen_products.add(code)
+                        product_matched_keywords[code] = keyword
                         new_count += 1
+                    elif code in product_matched_keywords:
+                        # 이미 있는 상품이면 추가 키워드만 기록 (첫 번째 키워드가 가장 관련성 높음)
+                        pass
                 
                 if new_count > 0:
                     keyword_results[keyword] = new_count
@@ -430,64 +551,73 @@ class BroadcastWorkflow:
             
             # 1. [날짜 동적 계산]
             now = datetime.now()
-            current_date_str = now.strftime("%Y년 %m월 %d일")
             
-            # 2. [검색 타겟 설정] 트렌드 정확도를 위해 '이번 달'과 '지난 달'도 구함.
-            current_month_str = now.strftime("%Y년 %m월")
-            last_month_date = now.replace(day=1) - timedelta(days=1)
-            last_month_str = last_month_date.strftime("%Y년 %m월")
-            
-            target_period_str = f"{last_month_str} ~ {current_month_str}"
-            
-            prompt = f"""당신은 대한민국 20년차 유통 전문 기자이자 홈쇼핑 MD입니다.
+            # 현재 연도/월
+            current_year = now.year        # 2025
 
-**현재 날짜: {current_date_str}**
-우리는 '{current_date_str}' 방송을 위한 아이디어 회의 중입니다.
+            one_month_ago = now - timedelta(days=30)
+            search_start_date = one_month_ago.strftime("%Y-%m-%d")
+            
+            current_date_str = now.strftime("%Y년 %m월 %d일")
+
+
+            # *** 제외할 과거 연도 계산 ***
+            # (올해가 2025년이면 2024년 데이터는 배제하라고 시키기 위함)
+            prev_year = current_year - 1   # 2024
+
+            #target_period_str = f"{last_month_str} ~ {current_month_str}"
+            
+            prompt = f"""**[즉시 실행 명령]**
+1. 지금 즉시 웹 검색 도구를 사용하여 뉴스 기사를 검색하세요.
+2. 분석이나 사족 없이 **결과 JSON**만 출력하세요.
+
+
+**[시점 정보 (자동 계산됨)]**
+- **현재 시점:** {current_date_str}
+- **검색 유효 시작일:** {search_start_date}
+
+**[필수 제약 조건 1: 날짜 필터링]**
+**날짜 필터링 (치명적):**
+   - 검색 결과에서 **'{prev_year}년'** 또는 그 이전 날짜의 기사는 **절대 사용하지 마세요.**
+   - 검색 쿼리를 생성할 때, 반드시 **`after:{search_start_date}`** 연산자를 쿼리 뒤에 붙여야 합니다. 
+   (이 연산자를 쓰지 않으면 과거 기사가 검색되어 분석이 실패합니다.)
+
+**[필수 제약 조건 2: DB 검색용 키워드 추출 (명사화)]**
+- 뉴스 기사에서 **'구체적인 상품명'**, **'카테고리'**, **'브랜드'**만 추출하세요.
+- **문장형 금지:** '~~하는 상황', '~~로 인한 품절' 같은 서술어와 조사를 모두 제거하세요.
+- **하나의 기사(URL)에서 추출할 수 있는 키워드는 '최대 3개'로 제한합니다.**
+- 5개의 키워드를 채우기 위해 최소 3개 이상의 서로 다른 기사를 참조하는 것을 권장합니다.
 
 **[핵심 과제]**
-가상의 미래가 아닌, **현실 세계의 '{last_month_str}' 홈쇼핑, 상품, 유통 관련 뉴스 기사**를 검색하여, 
-언론에서 보도된 **'실제 히트 상품'** 5가지를 찾아내세요.
+당신은 대한민국 20년차 유통 전문 기자이자 홈쇼핑 MD입니다.
+위 기간 동안 홈쇼핑 및 유통 업계에서 발생한 **가장 뜨거운 '트렌드 키워드' 5개**를 찾아내세요.
 
-**[검색 지침 - 신뢰 가능한 뉴스 사이트 한정]**
-반드시 아래 '뉴스 사이트'에서만 '{last_month_str}' 기준으로 3개월 이내의 정보만 검색하세요:
-- 경제지: 머니투데이(mt.co.kr), 한국경제(hankyung.com), 매일경제(mk.co.kr)
-- 유통 전문지: 패션비즈(fashionbiz.co.kr), 어패럴뉴스(apparelnews.co.kr), 리테일매거진
-- 종합지: 조선일보(chosun.com), 이투데이(etoday.co.kr)
+**[검색 키워드 조합 지침]**
+정확한 단어 매칭뿐만 아니라, 아래와 같이 **연도 + 현상**을 조합하여 검색하세요.
 
-**검색 키워드 (기사 검색용):**
-1. "{last_month_str} 신상 히트 상품"
-2. "{last_month_str} 유통업계 결산 매출 급증 아이템"
-3. "{last_month_str} 홈쇼핑 매진 상품"
-4. "{last_month_str} 대란템"
+*(권장 검색어 예시)*
+- "홈쇼핑 주문 폭주 after:{search_start_date}"
+- "유통 완판 대란 after:{search_start_date}"
+- "홈쇼핑 인기 상품 after:{search_start_date}"
 
-**[정답 필터링 - 기사 검증]**
-1. **필수:** 개인 블로그나 SNS가 아닌, **'뉴스 기사', '경제 신문', '공식 보도자료'**에 언급된 상품.
-2. **대상:** 구체적인 **카테고리"" 또는 ""상품명**를 한 단어 키워드로 표현
-3. **검증 키워드:** 기사 제목에 '인기', '품절', '오픈런', '매출 상승', '완판', '대란' 중 하나 이상 포함.
-4. **물리적 상품만:**
-5. **제외 대상:**
-   - 비실물 상품 (앱, 멤버십, 부동산)
-
-
-
-**[경고]**
-- 기사의 날짜는 무조건 지켜야하는 제 1원칙 입니다.
-- 날짜가 {last_month_str} 이 아닌 다른 년도, 월 기사는 사용하지 마세요.
-- 출처 URL이 없으면 답변하지 마세요.
-- 뉴스 사이트 출처가 아니면 무시하세요.
-
+**[정답 필터링 & Fallback]**
+1. **필수:** 반드시 '뉴스 기사'에 근거할 것. (블로그/카페 뇌피셜 제외)
+2. **필수:** 하나의 기사(URL)에서 모든 키워드를 추출하지 마세요.
+3. **Fallback:** 5개를 못 채워도 좋으니, **찾은 개수만큼만이라도** 출력하세요. (빈 배열 `[]` 금지)
+4. **제외 대상:** 비실물 상품(앱, 주식, 부동산) 제외.
+5. **제외 대상:** 기사 날짜를 확인하고 {search_start_date} 이전 기사일 경우 제외.
+6. **제외 대상:** DB에서 상품 검색에 사용할 수 있는 **'구체적인 상품명'**, **'카테고리'**, **'브랜드'**만 추출. 아니면 제외.
 
 **[출력 형식]**
+반드시 아래 JSON 포맷을 지킬 것.
 ```json
-["키워드1", "키워드2", "키워드3", "키워드4", "키워드5"]
-```
-
-**각 상품의 출처:**
-- 키워드1: 기사 제목 요약 (뉴스사명, URL, 날짜)
-- 키워드2: 기사 제목 요약 (뉴스사명, URL, 날짜)
-- 키워드3: 기사 제목 요약 (뉴스사명, URL, 날짜)
-- 키워드4: 기사 제목 요약 (뉴스사명, URL, 날짜)
-- 키워드5: 기사 제목 요약 (뉴스사명, URL, 날짜)
+{{
+  "trend_keywords": ["키워드1", "키워드2", "키워드3"],
+  "sources": [
+    {{"keyword": "키워드1", "title": "기사제목...", "URL": "기사 출처 URL..."}},
+    {{"keyword": "키워드2", "title": "기사제목...", "URL": "기사 출처 URL..."}}
+  ]
+}}
 
 """
             
@@ -499,10 +629,12 @@ class BroadcastWorkflow:
             logger.info(f"[2단계] 실시간 트렌드 프롬프트: {prompt[:200]}...")
             
             response = client.responses.create(
-                model="gpt-4o-mini",
+                model="gpt-5-nano",
+                reasoning={"effort": "low"},
+                instructions=f"당신은 한국어 데이터 분석가입니다. 반드시 `web_search` 도구를 사용하세요. 검색어 뒤에는 `after:{search_start_date}`를 붙여 최신 기사만 찾으세요. 결과는 오직 JSON만 출력하세요.",
                 tools=[{
                     "type": "web_search",
-                    "search_context_size": "high",  # medium → high로 변경
+                    "search_context_size": "high",
                     "user_location": {
                         "type": "approximate",
                         "country": "KR",
@@ -511,12 +643,15 @@ class BroadcastWorkflow:
                 }],
                 tool_choice="required",  # 웹 검색 도구 사용 강제
                 input=prompt,
-                max_output_tokens=1500
+                max_output_tokens=8000,
+                max_tool_calls=15
             )
             
             result_text = response.output_text
             print("=" * 80)
             print(f"[2단계 - 응답 (전체)]")
+            print("-" * 80)
+            print(response.model_dump_json(indent=2))
             print("-" * 80)
             print(result_text)
             print("-" * 80)
@@ -526,29 +661,44 @@ class BroadcastWorkflow:
             import json
             import re
             
-            # 1차: ```json 코드블록 내부에서 배열 추출
-            code_block_match = re.search(r'```json\s*(\[.*?\])\s*```', result_text, re.DOTALL)
-            if code_block_match:
-                json_str = code_block_match.group(1)
-            else:
-                # 2차: 첫 번째 JSON 배열만 추출 (줄바꿈 전까지)
-                # ["a", "b", "c"] 형태만 매칭
-                json_match = re.search(r'\["[^"]*"(?:\s*,\s*"[^"]*")*\]', result_text)
-                json_str = json_match.group() if json_match else None
-            
-            if json_str:
-                keywords = json.loads(json_str)
-                # 중복 제거
-                unique_keywords = list(dict.fromkeys(keywords))
-                if len(unique_keywords) != len(keywords):
-                    print(f"[2단계 - 중복 제거] {len(keywords)}개 → {len(unique_keywords)}개")
-                print(f"[2단계 - 추출 성공] 키워드: {unique_keywords}")
-                logger.info(f"[2단계] 실시간 트렌드 키워드 추출 성공: {unique_keywords}")
-                return unique_keywords[:5]  # 최대 5개만
-            else:
-                print("[2단계 - 실패] JSON 배열을 찾을 수 없음")
-                logger.warning("[2단계] 실시간 트렌드에서 JSON 배열을 찾을 수 없음")
-                return []
+            # 1차: 전체 JSON 객체 파싱 시도
+            try:
+                # ```json 코드블록 제거
+                clean_text = re.sub(r'```json\s*|\s*```', '', result_text)
+                data = json.loads(clean_text)
+                
+                # trend_keywords 필드 추출
+                if isinstance(data, dict) and 'trend_keywords' in data:
+                    keywords = data['trend_keywords']
+                    sources = data.get('sources', [])
+                    print(f"[2단계 - 추출 성공] 키워드: {keywords}")
+                    print(f"[2단계 - 뉴스 출처] {len(sources)}개 출처 정보")
+                    
+                    # 키워드별 뉴스 출처 매핑 반환 (튜플로)
+                    keyword_sources = {}
+                    for src in sources:
+                        kw = src.get('keyword', '')
+                        if kw:
+                            keyword_sources[kw] = {
+                                'news_title': src.get('title', ''),
+                                'news_url': src.get('URL', src.get('url', ''))
+                            }
+                    
+                    return keywords[:5], keyword_sources
+                elif isinstance(data, list):
+                    # 구버전 호환: 배열만 온 경우
+                    print(f"[2단계 - 추출 성공] 키워드: {data}")
+                    return data[:5], {}
+            except json.JSONDecodeError:
+                # 2차: 정규식으로 trend_keywords만 추출
+                match = re.search(r'"trend_keywords"\s*:\s*(\[.*?\])', result_text, re.DOTALL)
+                if match:
+                    keywords = json.loads(match.group(1))
+                    print(f"[2단계 - 추출 성공] 키워드: {keywords}")
+                    return keywords[:5], {}
+                
+                print("[2단계 - 실패] JSON 추출 실패")
+                return [], {}
                 
         except Exception as e:
             print("=" * 80)
@@ -557,7 +707,7 @@ class BroadcastWorkflow:
             logger.error(f"[2단계] 실시간 트렌드 수집 실패: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            return []
+            return [], {}
     
     async def _generate_base_context_keywords(self, context: Dict[str, Any]) -> List[str]:
         """기본 컨텍스트 정보를 기반으로 LangChain으로 검색 키워드 생성"""
@@ -1022,14 +1172,14 @@ JSON 형식:
         max_trend_match: int = 8,  # 유사도 기반 최대 개수 (의류 편중 방지)
         max_sales_prediction: int = 32  # 매출예측 기반 최대 개수 (다양성 확보)
     ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        """통합 후보군 생성 - 모든 상품 XGBoost 예측 후 가중치 조정"""
+        """통합 후보군 생성 - Track A (키워드 매칭) + Track B (매출 상위) 병합"""
         
         candidates = []
         seen_products = set()
         
         print(f"=== [DEBUG Unified Candidates] 후보군 생성 시작 (목표: 최대 {max_trend_match + max_sales_prediction}개) ===")
         
-        # 1. 모든 검색 결과를 하나로 통합
+        # ========== Track A: 키워드 매칭 상품 ==========
         all_products = []
         all_products.extend(search_result["direct_products"])  # 고유사도 상품
         
@@ -1037,7 +1187,21 @@ JSON 형식:
         for category, products in search_result["category_groups"].items():
             all_products.extend(products)
         
-        print(f"=== [DEBUG] 통합된 상품 수: {len(all_products)}개 ===")
+        print(f"=== [Track A] 키워드 매칭 상품: {len(all_products)}개 ===")
+        
+        # ========== Track B: 매출 예측 상위 상품 (키워드 무관) ==========
+        sales_top_products = await self._get_sales_top_products(context, limit=20)
+        print(f"=== [Track B] 매출 예측 상위 상품: {len(sales_top_products)}개 ===")
+        
+        # Track A + Track B 병합
+        for product in sales_top_products:
+            product_code = product.get("product_code")
+            # Track A에 없는 상품만 추가
+            if not any(p.get("product_code") == product_code for p in all_products):
+                product["source_track"] = "sales_top"  # 출처 표시
+                all_products.append(product)
+        
+        print(f"=== [DEBUG] Track A + B 통합: {len(all_products)}개 ===")
         
         # 2. 중복 제거 (상품코드 + 소분류 + 브랜드)
         unique_products = {}
@@ -1065,17 +1229,120 @@ JSON 형식:
         
         print(f"=== [DEBUG] 중복 제거 후: {len(unique_products)}개 (소분류+브랜드 다양성 보장) ===")
         
-        # 3. 배치 예측 준비 (상위 40개 - 의류 편중 방지)
-        products_list = list(unique_products.values())[:40]
+        # 3. 배치 예측 준비 (상위 50개로 확대)
+        products_list = list(unique_products.values())[:50]
         print(f"=== [DEBUG] 배치 예측 대상: {len(products_list)}개 ===")
         
         # 4. 배치 XGBoost 예측 (한 번에 처리)
         predicted_sales_list = await self._predict_products_sales_batch(products_list, context)
         
-        # 5. 예측 결과와 상품 매칭 + 점수 계산
+        # 5. 예측 결과와 상품 매칭 + 점수 계산 + 출처 정보 수집
+        # 뉴스 출처 정보 가져오기
+        news_sources = context.get("news_sources", {})
+        realtime_trends = context.get("realtime_trends", [])
+        ai_trends = context.get("ai_trends", [])
+        context_keywords = context.get("context_keywords", [])  # 컨텍스트 기반 키워드
+        keyword_mapping = context.get("keyword_mapping", {})
+        unified_keywords = context.get("unified_keywords", [])
+        
+        print(f"=== [출처 추적] ai_trends: {ai_trends[:5]}... ===")
+        print(f"=== [출처 추적] realtime_trends: {realtime_trends[:5]}... ===")
+        print(f"=== [출처 추적] news_sources keys: {list(news_sources.keys())[:5]}... ===")
+        
         for i, product in enumerate(products_list):
             similarity = product.get("similarity_score", 0.5)
             predicted_sales = predicted_sales_list[i]
+            matched_keyword = product.get("matched_keyword", "")
+            
+            # 추천 출처 정보 수집
+            recommendation_sources = []
+            
+            # 키워드 출처 판별
+            keyword_source_type = "unknown"
+            keyword_source_detail = ""
+            
+            if matched_keyword:
+                # 출처 판별: 뉴스 > AI 트렌드 > 컨텍스트 순서로 확인
+                if matched_keyword in news_sources:
+                    keyword_source_type = "news"
+                    keyword_source_detail = f"뉴스 트렌드에서 추출"
+                elif matched_keyword in realtime_trends:
+                    keyword_source_type = "news"
+                    keyword_source_detail = f"실시간 웹 검색 트렌드"
+                elif matched_keyword in ai_trends:
+                    keyword_source_type = "ai"
+                    keyword_source_detail = f"AI가 {context.get('time_slot', '')} {context.get('season', '')} 시즌에 맞게 생성"
+                elif matched_keyword in context_keywords:
+                    keyword_source_type = "context"
+                    keyword_source_detail = f"날씨/시간대 기반 컨텍스트 키워드"
+                else:
+                    keyword_source_type = "ai"  # 기본값: AI 트렌드로 간주
+                    keyword_source_detail = f"AI 트렌드 키워드"
+                
+                print(f"  [출처] {matched_keyword} → {keyword_source_type} ({keyword_source_detail})")
+            
+            # 1. RAG 매칭 출처 (키워드 출처 정보 포함)
+            if matched_keyword:
+                rag_source = {
+                    "source_type": "rag_match",
+                    "matched_keyword": matched_keyword,
+                    "similarity_score": similarity,
+                    "keyword_origin": keyword_source_type,  # 키워드가 어디서 왔는지
+                    "keyword_origin_detail": keyword_source_detail
+                }
+                recommendation_sources.append(rag_source)
+                
+                # 2. 뉴스 트렌드 출처 (매칭된 키워드가 뉴스에서 온 경우)
+                if matched_keyword in news_sources:
+                    news_info = news_sources[matched_keyword]
+                    news_source = {
+                        "source_type": "news_trend",
+                        "news_keyword": matched_keyword,
+                        "news_title": news_info.get("news_title", ""),
+                        "news_url": news_info.get("news_url", "")
+                    }
+                    recommendation_sources.append(news_source)
+                
+                # 3. AI 트렌드 출처 (매칭된 키워드가 AI 생성인 경우)
+                if keyword_source_type == "ai" or matched_keyword in ai_trends:
+                    ai_source = {
+                        "source_type": "ai_trend",
+                        "ai_keyword": matched_keyword,
+                        "ai_reason": f"{context.get('time_slot', '')} 시간대 {context.get('season', '')} 시즌 트렌드 분석으로 생성"
+                    }
+                    recommendation_sources.append(ai_source)
+            
+            # 4. XGBoost 매출 예측 출처 (항상 추가)
+            xgboost_source = {
+                "source_type": "xgboost_sales",
+                "xgboost_rank": i + 1,
+                "predicted_sales": predicted_sales
+            }
+            recommendation_sources.append(xgboost_source)
+            
+            # 5. Track B 출처 (매출 예측 상위 - 키워드 무관)
+            if product.get("source_track") == "sales_top":
+                sales_top_source = {
+                    "source_type": "sales_top",
+                    "reason": "키워드 무관 매출 예측 상위 상품"
+                }
+                recommendation_sources.append(sales_top_source)
+            
+            # 6. 컨텍스트 출처 (날씨, 시간대 등)
+            context_factors = []
+            if context.get("weather", {}).get("weather"):
+                context_factors.append(f"날씨: {context['weather']['weather']}")
+            if context.get("time_slot"):
+                context_factors.append(f"시간대: {context['time_slot']}")
+            if context.get("holiday_name"):
+                context_factors.append(f"공휴일: {context['holiday_name']}")
+            
+            if context_factors:
+                context_source = {
+                    "source_type": "context",
+                    "context_factor": ", ".join(context_factors)
+                }
+                recommendation_sources.append(context_source)
             
             # 점수 계산 (유사도 vs 매출 가중치 조정)
             if similarity >= 0.7:
@@ -1100,7 +1367,8 @@ JSON 형식:
                 "source": source,
                 "similarity_score": similarity,
                 "predicted_sales": predicted_sales,
-                "final_score": final_score
+                "final_score": final_score,
+                "recommendation_sources": recommendation_sources  # 추천 출처 정보 추가
             })
         
         # 4. 점수순 정렬
@@ -1124,6 +1392,46 @@ JSON 형식:
             category_scores[category] = {"predicted_sales": avg_sales}
         
         return candidates, category_scores
+    
+    async def _get_sales_top_products(self, context: Dict[str, Any], limit: int = 20) -> List[Dict]:
+        """
+        Track B: 매출 예측 상위 상품 조회 (키워드 매칭 무관)
+        방송테이프가 있는 전체 상품 중 XGBoost 매출 예측 상위 N개 반환
+        """
+        try:
+            # 1. 방송테이프 있는 전체 상품 조회
+            all_products = self.product_embedder.get_all_products_with_tape(limit=100)
+            
+            if not all_products:
+                logger.warning("[Track B] 방송테이프 보유 상품 없음")
+                return []
+            
+            print(f"=== [Track B] 방송테이프 보유 상품: {len(all_products)}개 ===")
+            
+            # 2. 배치 XGBoost 매출 예측
+            predicted_sales_list = await self._predict_products_sales_batch(all_products, context)
+            
+            # 3. 매출 예측 결과와 상품 매칭
+            products_with_sales = []
+            for i, product in enumerate(all_products):
+                product["predicted_sales"] = predicted_sales_list[i]
+                products_with_sales.append(product)
+            
+            # 4. 매출 예측 내림차순 정렬
+            products_with_sales.sort(key=lambda x: x.get("predicted_sales", 0), reverse=True)
+            
+            # 5. 상위 N개 반환
+            top_products = products_with_sales[:limit]
+            
+            print(f"=== [Track B] 매출 예측 상위 {len(top_products)}개 선정 ===")
+            for i, p in enumerate(top_products[:5], 1):
+                print(f"  {i}. {p.get('product_name', '')[:30]} | 예측: {int(p.get('predicted_sales', 0)/10000)}만원")
+            
+            return top_products
+            
+        except Exception as e:
+            logger.error(f"[Track B] 매출 상위 상품 조회 실패: {e}")
+            return []
     
     async def _predict_categories_with_xgboost(
         self, 
@@ -1404,6 +1712,9 @@ JSON 형식으로 제외할 상품의 인덱스 배열을 반환하세요:
                 except Exception as e:
                     logger.warning(f"⚠️ 테이프 {tape_code}의 실적 데이터 파싱 실패: {e}")
             
+            # 추천 출처 정보는 내부 로그용으로만 사용 (API 응답에는 포함하지 않음)
+            sources_for_log = candidate.get("recommendation_sources", [])
+            
             recommendation = BroadcastRecommendation(
                 rank=i+1,
                 productInfo=ProductInfo(
@@ -1422,57 +1733,80 @@ JSON 형식으로 제외할 상품의 인덱스 배열을 반환하세요:
                     aiPredictedSales=f"{round(candidate['predicted_sales']/10000, 1):,.1f}만원",  # AI 예측 매출 (XGBoost, 소수점 1자리)
                     lastBroadcast=last_broadcast  # 최근 방송 실적 추가
                 )
+                # sources 필드 제거 - 추천 근거 생성에만 내부적으로 사용
             )
 
-            # 추천 결과 요약 로그 (시연/분석용)
+            # 추천 결과 요약 로그 (시연/분석용) - 출처 정보 포함
             try:
+                # 출처 요약 생성 (딕셔너리 형태로 처리)
+                source_summary = []
+                for src in sources_for_log:
+                    src_type = src.get("source_type", "")
+                    if src_type == "rag_match":
+                        origin = src.get("keyword_origin", "unknown")
+                        source_summary.append(f"키워드({origin}): {src.get('matched_keyword', '')}")
+                    elif src_type == "news_trend":
+                        source_summary.append(f"뉴스: {src.get('news_keyword', '')}")
+                    elif src_type == "ai_trend":
+                        source_summary.append(f"AI트렌드: {src.get('ai_keyword', '')}")
+                    elif src_type == "xgboost_sales":
+                        pred_sales = src.get("predicted_sales", 0)
+                        source_summary.append(f"매출예측: {int(pred_sales/10000):,}만원")
+                
+                print("=" * 100)
                 print(
-                    f"[RECOMMENDATION] #{recommendation.rank} "
-                    f"{recommendation.productInfo.productName[:30]} | "
-                    f"{recommendation.productInfo.category} | "
-                    f"매출: {recommendation.businessMetrics.aiPredictedSales} | "
-                    f"점수: {candidate.get('final_score', 0.0):.3f}"
+                    f"[최종 추천 #{recommendation.rank}] "
+                    f"{recommendation.productInfo.productName[:40]}"
                 )
-            except Exception:
-                pass
+                print(f"  [카테고리] {recommendation.productInfo.category}")
+                print(f"  [예측매출] {recommendation.businessMetrics.aiPredictedSales}")
+                print(f"  [점수] {candidate.get('final_score', 0.0):.3f}")
+                print(f"  [출처] {' | '.join(source_summary)}")
+                print(f"  [추천근거] {recommendation.reasoning[:80]}...")
+            except Exception as e:
+                print(f"[로그 오류] {e}")
 
             recommendations.append(recommendation)
         
-        # [5-2단계] 네이버/타사 편성 조회 및 AI 선택
+        # [5-2단계] 네이버/타사 편성 조회 (LLM 없이 단순 조회)
         step_5_2_start = time.time()
         print("\n" + "=" * 80)
-        print(f"[5-2단계] 네이버/타사 편성 조회 및 AI 선택")
+        print(f"[5-2단계] 네이버/타사 편성 조회")
         print("=" * 80)
         
-        # 네이버 베스트 상품 조회
-        naver_products_data = self.external_products_service.get_latest_best_products(limit=10)
+        # 네이버 베스트 상품 조회 (상위 3개만)
+        naver_products_data = self.external_products_service.get_latest_best_products(limit=3)
         naver_products = [NaverProduct(**product) for product in naver_products_data]
-        logger.info(f"✅ 네이버 상품 {len(naver_products)}개 수집")
-        print(f"✅ 네이버 상품 {len(naver_products)}개 수집")
+        logger.info(f"✅ 네이버 상품 상위 {len(naver_products)}개 수집")
+        print(f"✅ 네이버 상품 상위 {len(naver_products)}개 수집")
         
-        # 타 홈쇼핑사 편성 상품 조회 - Netezza에서 실시간 조회
+        # 타 홈쇼핑사 편성 상품 조회 - Netezza에서 실시간 조회 (전체)
+        competitor_products = []
         try:
             broadcast_time_str = context.get("broadcast_time") if context else None
             if broadcast_time_str:
                 competitor_data = await netezza_conn.get_competitor_schedules(broadcast_time_str)
                 competitor_products = [CompetitorProduct(**comp) for comp in competitor_data]
-                logger.info(f"✅ 타사 편성 {len(competitor_products)}개 수집")
-                print(f"✅ 타사 편성 {len(competitor_products)}개 수집")
+                logger.info(f"✅ 타사 편성 전체 {len(competitor_products)}개 수집")
+                print(f"✅ 타사 편성 전체 {len(competitor_products)}개 수집")
             else:
                 logger.warning(f"⚠️ broadcast_time이 context에 없음")
-                competitor_products = []
         except Exception as e:
             logger.warning(f"⚠️ 타사 편성 조회 실패: {str(e)}")
-            competitor_products = []
         
-        # AI 기반 네이버/타사 편성 10개 선택 및 통합
-        selected_competitor_products = await self._select_and_merge_top_10(
-            naver_products=naver_products,
-            competitor_products=competitor_products,
-            broadcast_time=broadcast_time_str,
-            context=context
-        )
-        print(f"⏱️  [5-2단계] 네이버/타사 선택: {time.time() - step_5_2_start:.2f}초")
+        # 네이버 상위 3개 + 타사 편성 전체 통합 (LLM 선택 없이)
+        selected_competitor_products = []
+        
+        # 1. 타사 편성 전체 추가
+        selected_competitor_products.extend(competitor_products)
+        
+        # 2. 네이버 상위 3개를 CompetitorProduct 형식으로 변환하여 추가
+        for idx, naver in enumerate(naver_products[:3]):
+            selected_competitor_products.append(self._convert_naver_to_competitor(naver, idx))
+        
+        print(f"⏱️  [5-2단계] 네이버/타사 조회 완료: {time.time() - step_5_2_start:.2f}초")
+        print(f"  - 타사 편성: {len(competitor_products)}개")
+        print(f"  - 네이버 상위: {len(naver_products)}개")
         
         return BroadcastResponse(
             requestTime="",  # 메인에서 설정
@@ -1649,115 +1983,303 @@ JSON 형식으로 응답:
         logger.info(f"폴백 선택: 타사 우선, 총 {len(result)}개")
         return result[:10]
     
+    # 출처 유형별 포맷 템플릿 (더 상세하게)
+    SOURCE_TEMPLATES = {
+        "news_trend": "[뉴스] '{keyword}' | {title} | URL: {url}",
+        "ai_trend": "[AI트렌드] '{keyword}' - {reason}",
+        "rag_match": "[키워드매칭] '{keyword}' ({origin})",
+        "xgboost_sales": "[매출예측] {sales}만원 ({rank}위)",
+        "context": "[컨텍스트] {factor}",
+        "competitor": "[경쟁사] {name} {time} 편성 중"
+    }
+    
+    # 키워드 출처 매핑
+    KEYWORD_ORIGIN_MAP = {
+        "news": "뉴스 트렌드",
+        "ai": "AI 생성",
+        "context": "컨텍스트",
+        "unknown": "검색"
+    }
+    
+    def _format_source_description(self, src: Dict[str, Any]) -> str:
+        """출처 정보를 텍스트로 변환"""
+        src_type = src.get("source_type", "")
+        
+        if src_type == "news_trend":
+            keyword = src.get("news_keyword", "")
+            title = src.get("news_title", "")[:50] if src.get("news_title") else "최근 기사"
+            url = src.get("news_url", "") or "없음"
+            return self.SOURCE_TEMPLATES["news_trend"].format(keyword=keyword, title=title, url=url) if keyword else ""
+        
+        elif src_type == "ai_trend":
+            keyword = src.get("ai_keyword", "")
+            reason = src.get("ai_reason", "시즌 트렌드")
+            return self.SOURCE_TEMPLATES["ai_trend"].format(keyword=keyword, reason=reason) if keyword else ""
+        
+        elif src_type == "rag_match":
+            keyword = src.get("matched_keyword", "")
+            origin = self.KEYWORD_ORIGIN_MAP.get(src.get("keyword_origin", "unknown"), "검색")
+            return self.SOURCE_TEMPLATES["rag_match"].format(keyword=keyword, origin=origin) if keyword else ""
+        
+        elif src_type == "xgboost_sales":
+            sales = int(src.get("predicted_sales", 0) / 10000)
+            rank = src.get("xgboost_rank", 0)
+            return self.SOURCE_TEMPLATES["xgboost_sales"].format(sales=f"{sales:,}", rank=rank)
+        
+        elif src_type == "context":
+            factor = src.get("context_factor", "")
+            return self.SOURCE_TEMPLATES["context"].format(factor=factor) if factor else ""
+        
+        elif src_type == "competitor":
+            name = src.get("competitor_name", "")
+            time = src.get("competitor_time", "")
+            return self.SOURCE_TEMPLATES["competitor"].format(name=name, time=time) if name else ""
+        
+        return ""
+    
+    def _format_product_info(self, rank: int, name: str, category: str, sales: int, sources: List[str]) -> str:
+        """상품 정보를 프롬프트용 텍스트로 변환"""
+        sources_str = " / ".join(sources) if sources else "출처 없음"
+        return f"{rank}. {name[:50]} | {category} | {sales:,}만원\n   출처: {sources_str}"
+    
+    def _calculate_keyword_rankings(self, candidates: List[Dict[str, Any]]) -> Dict[str, int]:
+        """키워드 매칭 점수 기준 순위 계산"""
+        # 키워드 매칭 점수 추출 (similarity_score 기준)
+        scores = []
+        for c in candidates:
+            product_code = c.get("product", {}).get("product_code", "")
+            similarity = c.get("similarity", 0)
+            # recommendation_sources에서 rag_match의 similarity_score도 확인
+            for src in c.get("recommendation_sources", []):
+                if src.get("source_type") == "rag_match":
+                    similarity = max(similarity, src.get("similarity_score", 0))
+            scores.append((product_code, similarity))
+        
+        # 점수 내림차순 정렬 후 순위 부여
+        scores.sort(key=lambda x: x[1], reverse=True)
+        return {code: rank + 1 for rank, (code, _) in enumerate(scores)}
+    
+    def _calculate_sales_rankings(self, candidates: List[Dict[str, Any]]) -> Dict[str, int]:
+        """매출 예측 기준 순위 계산"""
+        scores = []
+        for c in candidates:
+            product_code = c.get("product", {}).get("product_code", "")
+            predicted_sales = c.get("predicted_sales", 0)
+            scores.append((product_code, predicted_sales))
+        
+        # 매출 내림차순 정렬 후 순위 부여
+        scores.sort(key=lambda x: x[1], reverse=True)
+        return {code: rank + 1 for rank, (code, _) in enumerate(scores)}
+    
+    def _format_sources_with_rankings(self, sources: List[Dict], keyword_rank: int, sales_rank: int, total: int) -> List[str]:
+        """출처 정보를 순위와 함께 포맷팅 (상위권만 순위 표시)"""
+        result = []
+        top_threshold = 10  # 상위 10위까지 순위 표시
+        
+        for src in sources:
+            src_type = src.get("source_type", "")
+            
+            if src_type == "news_trend":
+                keyword = src.get("news_keyword", "")
+                title = src.get("news_title", "")[:50] if src.get("news_title") else "최근 기사"
+                url = src.get("news_url", "") or "없음"
+                if keyword:
+                    result.append(f"[뉴스] '{keyword}' | {title} | URL: {url}")
+            
+            elif src_type == "ai_trend":
+                keyword = src.get("ai_keyword", "")
+                reason = src.get("ai_reason", "시즌 트렌드")
+                if keyword:
+                    # 상위권일 때만 순위 표시
+                    if keyword_rank <= top_threshold:
+                        result.append(f"[AI트렌드] '{keyword}' - {reason} (키워드 {keyword_rank}위)")
+                    else:
+                        result.append(f"[AI트렌드] '{keyword}' - {reason}")
+            
+            elif src_type == "rag_match":
+                keyword = src.get("matched_keyword", "")
+                origin = self.KEYWORD_ORIGIN_MAP.get(src.get("keyword_origin", "unknown"), "검색")
+                if keyword:
+                    if keyword_rank <= top_threshold:
+                        result.append(f"[키워드매칭] '{keyword}' ({origin}) - 키워드 {keyword_rank}위")
+                    else:
+                        result.append(f"[키워드매칭] '{keyword}' ({origin})")
+            
+            elif src_type == "xgboost_sales":
+                sales = int(src.get("predicted_sales", 0) / 10000)
+                # 상위권일 때만 순위 표시
+                if sales_rank <= top_threshold:
+                    result.append(f"[매출예측] {sales:,}만원 (매출 {sales_rank}위)")
+                else:
+                    result.append(f"[매출예측] {sales:,}만원")
+            
+            elif src_type == "context":
+                factor = src.get("context_factor", "")
+                if factor:
+                    result.append(f"[컨텍스트] {factor}")
+            
+            elif src_type == "competitor":
+                name = src.get("competitor_name", "")
+                time = src.get("competitor_time", "")
+                if name:
+                    result.append(f"[경쟁사] {name} {time} 편성 중")
+            
+            elif src_type == "sales_top":
+                # Track B: 매출 예측 상위 (키워드 무관)
+                if sales_rank <= top_threshold:
+                    result.append(f"[매출상위] 키워드 무관 매출 예측 상위 (매출 {sales_rank}위)")
+                else:
+                    result.append(f"[매출상위] 키워드 무관 매출 예측 상위")
+        
+        return result
+    
+    def _validate_reasons_response(self, result: Any, expected_count: int) -> List[str]:
+        """LLM 응답의 reasons 필드 검증"""
+        # result가 None인 경우
+        if result is None:
+            logger.warning("[검증] LLM 응답이 None")
+            return []
+        
+        # result가 dict가 아닌 경우
+        if not isinstance(result, dict):
+            logger.warning(f"[검증] LLM 응답이 dict가 아님: {type(result)}")
+            return []
+        
+        # reasons 필드가 없는 경우
+        reasons = result.get("reasons")
+        if reasons is None:
+            logger.warning("[검증] reasons 필드 없음")
+            return []
+        
+        # reasons가 list가 아닌 경우
+        if not isinstance(reasons, list):
+            logger.warning(f"[검증] reasons가 list가 아님: {type(reasons)}")
+            return []
+        
+        # 각 항목이 문자열인지 검증
+        validated = []
+        for i, reason in enumerate(reasons):
+            if isinstance(reason, str) and reason.strip():
+                validated.append(reason.strip())
+            else:
+                logger.warning(f"[검증] reasons[{i}]가 유효하지 않음: {type(reason)}")
+        
+        # 개수 검증
+        if len(validated) != expected_count:
+            logger.info(f"[검증] 개수 불일치: 기대 {expected_count}, 실제 {len(validated)}")
+        
+        return validated
+    
     async def _generate_batch_reasons_with_langchain(self, candidates: List[Dict[str, Any]], context: Dict[str, Any] = None) -> List[str]:
-        """배치로 여러 상품의 추천 근거를 한 번에 생성 (속도 개선)"""
+        """배치로 여러 상품의 추천 근거를 한 번에 생성"""
         try:
-            # 컨텍스트 정보
             time_slot = context.get("time_slot", "") if context else ""
             weather = context.get("weather", {}).get("weather", "") if context else ""
             holiday_name = context.get("holiday_name") if context else None
             
-            # 키워드 매핑 정보 (확장된 키워드 → 원본 키워드)
-            keyword_mapping = context.get("keyword_mapping", {}) if context else {}
-            original_keywords = context.get("original_keywords", []) if context else []
+            # 키워드 순위와 매출 순위를 따로 계산
+            keyword_rankings = self._calculate_keyword_rankings(candidates)
+            sales_rankings = self._calculate_sales_rankings(candidates)
             
-            # 상품 정보 요약
-            products_summary = []
+            # 상품별 출처 정보 포맷팅 (순위 정보 포함)
+            products_with_sources = []
             for candidate in candidates:
                 product = candidate["product"]
-                rank = candidate.get("rank", 0)
-                predicted_sales = candidate.get("predicted_sales", 0)
-                similarity_score = candidate.get("similarity_score", 0)
-                final_score = candidate.get("final_score", 0)
-                trend_keyword = candidate.get("trend_keyword", "")
+                product_code = product.get("product_code", "")
                 
-                # 트렌드 키워드의 원본 키워드 찾기
-                original_keyword = keyword_mapping.get(trend_keyword, trend_keyword) if trend_keyword else ""
+                # 순위 정보 가져오기
+                keyword_rank = keyword_rankings.get(product_code, 0)
+                sales_rank = sales_rankings.get(product_code, 0)
                 
-                products_summary.append({
-                    "rank": rank,
+                # 출처 정보 포맷팅 (순위 정보 포함)
+                sources = self._format_sources_with_rankings(
+                    candidate.get("recommendation_sources", []),
+                    keyword_rank, sales_rank, len(candidates)
+                )
+                
+                products_with_sources.append({
+                    "rank": candidate.get("rank", 0),
                     "product_name": product.get("product_name", ""),
                     "category": product.get("category_main", ""),
-                    "predicted_sales": int(predicted_sales/10000) if predicted_sales else 0,
-                    "similarity_score": f"{similarity_score:.3f}",
-                    "final_score": f"{final_score:.3f}",
-                    "trend_keyword": trend_keyword,
-                    "original_keyword": original_keyword  # 원본 키워드 추가
+                    "predicted_sales": int(candidate.get("predicted_sales", 0) / 10000),
+                    "keyword_rank": keyword_rank,
+                    "sales_rank": sales_rank,
+                    "sources": sources
                 })
             
-            # 배치 프롬프트 생성
+            # 프롬프트 - 자연스럽고 구체적인 추천 근거 (순위 정보 포함)
             batch_prompt = ChatPromptTemplate.from_messages([
-                ("system", """당신은 홈쇼핑 방송 편성 전문가입니다.
-여러 상품의 추천 근거를 한 번에 작성하세요.
+                ("system", """홈쇼핑 방송 편성 전문가로서 자연스러운 추천 근거를 작성하세요.
 
-# 핵심 원칙
-1. **각 상품마다 100자 이내** 간결하게 작성
-2. 전문적이고 객관적인 톤 유지
-3. 구체적인 수치와 데이터 활용
-4. **각 상품마다 완전히 다른 관점과 표현 사용**
-5. 같은 패턴이나 문구 반복 절대 금지
+**오늘 날짜: {today_date}**
 
-# 활용 가능한 요소들
-- 예측 매출 수치 (필수)
-- 카테고리 특성 (필수)
-- **원본 키워드** (매우 중요! 있을 경우 반드시 활용)
-  * 예: 상품이 "초콜릿"이고 원본 키워드가 "수능 간식"이면
-    → "수능 간식으로 적합한 초콜릿"처럼 표현
-  * 예: 상품이 "패딩"이고 원본 키워드가 "겨울 패션"이면
-    → "겨울 패션 트렌드에 맞는 패딩"처럼 표현
-- 공휴일 (있을 경우 필수 언급)
-- 시간대 특성 (저녁/오전/오후) - 신중하게 판단
-- 날씨/계절 (선택적)
+출처 유형별 작성 방법:
 
-# 금지 사항
-- "AI 분석 결과"로 시작하지 마세요
-- 템플릿처럼 보이는 반복적 표현 금지
-- 과장된 표현 금지
-- 기술 용어 절대 사용 금지 (유사도, 점수, 비율 등)
+1. **[뉴스] 출처:**
+   "최근 뉴스에 따르면 '프리미엄 여행상품' 관련 기사가 보도되었습니다. 이에 해당 상품의 편성을 추천합니다. (출처: URL)"
 
-JSON 형식으로 응답:
-{{
-  "reasons": [
-    "1번 상품 추천 근거",
-    "2번 상품 추천 근거",
-    ...
-  ]
-}}""")
-,
-                ("human", """시간대: {time_slot}
-날씨: {weather}
-공휴일: {holiday_name}
+2. **[AI트렌드] 출처:**
+   "{today_date} 트렌드 키워드 분석 결과 '겨울 의류' 키워드 1위로 적합한 상품입니다."
 
-추천 상품 목록:
+3. **[매출예측] 출처:**
+   "AI 매출 예측 결과 1,135만원으로 매출 1위를 기록했습니다."
+
+4. **[경쟁사] 출처:**
+   "{today_date} {time_slot} 경쟁사 롯데홈쇼핑에서 유사 상품 판매 중으로, 해당 시간대 편성을 추천합니다."
+
+5. **[매출상위] 출처:**
+   "트렌드 키워드와 무관하게 AI 매출 예측 상위 상품으로, 안정적인 매출이 기대됩니다."
+
+규칙:
+- 각 상품 100-150자
+- 출처에 순위가 표시된 경우에만 순위 언급 (상위 10위까지만 순위 표시됨)
+- "[뉴스]", "[AI]" 태그를 자연어로 변환
+- 뉴스 URL이 있으면 "(출처: URL)" 형태로 끝에 추가
+
+JSON: {{"reasons": ["근거1", "근거2", ...]}}"""),
+                ("human", """시간대: {time_slot} | 날씨: {weather}
+
 {products_info}
 
-위 {count}개 상품 각각에 대해 독창적인 추천 근거를 작성하세요.
-**원본 키워드가 있으면 반드시 활용하세요!**""")
+{count}개 상품의 추천 근거를 자연스럽게 작성하세요.""")
             ])
             
-            # 상품 정보 포맷팅 (원본 키워드 포함)
+            # 상품 정보 포맷팅
             products_info = "\n".join([
-                f"{p['rank']}. {p['product_name'][:40]} | 카테고리: {p['category']} | 예측매출: {p['predicted_sales']}만원 | 원본키워드: {p['original_keyword'] or '없음'}"
-                for p in products_summary
+                self._format_product_info(p["rank"], p["product_name"], p["category"], p["predicted_sales"], p["sources"])
+                for p in products_with_sources
             ])
+            
+            # 디버그: 실제 전달되는 상품 정보 출력
+            print(f"\n[DEBUG] LLM에 전달되는 상품 정보:\n{products_info[:500]}...")
             
             chain = batch_prompt | self.llm | JsonOutputParser()
+            
+            # 오늘 날짜 생성
+            from datetime import datetime
+            today_date = datetime.now().strftime("%m월 %d일")
             
             result = await chain.ainvoke({
                 "time_slot": time_slot or "미지정",
                 "weather": weather or "보통",
-                "holiday_name": holiday_name if holiday_name else "없음",
+                "today_date": today_date,
                 "products_info": products_info,
                 "count": len(candidates)
             })
             
-            reasons = result.get("reasons", [])
-            print(f"✅ 배치 처리 완료: {len(reasons)}개 근거 생성")
+            # JSON 파싱 검증
+            reasons = self._validate_reasons_response(result, len(candidates))
+            print(f"[배치 처리] {len(reasons)}개 근거 생성 완료")
             
-            # 개수가 부족하면 기본 메시지로 채움
+            # 개수가 부족하면 출처 기반 기본 메시지로 채움
             while len(reasons) < len(candidates):
                 idx = len(reasons)
-                reasons.append(f"{candidates[idx]['product'].get('category_main', '상품')} 추천")
+                candidate = candidates[idx]
+                sources = candidate.get("recommendation_sources", [])
+                
+                # 출처 기반 폴백 메시지 생성
+                fallback_reason = self._generate_fallback_reason(candidate, sources)
+                reasons.append(fallback_reason)
             
             return reasons[:len(candidates)]
             
@@ -1765,9 +2287,77 @@ JSON 형식으로 응답:
             logger.error(f"배치 근거 생성 오류: {e}")
             import traceback
             traceback.print_exc()
-            # 폴백: 기본 메시지
-            print("⚠️ 배치 처리 실패, 기본 메시지로 폴백...")
-            return [f"{c['product'].get('category_main', '상품')} 추천" for c in candidates]
+            # 폴백: 출처 기반 기본 메시지
+            print("⚠️ 배치 처리 실패, 출처 기반 폴백...")
+            return [self._generate_fallback_reason(c, c.get("recommendation_sources", [])) for c in candidates]
+    
+    def _generate_fallback_reason(self, candidate: Dict[str, Any], sources: List[Dict]) -> str:
+        """출처 기반 폴백 추천 근거 생성 - 여러 출처 조합"""
+        product = candidate.get("product", {})
+        category = product.get("category_main", "상품")
+        predicted_sales = candidate.get("predicted_sales", 0)
+        sales_str = f"{int(predicted_sales/10000):,}만원"
+        
+        # 출처 유형별로 분류
+        news_info = None
+        ai_info = None
+        rag_info = None
+        xgboost_info = None
+        context_info = None
+        
+        for src in sources:
+            src_type = src.get("source_type", "")
+            if src_type == "news_trend" and not news_info:
+                news_info = {
+                    "keyword": src.get("news_keyword", ""),
+                    "title": src.get("news_title", ""),
+                    "url": src.get("news_url", "")
+                }
+            elif src_type == "ai_trend" and not ai_info:
+                ai_info = {"keyword": src.get("ai_keyword", "")}
+            elif src_type == "rag_match" and not rag_info:
+                rag_info = {"keyword": src.get("matched_keyword", "")}
+            elif src_type == "xgboost_sales" and not xgboost_info:
+                xgboost_info = {"sales": src.get("predicted_sales", 0)}
+            elif src_type == "context" and not context_info:
+                context_info = {"factor": src.get("context_factor", "")}
+        
+        # 여러 출처 조합해서 메시지 생성
+        parts = []
+        
+        # 뉴스 출처 (최우선)
+        if news_info and news_info["keyword"]:
+            if news_info["title"]:
+                parts.append(f"'{news_info['title'][:25]}' 뉴스에서 '{news_info['keyword']}' 트렌드 포착")
+            else:
+                parts.append(f"뉴스에서 '{news_info['keyword']}' 트렌드 상승")
+        
+        # AI 트렌드
+        if ai_info and ai_info["keyword"]:
+            parts.append(f"'{ai_info['keyword']}' 시즌 트렌드 분석")
+        
+        # RAG 매칭 (뉴스/AI와 키워드가 다를 때만 추가)
+        if rag_info and rag_info["keyword"]:
+            rag_keyword = rag_info["keyword"]
+            news_keyword = news_info["keyword"] if news_info else ""
+            ai_keyword = ai_info["keyword"] if ai_info else ""
+            if rag_keyword != news_keyword and rag_keyword != ai_keyword:
+                parts.append(f"'{rag_keyword}' 키워드 매칭")
+        
+        # 컨텍스트
+        if context_info and context_info["factor"]:
+            parts.append(context_info["factor"])
+        
+        # 매출 예측 (항상 추가)
+        if predicted_sales > 0:
+            parts.append(f"예측 매출 {sales_str}")
+        
+        # 조합
+        if parts:
+            return ", ".join(parts[:3])  # 최대 3개 출처 조합
+        
+        # 기본 폴백
+        return f"{category} 카테고리, 예측 매출 {sales_str} 기대"
     
     def _prepare_features_for_product(self, product: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """1개 상품의 XGBoost feature 준비 (예측은 안 함)"""

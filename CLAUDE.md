@@ -64,10 +64,18 @@ This is an AI-powered home shopping broadcast recommendation system with these k
 1. **n8n** collects trends every 30 minutes from external APIs
 2. **FastAPI** receives broadcast time requests from frontend
 3. **BroadcastWorkflow** (`backend/app/broadcast_workflow.py`) executes:
-   - Track A: Category-based search → XGBoost prediction
-   - Track B: Direct product search via embeddings
+   - 1단계: 컨텍스트 & 트렌드 키워드 수집 (LLM 기반)
+   - 2단계: 실시간 웹 트렌드 수집 (선택적)
+   - 3단계: 통합 검색 (Qdrant 벡터 검색)
+   - 4단계: XGBoost 매출 예측 & 스코어링
+   - 5단계: LLM 추천 근거 생성 + 네이버/타사 편성 조회
 4. Results merged and ranked using weighted scoring formula
 5. **LangChain** generates AI reasoning for each recommendation
+
+### TODO: 방송 기간 필터링 (현재 주석 처리)
+- 입력 날짜 기준 앞뒤 1개월 × 과거 5년 기간 필터
+- PostgreSQL에서 해당 기간 방송 상품 조회 후 Qdrant 검색 범위 제한
+- 관련 코드: `_get_historical_broadcast_periods()`, `search_products_with_broadcast_filter()`
 
 ## Core Architecture Components
 
@@ -79,6 +87,9 @@ This is an AI-powered home shopping broadcast recommendation system with these k
 ### Key Models & Classes
 - `BroadcastWorkflow`: Main orchestrator for recommendation logic
 - `ProductEmbedder`: Qdrant integration for semantic search
+  - `search_products()`: 기본 벡터 검색
+  - `search_products_with_broadcast_filter()`: 방송 기간 필터 + 벡터 검색 (현재 미사용)
+  - `get_products_by_multiple_periods()`: 다중 기간 방송 상품 조회 (현재 미사용)
 - `TrendProcessor`: Trend analysis and product matching
 - `XGBoost Model`: Sales prediction (trained via `train.py`)
 

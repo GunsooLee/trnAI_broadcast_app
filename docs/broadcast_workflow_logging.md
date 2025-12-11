@@ -77,13 +77,32 @@
 - **관련 코드**: `BroadcastWorkflow._execute_unified_search`
 - **주요 로그**
   ```text
-  === [DEBUG Unified Search] Qdrant 검색 쿼리: '1. 김장용 절임통 2. 전기 압력솥 ... 가을패션 점퍼 ...'
+  === [DEBUG Multi-Stage Search] 시작, keywords: 59개 ===
+  === [개별 키워드 검색] 총 59개 키워드 ===
   === [DEBUG Unified Search] 검색 결과: 50개 상품 ===
   === [DEBUG Unified Search] 직접매칭: 0개, 카테고리: 8개 ===
   ```
 - **의미**
   - 통합된 키워드들을 Qdrant 벡터 DB에 넘겨 **유사 상품 후보를 검색**한다.
   - 직접 키워드 매칭 여부와, 카테고리 기반으로 확보한 후보 수를 확인할 수 있다.
+
+#### [미적용] 방송 기간 필터링 (TODO)
+
+> **현재 주석 처리됨** - 요구사항 확정 후 활성화 예정
+
+- **목적**: 입력된 방송 시간 기준 앞뒤 1개월 기간을 과거 5년간 조회하여, 해당 시기에 방송된 상품만 후보군으로 제한
+- **관련 메서드**:
+  - `_get_historical_broadcast_periods()`: 과거 연도별 동일 시기 기간 생성
+  - `ProductEmbedder.get_products_by_multiple_periods()`: PostgreSQL에서 해당 기간 방송 상품 조회
+  - `ProductEmbedder.search_products_with_broadcast_filter()`: 기간 필터 + 벡터 검색 통합
+- **예상 로그** (활성화 시):
+  ```text
+  === [방송 기간 필터] 기준일: 2025-03-15, 5개 기간 ===
+    - 2024-02-15 ~ 2024-04-15
+    - 2023-02-15 ~ 2023-04-15
+    - 2022-02-15 ~ 2022-04-15
+  === [다중 기간 필터] 5개 기간 → 방송 상품: 441개 ===
+  ```
 
 ---
 

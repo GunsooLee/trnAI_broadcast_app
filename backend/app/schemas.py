@@ -87,6 +87,39 @@ class BroadcastRequest(BaseModel):
                 raise ValueError(f"trendWeight + sellingWeight는 1.0이어야 합니다 (현재: {total:.2f})")
         return v
 
+class RecommendationSource(BaseModel):
+    """추천 출처 정보 스키마 - 왜 이 상품이 추천됐는지 추적"""
+    source_type: str = Field(
+        description="추천 출처 유형",
+        example="news_trend"
+    )  # news_trend, ai_trend, context, xgboost_sales, competitor, rag_match
+    
+    # 뉴스 트렌드 출처
+    news_keyword: Optional[str] = Field(default=None, description="뉴스에서 추출한 키워드", example="손난로")
+    news_title: Optional[str] = Field(default=None, description="뉴스 기사 제목", example="한파에 손난로 판매 급증")
+    news_url: Optional[str] = Field(default=None, description="뉴스 기사 URL")
+    
+    # AI 트렌드 출처 (LLM 생성 키워드)
+    ai_keyword: Optional[str] = Field(default=None, description="AI가 생성한 트렌드 키워드", example="겨울 패딩")
+    ai_reason: Optional[str] = Field(default=None, description="AI가 키워드를 생성한 이유", example="12월 저녁 시간대 겨울 의류 수요")
+    
+    # 컨텍스트 기반 출처 (날씨, 시간대, 공휴일 등)
+    context_factor: Optional[str] = Field(default=None, description="컨텍스트 요인", example="날씨: 한파, 시간대: 저녁")
+    
+    # RAG 검색 출처
+    matched_keyword: Optional[str] = Field(default=None, description="RAG 검색에 사용된 키워드", example="전기장판")
+    similarity_score: Optional[float] = Field(default=None, description="벡터 유사도 점수", example=0.85)
+    keyword_origin: Optional[str] = Field(default=None, description="키워드 출처 유형 (news/ai/context)", example="ai")
+    keyword_origin_detail: Optional[str] = Field(default=None, description="키워드 출처 상세 설명", example="AI가 저녁 겨울 시즌에 맞게 생성")
+    
+    # XGBoost 매출 예측 출처
+    xgboost_rank: Optional[int] = Field(default=None, description="XGBoost 매출 예측 순위", example=3)
+    predicted_sales: Optional[float] = Field(default=None, description="예측 매출액", example=15000000)
+    
+    # 경쟁사 편성 출처
+    competitor_name: Optional[str] = Field(default=None, description="경쟁사명", example="롯데홈쇼핑")
+    competitor_time: Optional[str] = Field(default=None, description="경쟁사 편성 시간", example="14:00-15:00")
+
 class ProductInfo(BaseModel):
     """상품 정보 스키마"""
     productId: str
@@ -126,6 +159,7 @@ class BroadcastRecommendation(BaseModel):
     productInfo: ProductInfo
     reasoning: str = Field(description="추천 근거")
     businessMetrics: BusinessMetrics
+    # sources 필드 제거 - 추천 출처 정보는 내부적으로 reasoning 생성에만 사용
 
 class NaverProduct(BaseModel):
     """네이버 베스트 상품 스키마"""
