@@ -13,6 +13,63 @@
 - 실시간 트렌드 키워드
 - 시간대별 최적화 (저녁 주방용품, 심야 건강식품)
 
+## 추천 워크플로우
+
+### Track A + Track B 병렬 후보군 생성
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        후보군 생성 (Candidate Generation)            │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ┌─────────────────────────┐    ┌─────────────────────────┐        │
+│  │      Track A            │    │      Track B            │        │
+│  │   (키워드 매칭)          │    │   (매출 예측 상위)       │        │
+│  │                         │    │                         │        │
+│  │ • 트렌드 키워드 생성     │    │ • 전체 상품 조회        │        │
+│  │ • RAG 벡터 검색         │    │ • XGBoost 매출 예측     │        │
+│  │ • 유사도 기반 매칭       │    │ • 상위 20개 선정        │        │
+│  └───────────┬─────────────┘    └───────────┬─────────────┘        │
+│              │                              │                       │
+│              └──────────┬───────────────────┘                       │
+│                         ↓                                           │
+│              ┌─────────────────────────┐                            │
+│              │     병합 + 중복 제거     │                            │
+│              │   (최대 50개 후보군)     │                            │
+│              └───────────┬─────────────┘                            │
+│                          ↓                                          │
+│              ┌─────────────────────────┐                            │
+│              │   XGBoost 배치 예측     │                            │
+│              │   + 신상품 매출 보정    │                            │
+│              └───────────┬─────────────┘                            │
+│                          ↓                                          │
+│              ┌─────────────────────────┐                            │
+│              │   최종 랭킹 + 추천      │                            │
+│              └─────────────────────────┘                            │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 주요 기능
+
+| 기능 | 설명 |
+|------|------|
+| **Track A** | 트렌드 키워드 기반 RAG 검색으로 관련 상품 매칭 |
+| **Track B** | 키워드 무관 매출 예측 상위 상품 추가 (다양성 확보) |
+| **신상품 보정** | 판매 이력 없는 상품은 카테고리 평균 매출의 80%로 보정 |
+| **순위 표시** | 상위 10위까지만 키워드/매출 순위 언급 |
+| **추천 근거** | LLM이 출처 정보를 자연스러운 문장으로 생성 (100-150자) |
+
+### 추천 출처 유형
+
+| 출처 타입 | 설명 | 예시 |
+|-----------|------|------|
+| `news_trend` | 뉴스 트렌드 키워드 | "최근 뉴스에 따르면 '로봇청소기' 관련 기사가 보도되었습니다." |
+| `ai_trend` | AI 생성 트렌드 키워드 | "트렌드 키워드 분석 결과 '겨울 의류' 키워드 1위로 적합합니다." |
+| `xgboost_sales` | XGBoost 매출 예측 | "AI 매출 예측 결과 2,000만원으로 매출 1위를 기록했습니다." |
+| `sales_top` | 매출 예측 상위 (키워드 무관) | "트렌드 키워드와 무관하게 매출 예측 상위 상품입니다." |
+| `competitor` | 경쟁사 편성 정보 | "경쟁사 롯데홈쇼핑에서 유사 상품 판매 중입니다." |
+| `context` | 컨텍스트 (날씨, 시간대) | "오후 시간대 겨울 시즌에 적합한 상품입니다." |
+
 ## 시스템 아키텍처
 
 ```
@@ -126,36 +183,67 @@ curl -X POST http://localhost:8501/api/v1/broadcast/recommendations \
 **Response:**
 ```json
 {
-  "requestTime": "2025-12-08T14:30:00+09:00",
-  "recommendedCategories": [
-    {
-      "rank": 1,
-      "name": "주방용품",
-      "reason": "저녁 시간대 최적 카테고리"
-    }
-  ],
+  "requestTime": "2025-12-15T14:00:00+09:00",
   "recommendations": [
     {
       "rank": 1,
       "productInfo": {
-        "productId": "11388995",
-        "productName": "[해피콜] 다이아몬드 프라이팬 3종 세트",
-        "category": "생활 > 주방용품",
-        "tapeCode": "T001"
+        "productId": "13918293",
+        "productName": "잭필드 23 WINTER 남성 숨쉬는바지 3종",
+        "category": "의류",
+        "categoryMiddle": "일반의류",
+        "categorySub": "일반의류-하의",
+        "brand": "잭필드",
+        "price": 79800.0,
+        "tapeCode": "0000012179",
+        "tapeName": "[23FW 최신상] 잭필드 겨울 숨쉬는바지 3종"
       },
-      "reasoning": {
-        "summary": "저녁 시간대 최적화된 주방용품, 8,500만원 매출 예상"
-      },
+      "reasoning": "겨울 의류 키워드 분석에서 1위를 기록한 잭필드 23 WINTER 남성 숨쉬는바지는 현재 겨울 시즌에 적합한 상품으로, 매출 예측도 2위로 안정적인 판매가 기대됩니다.",
       "businessMetrics": {
-        "aiPredictedSales": "8,948.1만원",
+        "aiPredictedSales": "2,005.1만원",
         "lastBroadcast": {
-          "totalProfit": 16466355.0,
-          "orderQuantity": 287
+          "broadcastStartTime": "2024-01-04 22:33:28",
+          "orderQuantity": 395,
+          "totalProfit": 7513059.0,
+          "profitEfficiency": 5.8,
+          "conversionRate": 78.34
+        }
+      }
+    },
+    {
+      "rank": 2,
+      "productInfo": {
+        "productId": "20159901",
+        "productName": "로보락 Q Revo S 로봇청소기",
+        "category": "생활가전",
+        "categoryMiddle": "생활가전-소형",
+        "categorySub": "청소기",
+        "brand": "로보락",
+        "price": 990000.0,
+        "tapeCode": "0000014684",
+        "tapeName": "(방송에서만 이가격) 로보락 Q REVO S 로봇청소기"
+      },
+      "reasoning": "로보락 Q Revo S 로봇청소기는 최근 뉴스에서 실용적 프리미엄 상품으로 인기를 끌고 있으며, 매출 예측 1위로 오후 시간대에 적합한 상품입니다. (출처: https://www.g-enews.com/...)",
+      "businessMetrics": {
+        "aiPredictedSales": "2,020.7만원",
+        "lastBroadcast": {
+          "broadcastStartTime": "2025-05-28 22:33:25",
+          "orderQuantity": 92,
+          "totalProfit": 14968410.0,
+          "profitEfficiency": 12.3,
+          "conversionRate": 79.25
         }
       }
     }
   ],
-  "externalProducts": [...]
+  "competitorProducts": [
+    {
+      "company_name": "네이버 스토어",
+      "broadcast_title": "[네이버 인기 1위] 포항 구룡포 과메기 야채세트",
+      "start_time": "",
+      "end_time": ""
+    }
+  ]
 }
 ```
 
@@ -178,11 +266,18 @@ trnAi/
 │   ├── app/
 │   │   ├── main.py                    # FastAPI 엔트리포인트
 │   │   ├── broadcast_workflow.py      # 핵심 추천 워크플로우
+│   │   │   ├── _generate_unified_candidates()  # Track A + B 후보군 생성
+│   │   │   ├── _get_sales_top_products()       # Track B: 매출 상위 상품
+│   │   │   ├── _predict_products_sales_batch() # XGBoost 배치 예측 + 신상품 보정
+│   │   │   ├── _generate_batch_reasons_with_langchain()  # LLM 추천 근거 생성
+│   │   │   └── _format_sources_with_rankings() # 출처 포맷팅 (순위 포함)
 │   │   ├── broadcast_recommender.py   # 추천 로직
 │   │   ├── product_embedder.py        # 상품 임베딩
+│   │   │   ├── get_all_products_with_tape()    # 방송테이프 보유 상품 조회
+│   │   │   └── get_category_avg_sales()        # 카테고리별 평균 매출 조회
 │   │   ├── external_apis.py           # 외부 API 연동
 │   │   ├── netezza_config.py          # Netezza DB 연결
-│   │   ├── schemas.py                 # Pydantic 스키마
+│   │   ├── schemas.py                 # Pydantic 스키마 (RecommendationSource 포함)
 │   │   ├── api/                       # API 라우터
 │   │   ├── routers/                   # 추가 라우터
 │   │   └── services/                  # 비즈니스 서비스

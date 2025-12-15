@@ -2429,7 +2429,7 @@ JSON: {{"reasons": ["근거1", "근거2", ...]}}"""),
             return 30000000  # 기본값 (0.3억)
     
     async def _predict_products_sales_batch(self, products: List[Dict[str, Any]], context: Dict[str, Any]) -> List[float]:
-        """여러 상품 XGBoost 매출 예측 (배치 처리)"""
+        """여러 상품 XGBoost 매출 예측 (배치 처리) + 신상품 보정"""
         try:
             import pandas as pd
             
@@ -2458,6 +2458,30 @@ JSON: {{"reasons": ["근거1", "근거2", ...]}}"""),
             predicted_sales_log = self.model.predict(batch_df)
             # 로그 역변환 (학습 시 log1p 사용)
             predicted_sales_array = np.expm1(predicted_sales_log)
+            
+            # ========== 신상품 매출 보정 (2-A) ==========
+            # 카테고리별 평균 매출 조회
+            category_avg_sales = self.product_embedder.get_category_avg_sales()
+            
+            # 전체 평균 계산 (카테고리 평균이 없는 경우 대비)
+            overall_avg = sum(category_avg_sales.values()) / len(category_avg_sales) if category_avg_sales else 30000000
+            
+            # 신상품 보정: 예측값이 너무 낮으면 카테고리 평균으로 대체
+            MIN_SALES_THRESHOLD = 5000000  # 500만원 미만이면 신상품으로 간주
+            corrected_count = 0
+            
+            for i, (product, sales) in enumerate(zip(products, predicted_sales_array)):
+                if sales < MIN_SALES_THRESHOLD:
+                    category = product.get("category_main", "")
+                    category_avg = category_avg_sales.get(category, overall_avg)
+                    # 카테고리 평균의 80%로 보정 (보수적 추정)
+                    corrected_sales = category_avg * 0.8
+                    predicted_sales_array[i] = corrected_sales
+                    corrected_count += 1
+                    print(f"  [신상품 보정] {product.get('product_name', '')[:25]} | {sales/10000:.0f}만원 → {corrected_sales/10000:.0f}만원 (카테고리 평균)")
+            
+            if corrected_count > 0:
+                print(f"=== [신상품 보정] {corrected_count}개 상품 카테고리 평균으로 보정됨 ===")
             
             print(f"=== [배치 예측] 완료 ===")
             print(f"  평균: {predicted_sales_array.mean()/10000:.0f}만원")

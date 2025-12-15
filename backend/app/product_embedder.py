@@ -218,14 +218,13 @@ class ProductEmbedder:
         SELECT DISTINCT 
             g.product_code,
             g.product_name,
-            g.category_main_name as category_main,
-            g.category_middle_name as category_middle,
-            g.category_sub_name as category_sub,
+            g.category_main,
+            g.category_middle,
+            g.category_sub,
             g.brand,
             g.price,
             t.tape_code,
-            t.tape_name,
-            t.duration_minutes
+            t.tape_name
         FROM taigoods g
         INNER JOIN taipgmtape t ON g.product_code = t.product_code
         WHERE t.production_status = 'ready'
@@ -248,7 +247,6 @@ class ProductEmbedder:
                         "price": float(row[6]) if row[6] else 0,
                         "tape_code": row[7],
                         "tape_name": row[8],
-                        "duration_minutes": row[9],
                         "similarity_score": 0.0  # 키워드 매칭 없음
                     })
                 
@@ -268,14 +266,14 @@ class ProductEmbedder:
         """
         query = """
         SELECT 
-            g.category_main_name,
-            AVG(b.sales_amount) as avg_sales
+            g.category_main,
+            AVG(b.gross_profit) as avg_sales
         FROM taibroadcasts b
         JOIN taipgmtape t ON b.tape_code = t.tape_code
         JOIN taigoods g ON t.product_code = g.product_code
-        WHERE b.sales_amount > 0
+        WHERE b.gross_profit > 0
           AND b.broadcast_start_timestamp >= NOW() - INTERVAL '90 days'
-        GROUP BY g.category_main_name
+        GROUP BY g.category_main
         """
         
         try:
