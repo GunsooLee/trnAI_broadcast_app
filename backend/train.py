@@ -96,10 +96,27 @@ def load_data(engine: Engine) -> pd.DataFrame:
     df['product_type'] = df['product_type'].fillna('유형')
     df['holiday_name'] = df['holiday_name'].fillna('')
     
-    # 과대예측 방지: 가격 로그 스케일링
+    # 과대예측 방지: 가격 로그 스케일링 (현재 미사용)
     print("가격 피처 로그 스케일링 적용...")
     df['product_price_log'] = np.log1p(df['product_price'])
     print(f"  product_price: 원본 평균 {df['product_price'].mean():,.0f}원 → 로그 {df['product_price_log'].mean():.2f}")
+    
+    # 시간대 피처 강화: 사인/코사인 변환 (주기성 반영)
+    print("시간대 피처 강화 (사인/코사인 변환)...")
+    df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24)
+    df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24)
+    print(f"  hour_sin 범위: [{df['hour_sin'].min():.2f}, {df['hour_sin'].max():.2f}]")
+    print(f"  hour_cos 범위: [{df['hour_cos'].min():.2f}, {df['hour_cos'].max():.2f}]")
+    
+    # 월(month) 피처 추가: 11월에 팔린 상품은 10~12월에 추천되도록
+    print("월(month) 피처 추가 (사인/코사인 변환)...")
+    df['broadcast_date'] = pd.to_datetime(df['broadcast_date'])
+    df['month'] = df['broadcast_date'].dt.month
+    df['month_sin'] = np.sin(2 * np.pi * df['month'] / 12)
+    df['month_cos'] = np.cos(2 * np.pi * df['month'] / 12)
+    print(f"  month 분포: {df['month'].value_counts().sort_index().to_dict()}")
+    print(f"  month_sin 범위: [{df['month_sin'].min():.2f}, {df['month_sin'].max():.2f}]")
+    print(f"  month_cos 범위: [{df['month_cos'].min():.2f}, {df['month_cos'].max():.2f}]")
     
     print(f"데이터 로딩 완료. 총 {len(df)}개 행")
     return df
@@ -108,11 +125,20 @@ def load_data(engine: Engine) -> pd.DataFrame:
 def build_pipeline() -> Pipeline:
     """Scikit-learn 파이프라인을 구축합니다."""
     print("모델 파이프라인 생성...")
+    
+    # 시간대/월 피처 강화, 날씨/가격 피처 제거 (2024-12-15 수정)
     numeric_features = [
-        "product_price_log",  # 로그 스케일링 버전 사용
-        "hour",
-        "temperature",
-        "precipitation",
+        # "product_price_log",  # 제거: 가격은 매출에 영향 적음
+        # 시간 피처 (9시에 팔린 상품 → 8~10시에 추천)
+        "hour",                 # 시간 (0-23)
+        "hour_sin",             # 시간 사인 변환 (주기성 반영)
+        "hour_cos",             # 시간 코사인 변환 (주기성 반영)
+        # 월 피처 (11월에 팔린 상품 → 10~12월에 추천)
+        "month",                # 월 (1-12)
+        "month_sin",            # 월 사인 변환 (주기성 반영)
+        "month_cos",            # 월 코사인 변환 (주기성 반영)
+        # "temperature",        # 제거: 날씨 영향 적음
+        # "precipitation",      # 제거: 날씨 영향 적음
     ]
     categorical_features = [
         "product_lgroup",
@@ -120,12 +146,12 @@ def build_pipeline() -> Pipeline:
         "product_sgroup",
         "brand",
         "product_type",
-        "time_slot",
-        "day_of_week",
-        "season",
-        "weather",
+        "time_slot",            # 시간대 (오전/오후/저녁/심야) - 핵심 피처
+        "day_of_week",          # 요일 - 핵심 피처
+        # "season",             # 제거: month 피처로 대체
+        # "weather",            # 제거: 날씨 영향 적음
     ]
-    boolean_features = ["is_weekend", "is_holiday"]
+    boolean_features = ["is_weekend", "is_holiday"]  # 주말/공휴일 - 핵심 피처
 
     preprocessor = ColumnTransformer(
         [

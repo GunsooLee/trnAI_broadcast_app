@@ -2360,37 +2360,49 @@ JSON: {{"reasons": ["근거1", "근거2", ...]}}"""),
         return f"{category} 카테고리, 예측 매출 {sales_str} 기대"
     
     def _prepare_features_for_product(self, product: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        """1개 상품의 XGBoost feature 준비 (예측은 안 함)"""
+        """1개 상품의 XGBoost feature 준비 (예측은 안 함)
+        
+        2024-12-15 수정: 시간대/월 피처 강화, 날씨/가격 피처 제거
+        - 시간: 9시에 팔린 상품 → 8~10시에 추천
+        - 월: 11월에 팔린 상품 → 10~12월에 추천
+        """
         broadcast_dt = context["broadcast_dt"]
         
         print(f"=== [_prepare_features_for_product] 호출됨: {product.get('product_name', 'Unknown')[:30]} ===")
         
-        # 로그 스케일링 적용 (학습 시와 동일)
-        product_price = product.get("product_price", product.get("price", 100000))
-        product_price_log = np.log1p(product_price)
-        
         category_main = product.get("category_main", product.get("category", "Unknown"))
         time_slot = context["time_slot"]
         
+        # 시간 피처: 사인/코사인 변환 (주기성 반영)
+        hour = broadcast_dt.hour
+        hour_sin = np.sin(2 * np.pi * hour / 24)
+        hour_cos = np.cos(2 * np.pi * hour / 24)
+        
+        # 월 피처: 사인/코사인 변환 (주기성 반영)
+        month = broadcast_dt.month
+        month_sin = np.sin(2 * np.pi * month / 12)
+        month_cos = np.cos(2 * np.pi * month / 12)
+        
         return {
-            # Numeric features (단순화)
-            "product_price_log": product_price_log,
-            "hour": broadcast_dt.hour,
-            "temperature": context["weather"].get("temperature", 20),
-            "precipitation": context["weather"].get("precipitation", 0),
+            # Numeric features - 시간대/월 강화 (날씨/가격 제거)
+            "hour": hour,
+            "hour_sin": hour_sin,
+            "hour_cos": hour_cos,
+            "month": month,
+            "month_sin": month_sin,
+            "month_cos": month_cos,
             
-            # Categorical features
+            # Categorical features (날씨/계절 제거)
             "product_lgroup": category_main,
             "product_mgroup": product.get("category_middle", "Unknown"),
             "product_sgroup": product.get("category_sub", "Unknown"),
             "brand": product.get("brand", "Unknown"),
             "product_type": product.get("product_type", "유형"),
-            "time_slot": time_slot,
-            "day_of_week": ["월", "화", "수", "목", "금", "토", "일"][broadcast_dt.weekday()],
-            "season": context["season"],
-            "weather": context["weather"].get("weather", "Clear"),
+            "time_slot": time_slot,  # 핵심 피처
+            "day_of_week": ["월", "화", "수", "목", "금", "토", "일"][broadcast_dt.weekday()],  # 핵심 피처
+            # "season" 제거: month 피처로 대체
             
-            # Boolean features
+            # Boolean features - 핵심 피처
             "is_weekend": 1 if broadcast_dt.weekday() >= 5 else 0,
             "is_holiday": 0
         }
@@ -2450,8 +2462,8 @@ JSON: {{"reasons": ["근거1", "근거2", ...]}}"""),
             print(f"=== [입력 피처 샘플] ===")
             for i, (product, features) in enumerate(zip(products[:3], features_list[:3])):
                 print(f"  상품 {i+1}: {product.get('product_name', '')[:30]}")
-                print(f"    - product_price_log: {features['product_price_log']:.2f}")
-                print(f"    - hour: {features['hour']}")
+                print(f"    - hour: {features['hour']}, month: {features['month']}")
+                print(f"    - time_slot: {features['time_slot']}, day_of_week: {features['day_of_week']}")
                 print(f"    - 카테고리: {features['product_lgroup']}")
             
             # XGBoost 배치 예측 (한 번에 처리)
