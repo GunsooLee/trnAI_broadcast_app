@@ -666,3 +666,153 @@ class ProductEmbedder:
         end_date = end_date - timedelta(days=1)
         
         return self.get_products_by_broadcast_period(start_date, end_date)
+    
+    def get_historical_top_products(
+        self,
+        target_month: int,
+        target_hour: int,
+        month_range: int = 1,
+        hour_range: int = 1,
+        limit: int = 30
+    ) -> List[Dict]:
+        """
+        Track C: 과거 유사 시간대/월에 실제로 잘 팔린 상품 조회
+        
+        Args:
+            target_month: 대상 월 (1-12)
+            target_hour: 대상 시간 (0-23)
+            month_range: 월 범위 (±N개월, 기본 1 = 전후 1개월)
+            hour_range: 시간 범위 (±N시간, 기본 1 = 전후 1시간)
+            limit: 최대 조회 건수
+            
+        Returns:
+            과거 유사 조건에서 실제로 잘 팔린 상품 리스트 (방송테이프 있는 것만)
+            
+        Example:
+            # 12월 9시 방송 → 11~1월, 8~10시에 잘 팔린 상품 조회
+            products = embedder.get_historical_top_products(12, 9)
+        """
+        
+        # 월 범위 계산 (순환 처리: 12월 → 1월)
+        months = []
+        for offset in range(-month_range, month_range + 1):
+            m = target_month + offset
+            if m < 1:
+                m += 12
+            elif m > 12:
+                m -= 12
+            months.append(m)
+        
+        # 시간 범위 계산 (순환 처리: 23시 → 0시)
+        hours = []
+        for offset in range(-hour_range, hour_range + 1):
+            h = target_hour + offset
+            if h < 0:
+                h += 24
+            elif h >= 24:
+                h -= 24
+            hours.append(h)
+        
+        months_str = ",".join(map(str, months))
+        hours_str = ",".join(map(str, hours))
+        
+        query = f"""
+        WITH historical_sales AS (
+            SELECT 
+                t.product_code,
+                g.product_name,
+                g.category_main,
+                g.category_middle,
+                g.category_sub,
+                g.brand,
+                g.price,
+                t.tape_code,
+                t.tape_name,
+                AVG(b.gross_profit) as avg_profit,
+                COUNT(*) as broadcast_count,
+                MAX(b.broadcast_start_timestamp) as last_broadcast
+            FROM taibroadcasts b
+            JOIN taipgmtape t ON b.tape_code = t.tape_code
+            JOIN taigoods g ON t.product_code = g.product_code
+            WHERE 
+                -- 유사 월 필터
+                EXTRACT(MONTH FROM b.broadcast_start_timestamp) IN ({months_str})
+                -- 유사 시간 필터
+                AND EXTRACT(HOUR FROM b.broadcast_start_timestamp) IN ({hours_str})
+                -- 방송테이프 존재
+                AND t.production_status = 'ready'
+                -- 매출이 있는 것만
+                AND b.gross_profit > 0
+            GROUP BY 
+                t.product_code, g.product_name, g.category_main, 
+                g.category_middle, g.category_sub, g.brand, g.price,
+                t.tape_code, t.tape_name
+            HAVING COUNT(*) >= 1
+        ),
+        -- 최근 방송 매출 조회
+        latest_broadcast AS (
+            SELECT DISTINCT ON (t.product_code)
+                t.product_code,
+                b.gross_profit as last_profit,
+                b.broadcast_start_timestamp as last_broadcast_time
+            FROM taibroadcasts b
+            JOIN taipgmtape t ON b.tape_code = t.tape_code
+            WHERE 
+                EXTRACT(MONTH FROM b.broadcast_start_timestamp) IN ({months_str})
+                AND EXTRACT(HOUR FROM b.broadcast_start_timestamp) IN ({hours_str})
+                AND b.gross_profit > 0
+            ORDER BY t.product_code, b.broadcast_start_timestamp DESC
+        )
+        SELECT 
+            h.product_code,
+            h.product_name,
+            h.category_main,
+            h.category_middle,
+            h.category_sub,
+            h.brand,
+            h.price,
+            h.tape_code,
+            h.tape_name,
+            h.avg_profit,
+            h.broadcast_count,
+            h.last_broadcast,
+            l.last_profit,
+            l.last_broadcast_time
+        FROM historical_sales h
+        LEFT JOIN latest_broadcast l ON h.product_code = l.product_code
+        ORDER BY h.avg_profit DESC
+        LIMIT :limit
+        """
+        
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text(query), {"limit": limit})
+                
+                products = []
+                for row in result.fetchall():
+                    products.append({
+                        "product_code": row[0],
+                        "product_name": row[1],
+                        "category_main": row[2],
+                        "category_middle": row[3],
+                        "category_sub": row[4],
+                        "brand": row[5],
+                        "price": float(row[6]) if row[6] else 0,
+                        "tape_code": row[7],
+                        "tape_name": row[8],
+                        "historical_avg_profit": float(row[9]) if row[9] else 0,
+                        "historical_broadcast_count": row[10],
+                        "last_broadcast": row[11].isoformat() if row[11] else None,
+                        "last_profit": float(row[12]) if row[12] else 0,  # 최근 방송 매출
+                        "last_broadcast_time": row[13].isoformat() if row[13] else None,  # 최근 방송 시간
+                        "source_track": "historical"  # Track C 표시
+                    })
+                
+                logger.info(f"[Track C] 과거 유사 조건 상품 {len(products)}개 조회 (월: {months}, 시간: {hours})")
+                return products
+                
+        except Exception as e:
+            logger.error(f"[Track C] 과거 유사 조건 상품 조회 실패: {e}")
+            import traceback
+            logger.error(f"상세 에러:\n{traceback.format_exc()}")
+            return []

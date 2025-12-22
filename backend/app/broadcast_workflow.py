@@ -1172,19 +1172,30 @@ JSON 형식:
         max_trend_match: int = 8,  # 유사도 기반 최대 개수 (의류 편중 방지)
         max_sales_prediction: int = 32  # 매출예측 기반 최대 개수 (다양성 확보)
     ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        """통합 후보군 생성 - Track A (키워드 매칭) + Track B (매출 상위) 병합"""
+        """통합 후보군 생성 - Track A (키워드 매칭) + Track B (매출 상위) + Track C (과거 실적) 병합"""
         
         candidates = []
         seen_products = set()
+        predicted_sales_cache = {}  # XGBoost 예측 캐시 (중복 예측 방지)
+        
+        broadcast_dt = context["broadcast_dt"]
+        target_month = broadcast_dt.month
+        target_hour = broadcast_dt.hour
         
         print(f"=== [DEBUG Unified Candidates] 후보군 생성 시작 (목표: 최대 {max_trend_match + max_sales_prediction}개) ===")
+        print(f"=== [DEBUG] 대상 시간: {target_month}월 {target_hour}시 ===")
         
         # ========== Track A: 키워드 매칭 상품 ==========
         all_products = []
+        # Track A 상품들에 source_tracks 초기화
+        for product in search_result["direct_products"]:
+            product["source_tracks"] = ["keyword"]  # 키워드 매칭
         all_products.extend(search_result["direct_products"])  # 고유사도 상품
         
         # 카테고리 그룹의 모든 상품도 추가
         for category, products in search_result["category_groups"].items():
+            for product in products:
+                product["source_tracks"] = ["keyword"]  # 키워드 매칭
             all_products.extend(products)
         
         print(f"=== [Track A] 키워드 매칭 상품: {len(all_products)}개 ===")
@@ -1193,17 +1204,111 @@ JSON 형식:
         sales_top_products = await self._get_sales_top_products(context, limit=20)
         print(f"=== [Track B] 매출 예측 상위 상품: {len(sales_top_products)}개 ===")
         
-        # Track A + Track B 병합
+        # Track B 예측값 캐시에 저장 (중복 예측 방지)
         for product in sales_top_products:
             product_code = product.get("product_code")
-            # Track A에 없는 상품만 추가
-            if not any(p.get("product_code") == product_code for p in all_products):
-                product["source_track"] = "sales_top"  # 출처 표시
+            if product_code and "predicted_sales" in product:
+                predicted_sales_cache[product_code] = product["predicted_sales"]
+        
+        # Track A + Track B 병합 (여러 출처 병합)
+        for product in sales_top_products:
+            product_code = product.get("product_code")
+            existing = next((p for p in all_products if p.get("product_code") == product_code), None)
+            if existing:
+                # 기존 상품에 출처 추가 (리스트로 관리)
+                if "source_tracks" not in existing:
+                    existing["source_tracks"] = [existing.get("source_track", "keyword")]
+                if "sales_top" not in existing["source_tracks"]:
+                    existing["source_tracks"].append("sales_top")
+            else:
+                product["source_track"] = "sales_top"
+                product["source_tracks"] = ["sales_top"]
                 all_products.append(product)
         
         print(f"=== [DEBUG] Track A + B 통합: {len(all_products)}개 ===")
         
-        # 2. 중복 제거 (상품코드 + 소분류 + 브랜드)
+        # ========== Track C: 과거 유사 시간대/월 판매 실적 상품 ==========
+        historical_products = self.product_embedder.get_historical_top_products(
+            target_month=target_month,
+            target_hour=target_hour,
+            month_range=1,  # ±1개월 (예: 12월 → 11~1월)
+            hour_range=1,   # ±1시간 (예: 9시 → 8~10시)
+            limit=20
+        )
+        print(f"=== [Track C] 과거 유사 조건 상품: {len(historical_products)}개 (월: {target_month}±1, 시간: {target_hour}±1) ===")
+        
+        # Track C 상품 병합 (여러 출처 병합)
+        track_c_added = 0
+        track_c_updated = 0
+        for product in historical_products:
+            product_code = product.get("product_code")
+            existing = next((p for p in all_products if p.get("product_code") == product_code), None)
+            if existing:
+                # 기존 상품에 출처 추가
+                if "source_tracks" not in existing:
+                    existing["source_tracks"] = [existing.get("source_track", "keyword")]
+                if "historical" not in existing["source_tracks"]:
+                    existing["source_tracks"].append("historical")
+                existing["historical_avg_profit"] = product.get("historical_avg_profit", 0)
+                existing["historical_broadcast_count"] = product.get("historical_broadcast_count", 0)
+                track_c_updated += 1
+            else:
+                product["source_track"] = "historical"
+                product["source_tracks"] = ["historical"]
+                all_products.append(product)
+                track_c_added += 1
+        
+        print(f"=== [DEBUG] Track A + B + C 통합: {len(all_products)}개 (Track C 신규: {track_c_added}개, 업데이트: {track_c_updated}개) ===")
+        
+        # 복합 출처 상품 디버그
+        multi_source_products = [p for p in all_products if len(p.get("source_tracks", [])) > 1]
+        if multi_source_products:
+            print(f"=== [DEBUG] 복합 출처 상품 {len(multi_source_products)}개 ===")
+            for p in multi_source_products[:3]:
+                print(f"  - {p.get('product_name', '')[:25]}: {p.get('source_tracks', [])}")
+        
+        # ========== Track D: 경쟁사 편성 기반 RAG 검색 ==========
+        competitor_products = await self._get_competitor_based_products(context, limit=15)
+        print(f"=== [Track D] 경쟁사 대응 상품: {len(competitor_products)}개 ===")
+        
+        # Track D 상품 병합 (여러 출처 병합)
+        track_d_added = 0
+        track_d_updated = 0
+        for product in competitor_products:
+            product_code = product.get("product_code")
+            existing = next((p for p in all_products if p.get("product_code") == product_code), None)
+            if existing:
+                # 기존 상품에 출처 추가
+                if "source_tracks" not in existing:
+                    existing["source_tracks"] = [existing.get("source_track", "keyword")]
+                if "competitor" not in existing["source_tracks"]:
+                    existing["source_tracks"].append("competitor")
+                existing["competitor_info"] = product.get("competitor_info", {})
+                track_d_updated += 1
+            else:
+                product["source_track"] = "competitor"
+                product["source_tracks"] = ["competitor"]
+                all_products.append(product)
+                track_d_added += 1
+        
+        print(f"=== [DEBUG] Track A + B + C + D 통합: {len(all_products)}개 (Track D 신규: {track_d_added}개, 업데이트: {track_d_updated}개) ===")
+        
+        # 2. 중복 제거 전 정렬 (Track B/C/D 상품 우선)
+        # 우선순위: competitor > sales_top > historical > keyword
+        def get_track_priority(product):
+            tracks = product.get("source_tracks", [])
+            if "competitor" in tracks:
+                return 0
+            elif "sales_top" in tracks:
+                return 1
+            elif "historical" in tracks:
+                return 2
+            else:
+                return 3
+        
+        all_products.sort(key=get_track_priority)
+        
+        # 2. 중복 제거 (상품코드 + 소분류 + 브랜드) - Track B/C/D 상품 우선 유지
         unique_products = {}
         seen_category_brand_pairs = set()  # (소분류, 브랜드) 조합
         
@@ -1233,8 +1338,34 @@ JSON 형식:
         products_list = list(unique_products.values())[:50]
         print(f"=== [DEBUG] 배치 예측 대상: {len(products_list)}개 ===")
         
-        # 4. 배치 XGBoost 예측 (한 번에 처리)
-        predicted_sales_list = await self._predict_products_sales_batch(products_list, context)
+        # 4. 배치 XGBoost 예측 (캐시 활용으로 중복 예측 방지)
+        # Track B에서 이미 예측된 상품은 캐시에서 가져오고, 나머지만 새로 예측
+        products_to_predict = []
+        cached_indices = {}  # {index: cached_sales}
+        
+        for i, product in enumerate(products_list):
+            product_code = product.get("product_code")
+            if product_code in predicted_sales_cache:
+                cached_indices[i] = predicted_sales_cache[product_code]
+            else:
+                products_to_predict.append((i, product))
+        
+        print(f"=== [DEBUG] 캐시 활용: {len(cached_indices)}개 캐시됨, {len(products_to_predict)}개 새로 예측 ===")
+        
+        # 새로 예측할 상품만 배치 예측
+        predicted_sales_list = [0.0] * len(products_list)
+        
+        # 캐시된 값 먼저 채우기
+        for idx, cached_sales in cached_indices.items():
+            predicted_sales_list[idx] = cached_sales
+        
+        # 새로 예측할 상품이 있으면 배치 예측
+        if products_to_predict:
+            new_products = [p for _, p in products_to_predict]
+            new_predictions = await self._predict_products_sales_batch(new_products, context)
+            
+            for j, (idx, _) in enumerate(products_to_predict):
+                predicted_sales_list[idx] = new_predictions[j]
         
         # 5. 예측 결과와 상품 매칭 + 점수 계산 + 출처 정보 수집
         # 뉴스 출처 정보 가져오기
@@ -1328,7 +1459,29 @@ JSON 형식:
                 }
                 recommendation_sources.append(sales_top_source)
             
-            # 6. 컨텍스트 출처 (날씨, 시간대 등)
+            # 6. Track C 출처 (과거 유사 시간대/월 판매 실적)
+            if product.get("source_track") == "historical":
+                historical_source = {
+                    "source_type": "historical",
+                    "reason": f"과거 {target_month}월±1, {target_hour}시±1 시간대에 실제로 잘 팔린 상품",
+                    "historical_avg_profit": product.get("historical_avg_profit", 0),
+                    "historical_broadcast_count": product.get("historical_broadcast_count", 0)
+                }
+                recommendation_sources.append(historical_source)
+            
+            # 7. Track D 출처 (경쟁사 편성 대응)
+            if product.get("source_track") == "competitor":
+                comp_info = product.get("competitor_info", {})
+                competitor_source = {
+                    "source_type": "competitor",
+                    "competitor_company": comp_info.get("company", ""),
+                    "competitor_title": comp_info.get("title", ""),
+                    "competitor_keyword": product.get("matched_keyword", ""),
+                    "reason": f"경쟁사 {comp_info.get('company', '')} 동시간대 편성 대응"
+                }
+                recommendation_sources.append(competitor_source)
+            
+            # 8. 컨텍스트 출처 (날씨, 시간대 등)
             context_factors = []
             if context.get("weather", {}).get("weather"):
                 context_factors.append(f"날씨: {context['weather']['weather']}")
@@ -1344,23 +1497,66 @@ JSON 형식:
                 }
                 recommendation_sources.append(context_source)
             
-            # 점수 계산 (유사도 vs 매출 가중치 조정)
-            if similarity >= 0.7:
-                # 고유사도: 유사도 가중치 높임
-                final_score = (
-                    similarity * 0.7 +  # 유사도 70%
-                    (predicted_sales / 100000000) * 0.3  # 매출 30% (정규화: 1억 기준)
-                )
-                source = "trend_match"
-                print(f"  [고유사도] {product.get('product_name')[:20]}: 유사도={similarity:.2f}, 매출={predicted_sales/10000:.0f}만원, 점수={final_score:.3f}")
+            # 점수 계산 (Track별 가산점 적용 - 여러 출처 합산)
+            # 기본 점수: 매출 예측 기반 (유사도 비중 대폭 축소)
+            base_score = (
+                similarity * 0.2 +  # 유사도 20% (AI분석 비중 축소)
+                (predicted_sales / 100000000) * 0.8  # 매출 80% (정규화: 1억 기준)
+            )
+            
+            # 여러 출처에서 추천된 경우 가산점 합산
+            source_tracks = product.get("source_tracks", [])
+            track_bonus = 0.0
+            source_labels = []  # 출처 라벨 리스트
+            
+            # Track별 가산점 (여러 출처면 합산)
+            if "competitor" in source_tracks:
+                track_bonus += 0.15
+                source_labels.append("경쟁사")
+            if "sales_top" in source_tracks:
+                track_bonus += 0.12
+                source_labels.append("매출상위")
+            if "historical" in source_tracks:
+                track_bonus += 0.10
+                source_labels.append("과거실적")
+            
+            # keyword 출처 (뉴스 또는 AI분석) - 항상 표시
+            # 뉴스 기준: 유사도 0.50 이상 (실제 트렌드 키워드 매칭)
+            if "keyword" in source_tracks:
+                if similarity >= 0.50:
+                    track_bonus += 0.08
+                    source_labels.append("뉴스")
+                else:
+                    # AI분석도 복합 출처로 표시 (가산점 없음)
+                    source_labels.append("AI분석")
+            
+            # 출처가 없으면 AI분석 (패널티)
+            if not source_labels:
+                track_bonus = -0.05
+                source_labels.append("AI분석")
+            
+            # 복합 출처 가산점 (2개 이상 출처면 추가 가산점)
+            if len(source_labels) >= 2:
+                track_bonus += 0.05 * (len(source_labels) - 1)  # 출처 1개 추가당 0.05
+            
+            # 대표 source 결정 (우선순위: 경쟁사 > 매출상위 > 과거실적 > 뉴스 > AI분석)
+            if "competitor" in source_tracks:
+                source = "competitor"
+            elif "sales_top" in source_tracks:
+                source = "sales_top"
+            elif "historical" in source_tracks:
+                source = "historical"
+            elif similarity >= 0.7:
+                source = "news_trend"
             else:
-                # 저유사도: 매출 가중치 높임
-                final_score = (
-                    similarity * 0.3 +  # 유사도 30%
-                    (predicted_sales / 100000000) * 0.7  # 매출 70%
-                )
-                source = "sales_prediction"
-                print(f"  [저유사도] {product.get('product_name')[:20]}: 유사도={similarity:.2f}, 매출={predicted_sales/10000:.0f}만원, 점수={final_score:.3f}")
+                source = "ai_trend"
+            
+            final_score = base_score + track_bonus
+            
+            # source_labels를 product에 저장 (추천 근거 생성용)
+            product["source_labels"] = source_labels
+            
+            print(f"  [{'/'.join(source_labels)}] {product.get('product_name')[:20]}: 유사도={similarity:.2f}, 매출={predicted_sales/10000:.0f}만원, 가산점={track_bonus:.2f}, 점수={final_score:.3f}")
             
             candidates.append({
                 "product": product,
@@ -1375,6 +1571,43 @@ JSON 형식:
         candidates.sort(key=lambda x: x["final_score"], reverse=True)
         
         print(f"=== [DEBUG] 총 {len(candidates)}개 후보 생성 완료, 점수순 정렬됨 ===")
+        
+        # 4-1. Track별 최소 쿼터 보장 (source_labels 기반)
+        # 라벨 → 쿼터 매핑
+        label_quotas = {"경쟁사": 2, "매출상위": 2, "과거실적": 2, "뉴스": 2}
+        label_counts = {"경쟁사": 0, "매출상위": 0, "과거실적": 0, "뉴스": 0, "AI분석": 0}
+        
+        final_candidates = []
+        remaining_candidates = []
+        
+        # 먼저 각 라벨별로 쿼터만큼 선택 (source_labels 기반)
+        for candidate in candidates:
+            source_labels = candidate["product"].get("source_labels", ["AI분석"])
+            selected = False
+            
+            # 쿼터가 남은 라벨이 있으면 선택
+            for label in source_labels:
+                if label in label_quotas and label_counts.get(label, 0) < label_quotas[label]:
+                    final_candidates.append(candidate)
+                    # 해당 상품의 모든 라벨 카운트 증가
+                    for lbl in source_labels:
+                        label_counts[lbl] = label_counts.get(lbl, 0) + 1
+                    selected = True
+                    break
+            
+            if not selected:
+                remaining_candidates.append(candidate)
+        
+        # 나머지는 점수순으로 채움
+        final_candidates.extend(remaining_candidates)
+        
+        # 다시 점수순 정렬
+        final_candidates.sort(key=lambda x: x["final_score"], reverse=True)
+        
+        print(f"=== [DEBUG] Track별 쿼터 적용 후: {len(final_candidates)}개 ===")
+        print(f"  - 경쟁사: {label_counts.get('경쟁사', 0)}개, 매출상위: {label_counts.get('매출상위', 0)}개, 과거실적: {label_counts.get('과거실적', 0)}개, 뉴스: {label_counts.get('뉴스', 0)}개")
+        
+        candidates = final_candidates
         
         # 5. 카테고리별 점수 계산 (내부 사용용)
         category_scores = {}
@@ -1432,6 +1665,174 @@ JSON 형식:
         except Exception as e:
             logger.error(f"[Track B] 매출 상위 상품 조회 실패: {e}")
             return []
+    
+    async def _get_competitor_based_products(self, context: Dict[str, Any], limit: int = 15) -> List[Dict]:
+        """
+        Track D: 경쟁사 편성 기반 RAG 검색 (LLM 미사용)
+        
+        1. Netezza에서 경쟁사 편성 조회
+        2. 편성 제목에서 키워드 추출 (코딩 방식)
+        3. RAG 검색으로 유사 상품 찾기
+        """
+        try:
+            broadcast_time_str = context.get("broadcast_time")
+            if not broadcast_time_str:
+                logger.warning("[Track D] broadcast_time이 context에 없음")
+                return []
+            
+            # 1. 경쟁사 편성 조회
+            competitor_data = await netezza_conn.get_competitor_schedules(broadcast_time_str)
+            
+            if not competitor_data:
+                logger.info("[Track D] 경쟁사 편성 데이터 없음")
+                return []
+            
+            print(f"=== [Track D] 경쟁사 편성 {len(competitor_data)}개 조회됨 ===")
+            
+            # 2. 편성 제목에서 키워드 추출 (LLM 미사용)
+            competitor_keywords = []
+            competitor_info = {}  # 키워드 → 경쟁사 정보 매핑
+            
+            for comp in competitor_data:
+                title = comp.get("broadcast_title", "")
+                company = comp.get("company_name", "")
+                category = comp.get("category_main", "")
+                start_time = comp.get("start_time", "")
+                
+                # 키워드 추출 (코딩 방식)
+                keywords = self._extract_keywords_from_title(title, category)
+                
+                for kw in keywords:
+                    if kw not in competitor_info:
+                        competitor_keywords.append(kw)
+                        competitor_info[kw] = {
+                            "company": company,
+                            "title": title[:40],  # 제목 40자로 제한
+                            "start_time": str(start_time)[:16] if start_time else "",
+                            "category": category,
+                            "keyword": kw  # 매칭된 키워드 저장
+                        }
+            
+            if not competitor_keywords:
+                logger.info("[Track D] 경쟁사 편성에서 키워드 추출 실패")
+                return []
+            
+            print(f"=== [Track D] 경쟁사 키워드 추출: {competitor_keywords[:10]}... ===")
+            
+            # 3. RAG 검색으로 유사 상품 찾기
+            search_results = self.product_embedder.search_products(
+                trend_keywords=competitor_keywords[:10],  # 상위 10개 키워드만
+                top_k=limit,
+                score_threshold=0.3,
+                only_ready_products=True
+            )
+            
+            # 4. 경쟁사 정보 추가 - 첫 번째 키워드 정보를 기본으로 사용
+            first_keyword = competitor_keywords[0] if competitor_keywords else ""
+            first_comp_info = competitor_info.get(first_keyword, {})
+            
+            for product in search_results:
+                # 상품명에서 매칭되는 키워드 찾기
+                product_name = product.get("product_name", "").lower()
+                matched_kw = ""
+                matched_info = {}
+                
+                for kw in competitor_keywords:
+                    if kw.lower() in product_name or any(word in product_name for word in kw.lower().split()):
+                        matched_kw = kw
+                        matched_info = competitor_info.get(kw, {})
+                        break
+                
+                # 매칭된 키워드가 없으면 첫 번째 키워드 정보 사용
+                if not matched_kw:
+                    matched_kw = first_keyword
+                    matched_info = first_comp_info
+                
+                product["matched_keyword"] = matched_kw
+                product["competitor_info"] = matched_info
+                product["source_track"] = "competitor"
+            
+            print(f"=== [Track D] RAG 검색 결과: {len(search_results)}개 상품 ===")
+            for i, p in enumerate(search_results[:3], 1):
+                comp_info = p.get("competitor_info", {})
+                print(f"  {i}. {p.get('product_name', '')[:25]} | 키워드: {p.get('matched_keyword', '')} | 경쟁사: {comp_info.get('company', 'N/A')} ({comp_info.get('start_time', '')[:16]})")
+            
+            return search_results
+            
+        except Exception as e:
+            logger.error(f"[Track D] 경쟁사 기반 상품 조회 실패: {e}")
+            import traceback
+            logger.error(f"상세 에러:\n{traceback.format_exc()}")
+            return []
+    
+    def _extract_keywords_from_title(self, title: str, category: str = "") -> List[str]:
+        """
+        편성 제목에서 키워드 추출 (LLM 미사용, 코딩 방식)
+        
+        예시:
+        - "겨울 패딩 특가전" → ["겨울 패딩", "패딩"]
+        - "[특가] 로봇청소기 대전" → ["로봇청소기"]
+        - "프리미엄 오메가3 12개월" → ["오메가3"]
+        """
+        import re
+        
+        if not title:
+            return []
+        
+        # 불용어 (제거할 단어)
+        stopwords = {
+            # 프로모션 관련
+            "특가", "특가전", "대전", "기획전", "세일", "할인", "프리미엄", "스페셜",
+            "단독", "한정", "베스트", "인기", "추천", "신상", "신상품", "히트",
+            # 수량/단위 관련
+            "개월", "개월분", "박스", "세트", "팩", "통", "개", "매",
+            # 방송 관련
+            "방송", "홈쇼핑", "라이브", "생방송", "앵콜", "재방송",
+            # 혜택 관련
+            "무료배송", "사은품", "증정", "선물", "이벤트",
+            # 시즌 코드 (의미없는 키워드)
+            "24FW", "25FW", "24SS", "25SS", "23FW", "23SS", "22FW", "22SS",
+            "FW", "SS", "AW", "봄", "여름", "가을", "겨울",
+            # 기타 의미없는 키워드
+            "신규", "런칭", "오픈", "리뉴얼", "업그레이드", "뉴", "NEW",
+            "총", "전", "종", "구성", "더블", "트리플", "풀", "올"
+        }
+        
+        # 1. 특수문자 및 괄호 내용 제거
+        clean_title = re.sub(r'\[.*?\]|\(.*?\)|【.*?】', '', title)
+        clean_title = re.sub(r'[^\w\s가-힣]', ' ', clean_title)
+        
+        # 2. 숫자+단위 패턴 제거 (12개월, 3박스 등)
+        clean_title = re.sub(r'\d+\s*(개월분?|박스|세트|팩|통|개|매|g|kg|ml|L)', '', clean_title)
+        
+        # 3. 공백으로 분리
+        words = clean_title.split()
+        
+        # 4. 불용어 제거 및 2글자 이상 필터링
+        keywords = []
+        for word in words:
+            word = word.strip()
+            if len(word) >= 2 and word not in stopwords:
+                keywords.append(word)
+        
+        # 5. 카테고리도 키워드로 추가
+        if category and len(category) >= 2:
+            keywords.append(category)
+        
+        # 6. 2단어 조합 키워드 추가 (예: "겨울 패딩")
+        if len(keywords) >= 2:
+            combined = f"{keywords[0]} {keywords[1]}"
+            keywords.insert(0, combined)
+        
+        # 중복 제거
+        seen = set()
+        unique_keywords = []
+        for kw in keywords:
+            if kw not in seen:
+                seen.add(kw)
+                unique_keywords.append(kw)
+        
+        return unique_keywords[:5]  # 최대 5개
     
     async def _predict_categories_with_xgboost(
         self, 
@@ -1685,16 +2086,19 @@ JSON 형식으로 제외할 상품의 인덱스 배열을 반환하세요:
             candidate["rank"] = i + 1
             candidate["total_count"] = len(ranked_products)
         
-        # [5-1단계] 배치로 모든 상품의 추천 근거 생성 (한 번의 LLM 호출)
+        # [5-1단계] 코딩 방식으로 추천 근거 생성 (LLM 미사용 - 속도/비용 최적화)
         step_5_1_start = time.time()
         print("\n" + "=" * 80)
-        print(f"[5-1단계] LLM 배치 처리 - {len(ranked_products)}개 상품의 추천 근거 생성")
+        print(f"[5-1단계] 코딩 방식 - {len(ranked_products)}개 상품의 추천 근거 생성")
         print("=" * 80)
-        reasoning_list = await self._generate_batch_reasons_with_langchain(
-            ranked_products,
-            context or {"time_slot": "저녁", "weather": {"weather": "폭염"}}
-        )
-        print(f"⏱️  [5-1단계] 추천 근거 생성: {time.time() - step_5_1_start:.2f}초")
+        
+        reasoning_results = []
+        for candidate in ranked_products:
+            result = self._generate_reasoning_by_code(candidate, context or {})
+            reasoning_results.append(result)
+        
+        reasoning_list = [r["reasoning"] for r in reasoning_results]
+        print(f"⏱️  [5-1단계] 추천 근거 생성: {time.time() - step_5_1_start:.2f}초 (LLM 미사용)")
         
         for i, candidate in enumerate(ranked_products):
             product = candidate["product"]
@@ -2291,19 +2695,58 @@ JSON: {{"reasons": ["근거1", "근거2", ...]}}"""),
             print("⚠️ 배치 처리 실패, 출처 기반 폴백...")
             return [self._generate_fallback_reason(c, c.get("recommendation_sources", [])) for c in candidates]
     
-    def _generate_fallback_reason(self, candidate: Dict[str, Any], sources: List[Dict]) -> str:
-        """출처 기반 폴백 추천 근거 생성 - 여러 출처 조합"""
-        product = candidate.get("product", {})
-        category = product.get("category_main", "상품")
-        predicted_sales = candidate.get("predicted_sales", 0)
-        sales_str = f"{int(predicted_sales/10000):,}만원"
+    def _generate_reasoning_by_code(self, candidate: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        코딩 방식으로 추천 근거 생성 (LLM 미사용)
         
-        # 출처 유형별로 분류
+        Returns:
+            {
+                "reasoning": "추천 근거 텍스트",
+                "scores": {
+                    "total": 0.85,
+                    "keyword_score": 0.70,
+                    "sales_score": 0.15,
+                    "historical_score": 0.00
+                },
+                "keyword_source": {
+                    "type": "news" | "ai" | "context" | "historical",
+                    "keyword": "키워드",
+                    "news_url": "URL (뉴스인 경우)"
+                }
+            }
+        """
+        product = candidate.get("product", {})
+        sources = candidate.get("recommendation_sources", [])
+        predicted_sales = candidate.get("predicted_sales", 0)
+        similarity_score = candidate.get("similarity_score", 0)
+        final_score = candidate.get("final_score", 0)
+        candidate_source = candidate.get("source", "")  # Track 출처 (competitor, sales_top, historical, news_trend, ai_trend)
+        
+        # 출처 정보 파싱
         news_info = None
         ai_info = None
         rag_info = None
-        xgboost_info = None
+        historical_info = None
+        sales_top_info = None
+        competitor_info = None
         context_info = None
+        
+        # candidate.source 기반으로 출처 정보 설정
+        if candidate_source == "sales_top":
+            sales_top_info = {"reason": "키워드 무관 매출 예측 상위 상품"}
+        elif candidate_source == "historical":
+            historical_info = {
+                "avg_profit": product.get("historical_avg_profit", 0),
+                "broadcast_count": product.get("historical_broadcast_count", 0),
+                "reason": "과거 유사 시간대 실적 상위"
+            }
+        elif candidate_source == "competitor":
+            comp_info = product.get("competitor_info", {})
+            competitor_info = {
+                "company": comp_info.get("company", "경쟁사"),
+                "title": comp_info.get("title", ""),
+                "keyword": product.get("matched_keyword", "")
+            }
         
         for src in sources:
             src_type = src.get("source_type", "")
@@ -2314,50 +2757,154 @@ JSON: {{"reasons": ["근거1", "근거2", ...]}}"""),
                     "url": src.get("news_url", "")
                 }
             elif src_type == "ai_trend" and not ai_info:
-                ai_info = {"keyword": src.get("ai_keyword", "")}
+                ai_info = {"keyword": src.get("ai_keyword", ""), "reason": src.get("ai_reason", "")}
             elif src_type == "rag_match" and not rag_info:
-                rag_info = {"keyword": src.get("matched_keyword", "")}
-            elif src_type == "xgboost_sales" and not xgboost_info:
-                xgboost_info = {"sales": src.get("predicted_sales", 0)}
+                rag_info = {
+                    "keyword": src.get("matched_keyword", ""),
+                    "similarity": src.get("similarity_score", 0),
+                    "origin": src.get("keyword_origin", "unknown"),
+                    "origin_detail": src.get("keyword_origin_detail", "")
+                }
+            elif src_type == "historical" and not historical_info:
+                historical_info = {
+                    "avg_profit": src.get("historical_avg_profit", 0),
+                    "broadcast_count": src.get("historical_broadcast_count", 0),
+                    "reason": src.get("reason", "")
+                }
+            elif src_type == "sales_top" and not sales_top_info:
+                sales_top_info = {"reason": src.get("reason", "")}
+            elif src_type == "competitor" and not competitor_info:
+                competitor_info = {
+                    "company": src.get("competitor_company", ""),
+                    "title": src.get("competitor_title", ""),
+                    "keyword": src.get("competitor_keyword", "")
+                }
             elif src_type == "context" and not context_info:
                 context_info = {"factor": src.get("context_factor", "")}
         
-        # 여러 출처 조합해서 메시지 생성
+        # 점수 계산 (세분화)
+        keyword_score = similarity_score * 0.7 if similarity_score >= 0.7 else similarity_score * 0.3
+        sales_score = (predicted_sales / 100000000) * (0.3 if similarity_score >= 0.7 else 0.7)
+        historical_score = 0.0
+        if historical_info and historical_info["avg_profit"] > 0:
+            historical_score = min(historical_info["avg_profit"] / 50000000, 0.2)  # 최대 0.2
+        
+        scores = {
+            "total": round(final_score, 3),
+            "keyword_score": round(keyword_score, 3),
+            "sales_score": round(sales_score, 3),
+            "historical_score": round(historical_score, 3)
+        }
+        
+        # 키워드 출처 정보
+        keyword_source = {"type": "unknown", "keyword": "", "news_url": None}
+        
+        if rag_info and rag_info["keyword"]:
+            keyword_source["keyword"] = rag_info["keyword"]
+            if rag_info["origin"] == "news" or news_info:
+                keyword_source["type"] = "news"
+                if news_info and news_info.get("url"):
+                    keyword_source["news_url"] = news_info["url"]
+            elif rag_info["origin"] == "ai" or ai_info:
+                keyword_source["type"] = "ai"
+            elif rag_info["origin"] == "context":
+                keyword_source["type"] = "context"
+            else:
+                keyword_source["type"] = "ai"  # 기본값
+        
+        if historical_info:
+            keyword_source["type"] = "historical"
+        
+        # 추천 근거 텍스트 생성
         parts = []
         
-        # 뉴스 출처 (최우선)
+        # 0. 여러 출처 표시 (source_labels 활용)
+        source_labels = product.get("source_labels", [])
+        if source_labels:
+            source_tag = "|".join(source_labels)
+            parts.append(f"[{source_tag}]")
+        
+        # 1. 키워드 출처 상세 (뉴스 URL 등) - 복합 출처면 모두 표시
+        # 단, 경쟁사 상품은 경쟁사 정보에서 키워드가 표시되므로 AI 트렌드 생략
+        product_comp_info_check = product.get("competitor_info", {})
+        is_competitor_only = product_comp_info_check and product_comp_info_check.get("company")
+        
         if news_info and news_info["keyword"]:
-            if news_info["title"]:
-                parts.append(f"'{news_info['title'][:25]}' 뉴스에서 '{news_info['keyword']}' 트렌드 포착")
+            keyword_part = f"[뉴스] '{news_info['keyword']}' 트렌드"
+            if news_info.get("url"):
+                keyword_part += f" (출처: {news_info['url'][:50]}...)"
+            parts.append(keyword_part)
+        elif ai_info and ai_info["keyword"] and not is_competitor_only:
+            # 경쟁사 상품이 아닌 경우에만 AI 트렌드 표시
+            parts.append(f"[AI] '{ai_info['keyword']}' 시즌 트렌드")
+        elif rag_info and rag_info["keyword"]:
+            parts.append(f"[RAG] '{rag_info['keyword']}' 매칭 (유사도: {rag_info['similarity']:.0%})")
+        
+        # 2. Track C (과거 실적) 상세 - 최근 방송일자/매출 포함
+        if historical_info and historical_info["avg_profit"] > 0:
+            # 최근 방송 정보 (1건)
+            last_broadcast_time = product.get("last_broadcast_time", "")
+            last_profit = product.get("last_profit", 0)
+            
+            if last_broadcast_time and last_profit > 0:
+                # 최근 방송일자와 매출 표시
+                last_date = str(last_broadcast_time)[:10]  # YYYY-MM-DD
+                last_time = str(last_broadcast_time)[11:16] if len(str(last_broadcast_time)) > 11 else ""  # HH:MM
+                last_profit_str = f"{int(last_profit/10000):,}만원"
+                hist_detail = f"[과거실적] 최근 {last_date} {last_time} 방송 매출 {last_profit_str}"
+                # 평균 정보도 추가
+                avg_profit_str = f"{int(historical_info['avg_profit']/10000):,}만원"
+                hist_detail += f" (평균 {avg_profit_str}, {historical_info['broadcast_count']}회)"
             else:
-                parts.append(f"뉴스에서 '{news_info['keyword']}' 트렌드 상승")
+                # 최근 정보가 없으면 평균만 표시
+                avg_profit_str = f"{int(historical_info['avg_profit']/10000):,}만원"
+                hist_detail = f"[과거실적] 유사 시간대 평균 {avg_profit_str} ({historical_info['broadcast_count']}회 방송)"
+            
+            parts.append(hist_detail)
         
-        # AI 트렌드
-        if ai_info and ai_info["keyword"]:
-            parts.append(f"'{ai_info['keyword']}' 시즌 트렌드 분석")
+        # 3. Track D (경쟁사 대응) 상세 - 방송사, 편성제목, 시간 포함
+        product_comp_info = product.get("competitor_info", {})
+        if product_comp_info and product_comp_info.get("company"):
+            comp_company = product_comp_info.get("company", "")
+            comp_title = product_comp_info.get("title", "")
+            comp_time = product_comp_info.get("start_time", "")
+            comp_keyword = product_comp_info.get("keyword", "")  # 경쟁사 편성에서 추출한 키워드
+            
+            # 상세 경쟁사 정보: "GS홈쇼핑 '로봇청소기 특가' (14:00) 키워드:'로봇청소기'"
+            comp_part = f"[경쟁사대응] {comp_company}"
+            if comp_title:
+                comp_part += f" '{comp_title[:30]}'"
+            if comp_time:
+                time_str = comp_time[11:16] if len(comp_time) > 11 else comp_time
+                comp_part += f" ({time_str})"
+            if comp_keyword:
+                comp_part += f" 키워드:'{comp_keyword}'"
+            parts.append(comp_part)
+        elif competitor_info and competitor_info.get("company"):
+            comp_part = f"[경쟁사대응] {competitor_info['company']}"
+            if competitor_info.get("keyword"):
+                comp_part += f" '{competitor_info['keyword']}' 편성"
+            parts.append(comp_part)
         
-        # RAG 매칭 (뉴스/AI와 키워드가 다를 때만 추가)
-        if rag_info and rag_info["keyword"]:
-            rag_keyword = rag_info["keyword"]
-            news_keyword = news_info["keyword"] if news_info else ""
-            ai_keyword = ai_info["keyword"] if ai_info else ""
-            if rag_keyword != news_keyword and rag_keyword != ai_keyword:
-                parts.append(f"'{rag_keyword}' 키워드 매칭")
+        # 4. 매출 예측
+        sales_str = f"{int(predicted_sales/10000):,}만원"
+        parts.append(f"[예측매출] {sales_str}")
         
-        # 컨텍스트
-        if context_info and context_info["factor"]:
-            parts.append(context_info["factor"])
+        # 6. 최종 점수
+        parts.append(f"[점수] 총점 {final_score:.3f} (키워드 {keyword_score:.3f} + 매출 {sales_score:.3f})")
         
-        # 매출 예측 (항상 추가)
-        if predicted_sales > 0:
-            parts.append(f"예측 매출 {sales_str}")
+        reasoning = " | ".join(parts)
         
-        # 조합
-        if parts:
-            return ", ".join(parts[:3])  # 최대 3개 출처 조합
-        
-        # 기본 폴백
-        return f"{category} 카테고리, 예측 매출 {sales_str} 기대"
+        return {
+            "reasoning": reasoning,
+            "scores": scores,
+            "keyword_source": keyword_source
+        }
+    
+    def _generate_fallback_reason(self, candidate: Dict[str, Any], sources: List[Dict]) -> str:
+        """출처 기반 폴백 추천 근거 생성 - 여러 출처 조합 (하위 호환용)"""
+        result = self._generate_reasoning_by_code(candidate, {})
+        return result["reasoning"]
     
     def _prepare_features_for_product(self, product: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """1개 상품의 XGBoost feature 준비 (예측은 안 함)
