@@ -607,6 +607,7 @@ class BroadcastWorkflow:
 4. **제외 대상:** 비실물 상품(앱, 주식, 부동산) 제외.
 5. **제외 대상:** 기사 날짜를 확인하고 {search_start_date} 이전 기사일 경우 제외.
 6. **제외 대상:** DB에서 상품 검색에 사용할 수 있는 **'구체적인 상품명'**, **'카테고리'**, **'브랜드'**만 추출. 아니면 제외.
+7. **제외 대상 (중요):** 홈쇼핑사 이름은 키워드로 추출하지 마세요. (예: NS홈쇼핑, 롯데홈쇼핑, 공영홈쇼핑, 현대홈쇼핑, GS홈쇼핑, CJ홈쇼핑, SK스토아, 쇼핑엔티, W쇼핑, K쇼핑, 신세계TV쇼핑, 홈앤쇼핑, 홈플러스 등)
 
 **[출력 형식]**
 반드시 아래 JSON 포맷을 지킬 것.
@@ -1251,6 +1252,9 @@ JSON 형식:
                     existing["source_tracks"].append("historical")
                 existing["historical_avg_profit"] = product.get("historical_avg_profit", 0)
                 existing["historical_broadcast_count"] = product.get("historical_broadcast_count", 0)
+                # 최근 방송 정보도 복사
+                existing["last_broadcast_time"] = product.get("last_broadcast_time")
+                existing["last_profit"] = product.get("last_profit", 0)
                 track_c_updated += 1
             else:
                 product["source_track"] = "historical"
@@ -1268,21 +1272,20 @@ JSON 형식:
                 print(f"  - {p.get('product_name', '')[:25]}: {p.get('source_tracks', [])}")
         
         # ========== Track D: 경쟁사 편성 기반 RAG 검색 ==========
-        competitor_products = await self._get_competitor_based_products(context, limit=15)
+        competitor_products = await self._get_competitor_based_products(context, limit=12)  # 경쟁사 비중 축소 (15 → 12)
         print(f"=== [Track D] 경쟁사 대응 상품: {len(competitor_products)}개 ===")
         
         # Track D 상품 병합 (여러 출처 병합)
+        # 주의: 기존 상품(매출상위/과거실적)에는 competitor 트랙을 추가하지 않음
+        # 경쟁사 RAG 검색으로 새로 찾은 상품만 경쟁사 라벨 표시
         track_d_added = 0
         track_d_updated = 0
         for product in competitor_products:
             product_code = product.get("product_code")
             existing = next((p for p in all_products if p.get("product_code") == product_code), None)
             if existing:
-                # 기존 상품에 출처 추가
-                if "source_tracks" not in existing:
-                    existing["source_tracks"] = [existing.get("source_track", "keyword")]
-                if "competitor" not in existing["source_tracks"]:
-                    existing["source_tracks"].append("competitor")
+                # 기존 상품에는 competitor_info만 저장 (참고용), 트랙은 추가하지 않음
+                # 이렇게 하면 매출상위/과거실적 상품에 경쟁사 라벨이 잘못 표시되는 것을 방지
                 existing["competitor_info"] = product.get("competitor_info", {})
                 track_d_updated += 1
             else:
@@ -1511,7 +1514,7 @@ JSON 형식:
             
             # Track별 가산점 (여러 출처면 합산)
             if "competitor" in source_tracks:
-                track_bonus += 0.15
+                track_bonus += 0.12  # 경쟁사 비중 축소 (0.15 → 0.12)
                 source_labels.append("경쟁사")
             if "sales_top" in source_tracks:
                 track_bonus += 0.12
@@ -1520,20 +1523,26 @@ JSON 형식:
                 track_bonus += 0.10
                 source_labels.append("과거실적")
             
-            # keyword 출처 (뉴스 또는 AI분석) - 항상 표시
-            # 뉴스 기준: 유사도 0.50 이상 (실제 트렌드 키워드 매칭)
+            # keyword 출처 (뉴스 또는 AI분석) - 실제 뉴스 정보가 있을 때만 뉴스 라벨
+            # 뉴스 라벨: recommendation_sources에 news_trend가 있어야 함
+            # AI분석 라벨: RAG 매칭이 있고 유사도 50% 이상일 때만 표시 (상품과 실제 매칭된 경우만)
+            has_news_source = any(s.get("source_type") == "news_trend" for s in recommendation_sources)
+            rag_source = next((s for s in recommendation_sources if s.get("source_type") == "rag_match"), None)
+            has_high_similarity_rag = rag_source and rag_source.get("similarity_score", 0) >= 0.5
+            
             if "keyword" in source_tracks:
-                if similarity >= 0.50:
+                if has_news_source:
+                    # 실제 뉴스 출처가 있는 경우에만 뉴스 라벨
                     track_bonus += 0.08
                     source_labels.append("뉴스")
-                else:
-                    # AI분석도 복합 출처로 표시 (가산점 없음)
+                elif has_high_similarity_rag:
+                    # RAG 매칭이 있고 유사도 50% 이상인 경우에만 AI분석 라벨
                     source_labels.append("AI분석")
+                # 유사도가 낮으면 AI분석 라벨 표시하지 않음 (상품과 무관한 키워드)
             
-            # 출처가 없으면 AI분석 (패널티)
+            # 출처가 없으면 패널티만 적용 (AI분석 라벨 표시하지 않음)
             if not source_labels:
                 track_bonus = -0.05
-                source_labels.append("AI분석")
             
             # 복합 출처 가산점 (2개 이상 출처면 추가 가산점)
             if len(source_labels) >= 2:
@@ -1719,38 +1728,27 @@ JSON 형식:
             
             print(f"=== [Track D] 경쟁사 키워드 추출: {competitor_keywords[:10]}... ===")
             
-            # 3. RAG 검색으로 유사 상품 찾기
-            search_results = self.product_embedder.search_products(
-                trend_keywords=competitor_keywords[:10],  # 상위 10개 키워드만
-                top_k=limit,
-                score_threshold=0.3,
-                only_ready_products=True
-            )
+            # 3. RAG 검색으로 유사 상품 찾기 - 키워드별로 개별 검색하여 정확한 매칭
+            all_search_results = {}  # product_code -> product (중복 제거)
             
-            # 4. 경쟁사 정보 추가 - 첫 번째 키워드 정보를 기본으로 사용
-            first_keyword = competitor_keywords[0] if competitor_keywords else ""
-            first_comp_info = competitor_info.get(first_keyword, {})
+            for kw in competitor_keywords[:10]:  # 상위 10개 키워드
+                kw_results = self.product_embedder.search_products(
+                    trend_keywords=[kw],  # 키워드 하나씩 검색
+                    top_k=5,  # 키워드당 5개
+                    score_threshold=0.4,  # 유사도 임계값 상향
+                    only_ready_products=True
+                )
+                
+                comp_info = competitor_info.get(kw, {})
+                for product in kw_results:
+                    product_code = product.get("product_code")
+                    if product_code not in all_search_results:
+                        product["matched_keyword"] = kw
+                        product["competitor_info"] = comp_info
+                        product["source_track"] = "competitor"
+                        all_search_results[product_code] = product
             
-            for product in search_results:
-                # 상품명에서 매칭되는 키워드 찾기
-                product_name = product.get("product_name", "").lower()
-                matched_kw = ""
-                matched_info = {}
-                
-                for kw in competitor_keywords:
-                    if kw.lower() in product_name or any(word in product_name for word in kw.lower().split()):
-                        matched_kw = kw
-                        matched_info = competitor_info.get(kw, {})
-                        break
-                
-                # 매칭된 키워드가 없으면 첫 번째 키워드 정보 사용
-                if not matched_kw:
-                    matched_kw = first_keyword
-                    matched_info = first_comp_info
-                
-                product["matched_keyword"] = matched_kw
-                product["competitor_info"] = matched_info
-                product["source_track"] = "competitor"
+            search_results = list(all_search_results.values())[:limit]
             
             print(f"=== [Track D] RAG 검색 결과: {len(search_results)}개 상품 ===")
             for i, p in enumerate(search_results[:3], 1):
@@ -2826,19 +2824,22 @@ JSON: {{"reasons": ["근거1", "근거2", ...]}}"""),
         
         # 1. 키워드 출처 상세 (뉴스 URL 등) - 복합 출처면 모두 표시
         # 단, 경쟁사 상품은 경쟁사 정보에서 키워드가 표시되므로 AI 트렌드 생략
+        # 또한, AI 트렌드는 RAG 매칭이 있을 때만 표시 (상품과 실제 매칭된 경우만)
         product_comp_info_check = product.get("competitor_info", {})
         is_competitor_only = product_comp_info_check and product_comp_info_check.get("company")
+        # RAG 매칭 유사도 50% 이상인 경우에만 표시 (낮은 유사도는 무관한 매칭)
+        rag_similarity = rag_info.get("similarity", 0) if rag_info else 0
+        has_high_similarity_rag = rag_info and rag_info.get("keyword") and rag_similarity >= 0.5
         
         if news_info and news_info["keyword"]:
             keyword_part = f"[뉴스] '{news_info['keyword']}' 트렌드"
             if news_info.get("url"):
                 keyword_part += f" (출처: {news_info['url'][:50]}...)"
             parts.append(keyword_part)
-        elif ai_info and ai_info["keyword"] and not is_competitor_only:
-            # 경쟁사 상품이 아닌 경우에만 AI 트렌드 표시
-            parts.append(f"[AI] '{ai_info['keyword']}' 시즌 트렌드")
-        elif rag_info and rag_info["keyword"]:
+        elif has_high_similarity_rag:
+            # RAG 매칭이 있고 유사도 50% 이상인 경우에만 RAG 정보 표시
             parts.append(f"[RAG] '{rag_info['keyword']}' 매칭 (유사도: {rag_info['similarity']:.0%})")
+        # 유사도가 낮으면 RAG/AI 트렌드 정보 표시하지 않음 (상품과 무관한 키워드)
         
         # 2. Track C (과거 실적) 상세 - 최근 방송일자/매출 포함
         if historical_info and historical_info["avg_profit"] > 0:
@@ -2863,8 +2864,11 @@ JSON: {{"reasons": ["근거1", "근거2", ...]}}"""),
             parts.append(hist_detail)
         
         # 3. Track D (경쟁사 대응) 상세 - 방송사, 편성제목, 시간 포함
+        # 단, 실제로 경쟁사 트랙에서 온 상품인 경우에만 표시 (RAG 매칭 정보가 있어야 함)
         product_comp_info = product.get("competitor_info", {})
-        if product_comp_info and product_comp_info.get("company"):
+        has_rag_match = rag_info and rag_info.get("keyword")  # RAG 매칭이 있어야 실제 경쟁사 대응 상품
+        
+        if product_comp_info and product_comp_info.get("company") and has_rag_match:
             comp_company = product_comp_info.get("company", "")
             comp_title = product_comp_info.get("title", "")
             comp_time = product_comp_info.get("start_time", "")
@@ -2880,7 +2884,7 @@ JSON: {{"reasons": ["근거1", "근거2", ...]}}"""),
             if comp_keyword:
                 comp_part += f" 키워드:'{comp_keyword}'"
             parts.append(comp_part)
-        elif competitor_info and competitor_info.get("company"):
+        elif competitor_info and competitor_info.get("company") and has_rag_match:
             comp_part = f"[경쟁사대응] {competitor_info['company']}"
             if competitor_info.get("keyword"):
                 comp_part += f" '{competitor_info['keyword']}' 편성"
