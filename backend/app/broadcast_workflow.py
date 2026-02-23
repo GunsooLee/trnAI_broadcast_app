@@ -2922,6 +2922,7 @@ JSON: {{"reasons": ["근거1", "근거2", ...]}}"""),
         print(f"=== [_prepare_features_for_product] 호출됨: {product.get('product_name', 'Unknown')[:30]} ===")
         
         category_main = product.get("category_main", product.get("category", "Unknown"))
+        category_middle = product.get("category_middle", "Unknown")
         time_slot = context["time_slot"]
         
         # 시간 피처: 사인/코사인 변환 (주기성 반영)
@@ -2934,28 +2935,122 @@ JSON: {{"reasons": ["근거1", "근거2", ...]}}"""),
         month_sin = np.sin(2 * np.pi * month / 12)
         month_cos = np.cos(2 * np.pi * month / 12)
         
+        # 카테고리/시간대별 통계 캐싱 및 조회 (신상품 폴백 및 피처용으로 먼저 로드)
+        if not hasattr(self, 'timeslot_sales_map'):
+            from . import broadcast_recommender as br
+            timeslot_df = br.fetch_category_timeslot_sales(self.engine)
+            # Create a dictionary with string keys: "category_middle_timeslot"
+            self.timeslot_sales_map = {f"{row['product_mgroup']}_{row['time_slot']}": row['category_timeslot_avg_profit'] 
+                                       for _, row in timeslot_df.iterrows()}
+            self.overall_sales_map = br.get_category_overall_avg_sales(self.engine)
+            
+        # 신상품 (Cold Start) 처리: Vector DB를 활용한 유사 상품 실적 추정
+        product_avg_profit = float(product.get("product_avg_profit", product.get("avg_sales", 0)))
+        product_broadcast_count = int(product.get("product_broadcast_count", 0))
+        
+        if product_broadcast_count == 0 or product_avg_profit == 0:
+            logger.info(f"❄️ 신상품 감지됨 (과거 실적 없음): {product.get('product_name')}")
+            try:
+                # 상품명과 카테고리로 검색 쿼리 구성
+                query_text = f"{product.get('product_name', '')} {category_main} {category_middle}".strip()
+                
+                # 유사 상품 검색 (상위 5개)
+                similar_products = self.product_embedder.search_products(
+                    trend_keywords=[query_text],
+                    top_k=5,
+                    score_threshold=0.5,  # 어느 정도 유사성이 보장된 상품만
+                    only_ready_products=False  # 과거에 팔았던 모든 상품 대상
+                )
+                
+                if similar_products:
+                    # 유사 상품들의 과거 실적 가중 평균 계산
+                    total_weight = 0.0
+                    weighted_profit_sum = 0.0
+                    weighted_count_sum = 0.0
+                    
+                    for sim_p in similar_products:
+                        # 자신은 제외 (안전장치)
+                        if sim_p.get("product_code") == product.get("product_code"):
+                            continue
+                            
+                        # DB에서 해당 유사 상품의 실제 실적 조회 (Qdrant payload에 없을 수 있으므로)
+                        sim_code = sim_p.get("product_code")
+                        sim_score = sim_p.get("similarity_score", 0.1)
+                        
+                        from . import broadcast_recommender as br
+                        sim_df = br.fetch_product_info([sim_code], self.engine)
+                        
+                        if not sim_df.empty:
+                            sim_profit = float(sim_df.iloc[0].get("product_avg_profit", 0))
+                            sim_count = int(sim_df.iloc[0].get("product_broadcast_count", 0))
+                            
+                            if sim_profit > 0 and sim_count > 0:
+                                weighted_profit_sum += sim_profit * sim_score
+                                weighted_count_sum += sim_count * sim_score
+                                total_weight += sim_score
+                    
+                    if total_weight > 0:
+                        # 가중 평균으로 신상품 실적 추정
+                        product_avg_profit = weighted_profit_sum / total_weight
+                        product_broadcast_count = max(1, int(weighted_count_sum / total_weight))
+                        logger.info(f"✅ 유사 상품 {len(similar_products)}개 기반 실적 추정 완료: 평균매출 {product_avg_profit:,.0f}원, 방송횟수 {product_broadcast_count}회")
+                    else:
+                        logger.warning("유사 상품들의 과거 실적을 찾을 수 없어 카테고리 평균으로 대체합니다.")
+                        # 폴백: 카테고리 전체 평균 (기존 로직)
+                        product_avg_profit = self.overall_sales_map.get(category_middle, 30000000)
+                        product_broadcast_count = 1
+                else:
+                    logger.warning("유사 상품을 찾을 수 없어 카테고리 평균으로 대체합니다.")
+                    product_avg_profit = self.overall_sales_map.get(category_middle, 30000000)
+                    product_broadcast_count = 1
+                    
+            except Exception as e:
+                logger.error(f"신상품 유사도 기반 실적 추정 실패: {e}")
+                product_avg_profit = 30000000
+                product_broadcast_count = 1
+        
+        # 카테고리/시간대별 통계 캐싱 및 조회
+        if not hasattr(self, 'timeslot_sales_map'):
+            from . import broadcast_recommender as br
+            timeslot_df = br.fetch_category_timeslot_sales(self.engine)
+            # Create a dictionary with string keys: "category_middle_timeslot"
+            self.timeslot_sales_map = {f"{row['product_mgroup']}_{row['time_slot']}": row['category_timeslot_avg_profit'] 
+                                       for _, row in timeslot_df.iterrows()}
+            self.overall_sales_map = br.get_category_overall_avg_sales(self.engine)
+            
+        category_key = f"{category_middle}_{time_slot}"
+        timeslot_avg = self.timeslot_sales_map.get(category_key, 0.0)
+        overall_avg = self.overall_sales_map.get(category_middle, 0.0)
+        
+        timeslot_specialty_score = (timeslot_avg / overall_avg) if overall_avg > 0 else 1.0
+        
         return {
             # Numeric features - 시간대/월 강화 (날씨/가격 제거)
+            "product_price_log": np.log1p(float(product.get("product_price", 0))),
+            "product_avg_profit": product_avg_profit,
+            "product_broadcast_count": product_broadcast_count,
             "hour": hour,
             "hour_sin": hour_sin,
             "hour_cos": hour_cos,
             "month": month,
             "month_sin": month_sin,
             "month_cos": month_cos,
+            "category_timeslot_avg_profit": timeslot_avg,
+            "timeslot_specialty_score": timeslot_specialty_score,
             
             # Categorical features (날씨/계절 제거)
             "product_lgroup": category_main,
-            "product_mgroup": product.get("category_middle", "Unknown"),
+            "product_mgroup": category_middle,
             "product_sgroup": product.get("category_sub", "Unknown"),
             "brand": product.get("brand", "Unknown"),
             "product_type": product.get("product_type", "유형"),
             "time_slot": time_slot,  # 핵심 피처
             "day_of_week": ["월", "화", "수", "목", "금", "토", "일"][broadcast_dt.weekday()],  # 핵심 피처
-            # "season" 제거: month 피처로 대체
+            "time_category_interaction": f"{time_slot}_{category_middle}", # 시간대와 카테고리 상호작용 피처
             
             # Boolean features - 핵심 피처
             "is_weekend": 1 if broadcast_dt.weekday() >= 5 else 0,
-            "is_holiday": 0
+            "is_holiday": context.get("is_holiday", 0)
         }
     
     async def _predict_product_sales(self, product: Dict[str, Any], context: Dict[str, Any]) -> float:

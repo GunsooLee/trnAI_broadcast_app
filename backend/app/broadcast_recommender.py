@@ -281,7 +281,13 @@ def fetch_product_info(product_codes: List[str], engine: Engine | None = None) -
     if engine is None:
         engine = get_db_engine()
 
-    code_tuple = tuple(product_codes)
+    # 단일 상품 코드 처리 수정
+    if len(product_codes) == 1:
+        code_condition = f"= '{product_codes[0]}'"
+    else:
+        code_tuple = tuple(product_codes)
+        code_condition = f"IN {code_tuple}"
+    
     query = f"""
         SELECT 
             product_code,
@@ -295,7 +301,7 @@ def fetch_product_info(product_codes: List[str], engine: Engine | None = None) -
             COALESCE(AVG(gross_profit), 0) AS product_avg_profit,
             COUNT(*) AS product_broadcast_count
         FROM {TABLE_NAME}
-        WHERE product_code IN {code_tuple}
+        WHERE product_code {code_condition}
         GROUP BY product_code
     """
     

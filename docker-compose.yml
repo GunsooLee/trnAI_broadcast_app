@@ -50,7 +50,10 @@ services:
       - shopping-network
 
   n8n:
-    image: n8nio/n8n:1.110.1
+    # image: n8nio/n8n:1.121.1
+    build:
+      context: .                # 현재 폴더를 기준으로
+      dockerfile: n8n.Dockerfile # 이 이름의 파일을 사용하여 빌드
     container_name: trnAi_n8n
     ports:
       - "5678:5678"
@@ -59,6 +62,7 @@ services:
       - N8N_PORT=5678
       - WEBHOOK_TUNNEL_URL=http://localhost:5678/
       - GENERIC_TIMEZONE=Asia/Seoul
+      - N8N_SECURE_COOKIE=false
     volumes:
       - n8n_data:/home/node/.n8n
       - /var/run/docker.sock:/var/run/docker.sock:ro  # Docker 소켓 마운트 (읽기 전용)

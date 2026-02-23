@@ -222,3 +222,22 @@ class TapeCollectionResponse(BaseModel):
     collection_timestamp: str
     total_count: int
     upserted_count: int
+
+# --- 매출 예측 API 스키마 ---
+class SalesPredictionRequest(BaseModel):
+    """매출 예측 요청 스키마"""
+    date: str = Field(..., description="예측할 날짜 (YYYY-MM-DD 형식)", example="2025-11-19")
+
+class ProductSalesPrediction(BaseModel):
+    """상품별 매출 예측 스키마"""
+    product_code: str = Field(description="상품코드", example="P001")
+    product_name: str = Field(description="상품명", example="프리미엄 다이어트 보조제")
+    broadcast_time: str = Field(description="방송 시간", example="14:00")
+    duration_minutes: Optional[int] = Field(default=None, description="방송 시간(분)", example=30)
+    predicted_sales: float = Field(description="예측 매출액 (원)", example=15000000)
+    confidence: Optional[float] = Field(default=None, description="예측 신뢰도 (0~1)", example=0.85)
+
+class SalesPredictionResponse(BaseModel):
+    """매출 예측 응답 스키마"""
+    date: str = Field(description="예측 날짜", example="2025-11-19")
+    predictions: List[ProductSalesPrediction] = Field(description="상품별 매출 예측 목록")

@@ -81,6 +81,58 @@ class NetezzaConnection:
 
         return await self.execute_query(query)
 
+    async def get_broadcast_schedule_by_date(self, date: str) -> List[Dict[str, Any]]:
+        """특정 날짜의 편성표를 가져옵니다
+        
+        Args:
+            date: 조회할 날짜 (YYYY-MM-DD 형식, 예: "2025-11-19")
+        
+        Returns:
+            해당 날짜의 편성 정보 리스트
+        """
+        # 개발 환경: PostgreSQL 우선 사용
+        logger.info(f"Fetching broadcast schedule for date: {date} from PostgreSQL")
+        return await self._get_schedule_from_postgres(date)
+    
+    async def _get_schedule_from_postgres(self, date: str) -> List[Dict[str, Any]]:
+        """PostgreSQL에서 편성표 데이터 조회 (폴백)"""
+        db_uri = os.getenv("POSTGRES_URI", "postgresql://TRN_AI:TRN_AI@localhost:5432/TRNAI_DB")
+        
+        try:
+            from datetime import datetime
+            # 문자열을 date 객체로 변환
+            date_obj = datetime.strptime(date, "%Y-%m-%d").date()
+            
+            conn = await asyncpg.connect(db_uri)
+            
+            query = """
+            SELECT DISTINCT ON (product_code, hour)
+                product_code,
+                product_name,
+                hour,
+                (broadcast_date::text || ' ' || LPAD(hour::text, 2, '0') || ':00:00') as broadcast_start_time,
+                NULL as broadcast_end_time,
+                30 as duration_minutes,
+                category_main,
+                category_middle,
+                category_sub
+            FROM broadcast_training_dataset
+            WHERE broadcast_date = $1
+            ORDER BY product_code, hour
+            """
+            
+            rows = await conn.fetch(query, date_obj)
+            await conn.close()
+            
+            # asyncpg Record를 딕셔너리로 변환
+            results = [dict(row) for row in rows]
+            logger.info(f"Fetched {len(results)} broadcasts from PostgreSQL for date: {date}")
+            return results
+            
+        except Exception as e:
+            logger.error(f"PostgreSQL fallback query failed: {str(e)}")
+            return []
+
     async def get_competitor_schedules(self, broadcast_time: str) -> List[Dict[str, Any]]:
         """특정 시간대의 타사 편성 정보를 가져옵니다 (최근 1~2시간 내 편성)
         

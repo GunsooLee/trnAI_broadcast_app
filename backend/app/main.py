@@ -14,7 +14,10 @@ pprint.pprint(sys.path)
 # .env 파일에서 환경 변수를 로드합니다.
 load_dotenv()
 
-from .schemas import BroadcastRequest, BroadcastResponse, TapeCollectionResponse, BroadcastTapeInfo
+from .schemas import (
+    BroadcastRequest, BroadcastResponse, TapeCollectionResponse, BroadcastTapeInfo,
+    SalesPredictionRequest, SalesPredictionResponse, ProductSalesPrediction
+)
 from .broadcast_workflow import BroadcastWorkflow
 from .dependencies import get_broadcast_workflow
 from .netezza_config import netezza_conn
@@ -167,7 +170,164 @@ async def sync_broadcast_tapes():
 
 
 # ========================================
-# 🔄 데이터 마이그레이션 API (n8n 연동용)
+# � 매출 예측 API 엔드포인트
+# ========================================
+
+@app.post("/api/v1/sales/predict", response_model=SalesPredictionResponse)
+async def predict_sales_by_date(payload: SalesPredictionRequest, workflow: BroadcastWorkflow = Depends(get_broadcast_workflow)):
+    """📊 특정 날짜의 편성표 기반 매출 예측 API
+    
+    입력된 날짜에 편성된 방송 상품들의 매출을 XGBoost 모델로 예측합니다.
+    """
+    import time
+    start_time = time.time()
+    
+    print(f"--- API Endpoint /api/v1/sales/predict received request for date: {payload.date} ---")
+    
+    try:
+        from datetime import datetime
+        import pandas as pd
+        
+        # 1. 날짜 형식 검증
+        try:
+            target_date = datetime.strptime(payload.date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="날짜 형식이 올바르지 않습니다. YYYY-MM-DD 형식으로 입력해주세요."
+            )
+        
+        # 2. Netezza에서 해당 날짜의 편성표 조회
+        print(f"--- Fetching broadcast schedule for {payload.date} ---")
+        schedule_data = await netezza_conn.get_broadcast_schedule_by_date(payload.date)
+        
+        if not schedule_data:
+            print(f"⚠️  해당 날짜에 편성된 방송이 없습니다: {payload.date}")
+            return SalesPredictionResponse(
+                date=payload.date,
+                predictions=[]
+            )
+        
+        print(f"--- Found {len(schedule_data)} broadcasts for {payload.date} ---")
+        
+        # 3. 각 방송 상품에 대해 매출 예측
+        import numpy as np
+        from . import broadcast_recommender as br
+        
+        predictions = []
+        
+        for item in schedule_data:
+            product_code = item.get('product_code', '')
+            product_name = item.get('product_name', '')
+            broadcast_start = item.get('broadcast_start_time', '')
+            duration_minutes = item.get('duration_minutes', 0)
+            
+            # 방송 시간 추출 (HH:MM 형식)
+            try:
+                if isinstance(broadcast_start, str):
+                    broadcast_time = broadcast_start.split(' ')[1][:5] if ' ' in broadcast_start else broadcast_start[:5]
+                else:
+                    broadcast_time = broadcast_start.strftime('%H:%M')
+            except:
+                broadcast_time = "00:00"
+            
+            # 4. XGBoost 모델로 매출 예측
+            try:
+                # 상품 정보 조회
+                product_df = br.fetch_product_info([product_code], workflow.engine)
+                
+                if product_df.empty:
+                    print(f"⚠️  상품 정보를 찾을 수 없습니다: {product_code}")
+                    continue
+                
+                # 상품 딕셔너리 생성
+                product_dict = product_df.iloc[0].to_dict()
+                product_dict['product_code'] = product_code
+                product_dict['product_name'] = product_name
+                
+                # context 생성 (broadcast_workflow와 동일한 형식)
+                hour = int(broadcast_time.split(':')[0])
+                broadcast_dt = target_date.replace(hour=hour, minute=0, second=0)
+                
+                # DB에서 공휴일 정보 조회
+                holiday_name = await workflow._get_holiday_from_db(broadcast_dt.date())
+                
+                # 날씨 정보 수집
+                weather_info = br.get_weather_by_date(broadcast_dt.date())
+                
+                context = {
+                    'broadcast_dt': broadcast_dt,
+                    'time_slot': _get_time_slot(broadcast_time),
+                    'weather': weather_info,
+                    'holiday_name': holiday_name
+                }
+                
+                # workflow의 _prepare_features_for_product 사용
+                features = workflow._prepare_features_for_product(product_dict, context)
+                pred_df = pd.DataFrame([features])
+                
+                # XGBoost 모델로 예측
+                predicted_sales_log = workflow.model.predict(pred_df)[0]
+                predicted_sales = np.expm1(predicted_sales_log)
+                
+                # 음수 예측값 방지
+                predicted_sales = max(0, predicted_sales)
+                
+                predictions.append(ProductSalesPrediction(
+                    product_code=product_code,
+                    product_name=product_name,
+                    broadcast_time=broadcast_time,
+                    duration_minutes=duration_minutes,
+                    predicted_sales=float(predicted_sales),
+                    confidence=0.85
+                ))
+                
+                print(f"  ✅ {product_code} ({product_name[:20]}...): {predicted_sales:,.0f}원")
+                
+            except Exception as e:
+                print(f"  ⚠️  매출 예측 실패 ({product_code}): {str(e)}")
+                import traceback
+                traceback.print_exc()
+                continue
+        
+        elapsed_time = time.time() - start_time
+        print(f"⏱️  총 응답 시간: {elapsed_time:.2f}초")
+        print(f"� 예측 완료: {len(predictions)}개 상품")
+        
+        return SalesPredictionResponse(
+            date=payload.date,
+            predictions=predictions
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"--- ERROR IN /api/v1/sales/predict ---")
+        import traceback
+        traceback.print_exc()
+        
+        raise HTTPException(
+            status_code=500,
+            detail=f"매출 예측 중 오류가 발생했습니다: {str(e)}"
+        )
+
+def _get_time_slot(time_str: str) -> str:
+    """시간 문자열을 시간대로 변환"""
+    try:
+        hour = int(time_str.split(':')[0])
+        if 6 <= hour < 12:
+            return "아침"
+        elif 12 <= hour < 18:
+            return "오후"
+        elif 18 <= hour < 24:
+            return "저녁"
+        else:
+            return "새벽"
+    except:
+        return "오후"
+
+# ========================================
+# �🔄 데이터 마이그레이션 API (n8n 연동용)
 # ========================================
 from .api.migration import router as migration_router
 app.include_router(migration_router)

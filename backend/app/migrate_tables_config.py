@@ -122,7 +122,7 @@ MIGRATION_TABLES = {
                AND FPM.REP_GDS_CD = FBD.REP_GDS_CD
                AND FPM.PLATFORM_CD = FBD.PLATFORM_CD
                AND FPM.PLATFORM_CD_TOT = FBD.PLATFORM_CD_TOT
-             WHERE FPM.STRD_YMD >= '20240101'
+             WHERE FPM.STRD_YMD >= '20220101'
                AND FPM.PROG_TAPE_CD LIKE '0000%'
                {f"AND FPM.STRD_YMD >= '{get_yesterday()}'" if incremental else ""}
              GROUP BY FPM.STRD_YMD,

@@ -58,32 +58,68 @@ def load_data(engine: Engine) -> pd.DataFrame:
 
     # broadcast_training_dataset에서 직접 데이터 로드 (단순화)
     query = f"""
-    SELECT
-        product_code,
-        category_main as product_lgroup,
-        category_middle as product_mgroup,
-        category_sub as product_sgroup,
-        product_name,
-        brand,
-        product_type,
-        time_slot,
-        day_of_week,
-        season,
-        is_weekend,
-        hour,
-        weather,
-        temperature,
-        precipitation,
-        is_holiday,
-        holiday_name,
-        gross_profit,
-        sales_efficiency,
-        price as product_price,
-        broadcast_date
-    FROM broadcast_training_dataset
-    WHERE gross_profit IS NOT NULL
-      AND gross_profit <= 50000000  -- 이상치 제거: 5천만원 이하만
-      AND gross_profit >= 1000000   -- 하위 이상치 제거: 100만원 이상만
+    WITH base AS (
+        SELECT
+            product_code,
+            category_main as product_lgroup,
+            category_middle as product_mgroup,
+            category_sub as product_sgroup,
+            product_name,
+            brand,
+            product_type,
+            time_slot,
+            day_of_week,
+            season,
+            is_weekend,
+            hour,
+            weather,
+            temperature,
+            precipitation,
+            is_holiday,
+            holiday_name,
+            gross_profit,
+            sales_efficiency,
+            price as product_price,
+            broadcast_date
+        FROM broadcast_training_dataset
+        WHERE gross_profit IS NOT NULL
+          AND gross_profit <= 50000000  -- 이상치 제거: 5천만원 이하만
+          AND gross_profit >= 0         -- 마이너스 마진 방지, 하위 이상치 필터 제거
+    ),
+    product_stats AS (
+        SELECT
+            product_code,
+            AVG(gross_profit) AS product_avg_profit,
+            COUNT(*) AS product_broadcast_count
+        FROM base
+        GROUP BY product_code
+    ),
+    category_timeslot_stats AS (
+        SELECT
+            product_mgroup,
+            time_slot,
+            AVG(gross_profit) AS category_timeslot_avg_profit
+        FROM base
+        GROUP BY product_mgroup, time_slot
+    ),
+    category_overall_stats AS (
+        SELECT
+            product_mgroup,
+            AVG(gross_profit) AS category_overall_avg_profit
+        FROM base
+        GROUP BY product_mgroup
+    )
+    SELECT 
+        b.*,
+        ps.product_avg_profit,
+        ps.product_broadcast_count,
+        cts.category_timeslot_avg_profit,
+        COALESCE(cts.category_timeslot_avg_profit / NULLIF(co.category_overall_avg_profit, 0), 1) AS timeslot_specialty_score,
+        b.time_slot || '_' || b.product_mgroup AS time_category_interaction
+    FROM base b
+    LEFT JOIN product_stats ps ON b.product_code = ps.product_code
+    LEFT JOIN category_timeslot_stats cts ON b.product_mgroup = cts.product_mgroup AND b.time_slot = cts.time_slot
+    LEFT JOIN category_overall_stats co ON b.product_mgroup = co.product_mgroup
     """
 
     df = pd.read_sql(query, engine)
@@ -95,6 +131,67 @@ def load_data(engine: Engine) -> pd.DataFrame:
     df['brand'] = df['brand'].fillna('Unknown')
     df['product_type'] = df['product_type'].fillna('유형')
     df['holiday_name'] = df['holiday_name'].fillna('')
+    df['category_timeslot_avg_profit'] = df['category_timeslot_avg_profit'].fillna(0)
+    df['product_avg_profit'] = df['product_avg_profit'].fillna(0)
+    df['product_broadcast_count'] = df['product_broadcast_count'].fillna(0)
+    
+    # 월 컬럼 추출 (broadcast_date에서)
+    df['month'] = pd.to_datetime(df['broadcast_date']).dt.month
+    
+    # 계절성-카테고리 특화 피처 추가 (C)
+    print("계절성-카테고리 특화 피처 추가...")
+    
+    # 월 기반 부드러운 계절 전환 가중치
+    def get_season_weights(month):
+        """월별로 계절 가중치를 부드럽게 전환"""
+        if month == 2:  # 2월: 겨울 70% + 봄 30%
+            return {"겨울": 0.7, "봄": 0.3}
+        elif month == 3:  # 3월: 겨울 30% + 봄 70%  
+            return {"겨울": 0.3, "봄": 0.7}
+        elif month == 5:  # 5월: 봄 70% + 여름 30%
+            return {"봄": 0.7, "여름": 0.3}
+        elif month == 8:  # 8월: 여름 70% + 가을 30%
+            return {"여름": 0.7, "가을": 0.3}
+        elif month == 9:  # 9월: 여름 30% + 가을 70%
+            return {"여름": 0.3, "가을": 0.7}
+        elif month == 11:  # 11월: 가을 70% + 겨울 30%
+            return {"가을": 0.7, "겨울": 0.3}
+        else:  # 명확한 계절
+            seasons = {12: "겨울", 1: "겨울", 4: "봄", 6: "여름", 7: "여름", 10: "가을"}
+            return {seasons.get(month, "봄"): 1.0}
+    
+    # 계절별 카테고리 평균 매출 계산
+    season_category_stats = df.groupby(['season', 'product_mgroup'])['gross_profit'].mean().reset_index()
+    season_category_stats.columns = ['season', 'product_mgroup', 'season_category_avg_profit']
+    
+    # 전체 카테고리 평균 매출 계산
+    overall_category_stats = df.groupby('product_mgroup')['gross_profit'].mean().reset_index()
+    overall_category_stats.columns = ['product_mgroup', 'overall_category_avg_profit']
+    
+    # 데이터프레임에 병합
+    df = pd.merge(df, season_category_stats, on=['season', 'product_mgroup'], how='left')
+    df = pd.merge(df, overall_category_stats, on='product_mgroup', how='left')
+    
+    # 계절-카테고리 특화 점수 계산
+    df['season_category_specialty_score'] = (
+        df['season_category_avg_profit'] / df['overall_category_avg_profit']
+    ).fillna(1.0)
+    
+    # 월 기반 계절 가중치 적용하여 경계기 보정
+    season_weights = df['month'].apply(lambda x: get_season_weights(x))
+    
+    # 각 계절 가중치를 별도 컬럼으로 추가
+    df['spring_weight'] = season_weights.apply(lambda x: x.get('봄', 0.0))
+    df['summer_weight'] = season_weights.apply(lambda x: x.get('여름', 0.0))
+    df['autumn_weight'] = season_weights.apply(lambda x: x.get('가을', 0.0))
+    df['winter_weight'] = season_weights.apply(lambda x: x.get('겨울', 0.0))
+    
+    # 계절-카테고리 상호작용 피처 생성
+    df['season_category_interaction'] = df['season'] + '_' + df['product_mgroup']
+    
+    print(f"  계절-카테고리 조합: {len(df['season_category_interaction'].unique())}개")
+    print(f"  계절 특화 점수 범위: {df['season_category_specialty_score'].min():.2f} ~ {df['season_category_specialty_score'].max():.2f}")
+    print(f"  경계기 월 가중치 예시: 2월(겨울:{df[df['month']==2]['winter_weight'].iloc[0]:.1f}, 봄:{df[df['month']==2]['spring_weight'].iloc[0]:.1f})")
     
     # 과대예측 방지: 가격 로그 스케일링 (현재 미사용)
     print("가격 피처 로그 스케일링 적용...")
@@ -128,7 +225,9 @@ def build_pipeline() -> Pipeline:
     
     # 시간대/월 피처 강화, 날씨/가격 피처 제거 (2024-12-15 수정)
     numeric_features = [
-        # "product_price_log",  # 제거: 가격은 매출에 영향 적음
+        "product_price_log",            # 가격 (로그 스케일링)
+        "product_avg_profit",           # 상품의 과거 평균 매출
+        "product_broadcast_count",      # 상품의 과거 총 방송 횟수
         # 시간 피처 (9시에 팔린 상품 → 8~10시에 추천)
         "hour",                 # 시간 (0-23)
         "hour_sin",             # 시간 사인 변환 (주기성 반영)
@@ -137,6 +236,14 @@ def build_pipeline() -> Pipeline:
         "month",                # 월 (1-12)
         "month_sin",            # 월 사인 변환 (주기성 반영)
         "month_cos",            # 월 코사인 변환 (주기성 반영)
+        "category_timeslot_avg_profit",  # 해당 카테고리의 시간대별 평균 매출
+        "timeslot_specialty_score",      # 해당 카테고리의 특정 시간대 특화 점수 (시간대평균 / 전체평균)
+        # 계절성-카테고리 특화 피처 (C)
+        "season_category_specialty_score", # 계절별 카테고리 특화 점수
+        "spring_weight",        # 봄 계절 가중치 (경계기 보정)
+        "summer_weight",        # 여름 계절 가중치 (경계기 보정)
+        "autumn_weight",        # 가을 계절 가중치 (경계기 보정)
+        "winter_weight",        # 겨울 계절 가중치 (경계기 보정)
         # "temperature",        # 제거: 날씨 영향 적음
         # "precipitation",      # 제거: 날씨 영향 적음
     ]
@@ -148,6 +255,8 @@ def build_pipeline() -> Pipeline:
         "product_type",
         "time_slot",            # 시간대 (오전/오후/저녁/심야) - 핵심 피처
         "day_of_week",          # 요일 - 핵심 피처
+        "time_category_interaction", # 시간대와 카테고리 상호작용 피처
+        "season_category_interaction", # 계절과 카테고리 상호작용 피처 (C)
         # "season",             # 제거: month 피처로 대체
         # "weather",            # 제거: 날씨 영향 적음
     ]
@@ -165,7 +274,7 @@ def build_pipeline() -> Pipeline:
     model = XGBRegressor(
         n_estimators=500,
         learning_rate=0.05,
-        max_depth=4,
+        max_depth=6,
         min_child_weight=5,
         gamma=0.2,
         subsample=0.8,
