@@ -8,13 +8,15 @@ import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, Engine
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, TimeSeriesSplit
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from xgboost import XGBRegressor
+from lightgbm import LGBMRegressor
+from sklearn.ensemble import StackingRegressor
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 # FastAPI 앱과 동일한 위치의 tokenizer_utils를 참조할 수 있도록 경로 추가
 # 이렇게 하면 app.tokenizer_utils 형태가 아닌 tokenizer_utils로 바로 임포트 가능
@@ -271,17 +273,54 @@ def build_pipeline() -> Pipeline:
         remainder="drop",
     )
 
-    model = XGBRegressor(
-        n_estimators=500,
-        learning_rate=0.05,
-        max_depth=6,
-        min_child_weight=5,
-        gamma=0.2,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        reg_alpha=0.5,
-        reg_lambda=2.0,
+    # XGBoost + LightGBM 스태킹 앙상블 모델
+    base_models = [
+        ('xgb', XGBRegressor(
+            n_estimators=500,
+            learning_rate=0.05,
+            max_depth=6,
+            min_child_weight=5,
+            gamma=0.2,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            reg_alpha=0.5,
+            reg_lambda=2.0,
+            random_state=42,
+        )),
+        ('lgb', LGBMRegressor(
+            n_estimators=500,
+            learning_rate=0.03,
+            max_depth=8,
+            num_leaves=31,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            reg_alpha=0.3,
+            reg_lambda=1.5,
+            random_state=42,
+            verbose=-1  # 경고 메시지 제거
+        ))
+    ]
+    
+    # 최종 메타 모델 (1단계 모델들의 예측을 학습)
+    final_model = XGBRegressor(
+        n_estimators=200,
+        learning_rate=0.1,
+        max_depth=4,
+        min_child_weight=3,
+        gamma=0.1,
+        subsample=0.9,
+        colsample_bytree=0.9,
+        reg_alpha=0.3,
+        reg_lambda=1.0,
         random_state=42,
+    )
+    
+    # 스태킹 앙상블 모델 생성 (시계열 데이터 누수 방지를 위해 데이터 정렬 필요)
+    model = StackingRegressor(
+        estimators=base_models,
+        final_estimator=final_model,
+        cv=5,  # 5-fold 교차검증 (데이터를 시간순으로 정렬하여 누수 최소화)
+        passthrough=False  # 원본 특성을 메타 모델에 직접 전달 안 함
     )
 
     return Pipeline([("pre", preprocessor), ("model", model)])
@@ -331,13 +370,22 @@ def train() -> dict:
     y1_log = np.log1p(y1)  # log(1 + y)
     print(f"  원본 평균: {y1.mean():,.0f}원, 로그 평균: {y1_log.mean():.2f}")
 
+    # 시계열 데이터 누수 방지: 시간순으로 데이터 정렬
+    print("시간순 데이터 정렬 (데이터 누수 방지)...")
+    sort_indices = np.argsort(df['broadcast_date'].values)
+    X1_sorted = X1.iloc[sort_indices].reset_index(drop=True)
+    y1_log_sorted = y1_log.iloc[sort_indices].reset_index(drop=True)
+    y1_orig_sorted = y1.iloc[sort_indices].reset_index(drop=True)
+    print(f"  데이터 정렬 완료: {len(X1_sorted)}개 샘플")
+
+    # 학습/테스트 분할 (시간순 유지, shuffle=False)
     X1_train, X1_test, y1_train_log, y1_test_log = train_test_split(
-        X1, y1_log, test_size=0.2, random_state=42
+        X1_sorted, y1_log_sorted, test_size=0.2, random_state=42, shuffle=False
     )
     
     # 원본 y 값도 분리 (평가용)
     _, _, y1_train_orig, y1_test_orig = train_test_split(
-        X1, y1, test_size=0.2, random_state=42
+        X1_sorted, y1_orig_sorted, test_size=0.2, random_state=42, shuffle=False
     )
 
     print("모델 학습 시작...")
@@ -399,23 +447,6 @@ def train() -> dict:
     # 
     # # sales_efficiency가 NULL인 행 제거
     # df_efficiency = df[df[target2].notna()].copy()
-    # print(f"sales_efficiency 유효 데이터: {len(df_efficiency)}개 행")
-    # 
-    # drop_cols2 = common_drop_cols + ["gross_profit", target2]
-    # existing_drop_cols2 = [col for col in drop_cols2 if col in df_efficiency.columns]
-    # 
-    # X2 = df_efficiency.drop(columns=existing_drop_cols2)
-    # y2 = df_efficiency[target2]
-    #
-    # X2_train, X2_test, y2_train, y2_test = train_test_split(
-    #     X2, y2, test_size=0.2, random_state=42
-    # )
-    #
-    # print("모델 학습 시작...")
-    # pipe2 = build_pipeline()
-    # pipe2.fit(X2_train, y2_train)
-    # print("모델 학습 완료.")
-    #
     # y2_pred = pipe2.predict(X2_test)
     # mae2 = mean_absolute_error(y2_test, y2_pred)
     # rmse2 = np.sqrt(mean_squared_error(y2_test, y2_pred))
