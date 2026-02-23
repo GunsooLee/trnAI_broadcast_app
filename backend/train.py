@@ -16,6 +16,7 @@ from sklearn.pipeline import Pipeline
 from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
 from sklearn.ensemble import StackingRegressor
+from sklearn.linear_model import RidgeCV
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 # FastAPI 앱과 동일한 위치의 tokenizer_utils를 참조할 수 있도록 경로 추가
@@ -301,25 +302,14 @@ def build_pipeline() -> Pipeline:
         ))
     ]
     
-    # 최종 메타 모델 (1단계 모델들의 예측을 학습)
-    final_model = XGBRegressor(
-        n_estimators=200,
-        learning_rate=0.1,
-        max_depth=4,
-        min_child_weight=3,
-        gamma=0.1,
-        subsample=0.9,
-        colsample_bytree=0.9,
-        reg_alpha=0.3,
-        reg_lambda=1.0,
-        random_state=42,
-    )
+    # 수정 1: 메타 모델을 가장 단순한 릿지 선형 회귀로 변경 (과적합 방지)
+    final_model = RidgeCV(alphas=(0.1, 1.0, 10.0))
     
-    # 스태킹 앙상블 모델 생성 (시계열 데이터 누수 방지를 위해 데이터 정렬 필요)
+    # 스태킹 앙상블 모델 생성 (TimeSeriesSplit은 StackingRegressor와 호환되지 않음)
     model = StackingRegressor(
         estimators=base_models,
         final_estimator=final_model,
-        cv=5,  # 5-fold 교차검증 (데이터를 시간순으로 정렬하여 누수 최소화)
+        cv=5,  # 5-fold 교차검증 (데이터 시간순 정렬로 누수 최소화)
         passthrough=False  # 원본 특성을 메타 모델에 직접 전달 안 함
     )
 
