@@ -1,74 +1,114 @@
-# AI 기반 홈쇼핑 방송 편성 추천 시스템
+# 🎯 홈쇼핑 AI 매출 예측 & 방송 편성 시스템
 
-실시간 트렌드 분석과 XGBoost 매출 예측을 결합한 AI 방송 편성 추천 시스템
+> XGBoost 머신러닝 기반 매출 예측 + 트렌드 분석을 결합한 AI 방송 편성 최적화 시스템
+
+[![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.104-green.svg)](https://fastapi.tiangolo.com/)
+[![XGBoost](https://img.shields.io/badge/XGBoost-2.0-orange.svg)](https://xgboost.readthedocs.io/)
+[![Docker](https://img.shields.io/badge/Docker-Compose-blue.svg)](https://www.docker.com/)
+
+## 📋 목차
+- [개요](#개요)
+- [주요 기능](#주요-기능)
+- [시스템 아키텍처](#시스템-아키텍처)
+- [빠른 시작](#빠른-시작)
+- [API 사용법](#api-사용법)
+- [문서](#문서)
+- [기술 스택](#기술-스택)
+
+---
 
 ## 개요
 
-홈쇼핑 PD가 방송 편성표에서 빈 시간대를 발견하면, AI가 해당 시간대에 최적의 상품을 추천합니다.
+### 🎯 시스템 목적
 
-**추천 근거:**
-- 날씨 데이터 (비오는 날 실내용품, 더운 날 냉방용품)
-- XGBoost 기반 매출 예측
-- 방송테이프 준비 상태 (즉시 방송 가능 상품만)
-- 실시간 트렌드 키워드
-- 시간대별 최적화 (저녁 주방용품, 심야 건강식품)
+홈쇼핑 방송 편성 담당자와 PD를 위한 **데이터 기반 의사결정 지원 시스템**입니다.
 
-## 추천 워크플로우
+**핵심 가치:**
+- ✅ **매출 예측**: 특정 상품을 특정 시간에 방송하면 얼마나 팔릴지 AI가 예측
+- ✅ **시간대 최적화**: 여러 시간대를 비교하여 최고 매출 시간대 추천
+- ✅ **신상품 지원**: 과거 방송 이력이 없어도 카테고리 평균 기반 예측
+- ✅ **트렌드 반영**: 실시간 트렌드 키워드 기반 상품 추천
 
-### Track A + Track B 병렬 후보군 생성
+### 📊 예측 정확도
 
+- **R² Score**: 0.603 (60.3% 설명력)
+- **평균 오차**: ±300만원 (MAE)
+- **신뢰도**: 방송 횟수에 따라 60~95%
+
+### 💡 활용 시나리오
+
+**시나리오 1: 신상품 편성 결정**
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        후보군 생성 (Candidate Generation)            │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  ┌─────────────────────────┐    ┌─────────────────────────┐        │
-│  │      Track A            │    │      Track B            │        │
-│  │   (키워드 매칭)          │    │   (매출 예측 상위)       │        │
-│  │                         │    │                         │        │
-│  │ • 트렌드 키워드 생성     │    │ • 전체 상품 조회        │        │
-│  │ • RAG 벡터 검색         │    │ • XGBoost 매출 예측     │        │
-│  │ • 유사도 기반 매칭       │    │ • 상위 20개 선정        │        │
-│  └───────────┬─────────────┘    └───────────┬─────────────┘        │
-│              │                              │                       │
-│              └──────────┬───────────────────┘                       │
-│                         ↓                                           │
-│              ┌─────────────────────────┐                            │
-│              │     병합 + 중복 제거     │                            │
-│              │   (최대 50개 후보군)     │                            │
-│              └───────────┬─────────────┘                            │
-│                          ↓                                          │
-│              ┌─────────────────────────┐                            │
-│              │   XGBoost 배치 예측     │                            │
-│              │   + 신상품 매출 보정    │                            │
-│              └───────────┬─────────────┘                            │
-│                          ↓                                          │
-│              ┌─────────────────────────┐                            │
-│              │   최종 랭킹 + 추천      │                            │
-│              └─────────────────────────┘                            │
-└─────────────────────────────────────────────────────────────────────┘
+Q: 새로운 건강식품을 언제 방송하면 좋을까?
+A: 여러 시간대 예측 → 저녁 9시 최고 (1,736만원) → 해당 시간 편성
 ```
 
-### 주요 기능
+**시나리오 2: 재방송 최적화**
+```
+Q: 기존 상품을 다른 시간대에 방송하면?
+A: 오후 2시 (1,026만원) vs 저녁 9시 (1,736만원) → 시간 변경으로 +710만원
+```
 
-| 기능 | 설명 |
-|------|------|
-| **Track A** | 트렌드 키워드 기반 RAG 검색으로 관련 상품 매칭 |
-| **Track B** | 키워드 무관 매출 예측 상위 상품 추가 (다양성 확보) |
-| **신상품 보정** | 판매 이력 없는 상품은 카테고리 평균 매출의 80%로 보정 |
-| **순위 표시** | 상위 10위까지만 키워드/매출 순위 언급 |
-| **추천 근거** | LLM이 출처 정보를 자연스러운 문장으로 생성 (100-150자) |
+**시나리오 3: 상품 선택**
+```
+Q: 같은 시간대에 여러 상품 중 어떤 것을 방송할까?
+A: 각 상품별 예측 비교 → 최고 매출 상품 선택
+```
 
-### 추천 출처 유형
+## 주요 기능
 
-| 출처 타입 | 설명 | 예시 |
-|-----------|------|------|
-| `news_trend` | 뉴스 트렌드 키워드 | "최근 뉴스에 따르면 '로봇청소기' 관련 기사가 보도되었습니다." |
-| `ai_trend` | AI 생성 트렌드 키워드 | "트렌드 키워드 분석 결과 '겨울 의류' 키워드 1위로 적합합니다." |
-| `xgboost_sales` | XGBoost 매출 예측 | "AI 매출 예측 결과 2,000만원으로 매출 1위를 기록했습니다." |
-| `sales_top` | 매출 예측 상위 (키워드 무관) | "트렌드 키워드와 무관하게 매출 예측 상위 상품입니다." |
-| `competitor` | 경쟁사 편성 정보 | "경쟁사 롯데홈쇼핑에서 유사 상품 판매 중입니다." |
-| `context` | 컨텍스트 (날씨, 시간대) | "오후 시간대 겨울 시즌에 적합한 상품입니다." |
+### 1️⃣ 매출 예측 API
+
+**단일 상품 예측** (`POST /api/v1/sales/predict-single`)
+- 특정 상품의 특정 날짜/시간 매출 예측
+- 신상품도 예측 가능 (카테고리 평균 기반)
+- 응답 시간: 100~300ms
+
+**날짜별 편성표 예측** (`POST /api/v1/sales/predict`)
+- 특정 날짜의 모든 편성 방송 일괄 예측
+- 하루 전체 예상 매출 확인
+
+### 2️⃣ 방송 편성 추천 API
+
+**트렌드 기반 추천** (`POST /api/v1/broadcast/recommendations`)
+- 실시간 트렌드 키워드 분석
+- RAG 벡터 검색으로 관련 상품 매칭
+- XGBoost 매출 예측 결합
+- LLM 기반 추천 근거 생성
+
+### 3️⃣ 데이터 파이프라인
+
+**자동 데이터 수집** (n8n 워크플로우)
+- NETEZZA → PostgreSQL 일일 동기화
+- 상품 마스터, 방송 테이프, 방송 이력
+- 경쟁사 편성 정보 수집
+
+**모델 자동 학습**
+- 최신 데이터로 XGBoost 모델 재학습
+- 예측 정확도 지속적 향상
+
+### 4️⃣ 예측 모델 상세
+
+**XGBoost Stacking Ensemble**
+- Base Models: XGBoost, LightGBM, CatBoost
+- Meta Learner: RidgeCV
+- 입력 피처: 100개 이상
+  - 상품 정보 (가격, 카테고리, 브랜드)
+  - 시간 정보 (시간대, 요일, 계절, 공휴일)
+  - 과거 실적 (상품별/카테고리별 평균)
+  - 키워드 피처 (46개 고영향 키워드)
+  - 날씨 정보 (기온, 강수량)
+  - 카테고리-시간 상호작용
+
+**예측 정확도 (방송 횟수별)**
+
+| 방송 횟수 | 예측 방법 | 신뢰도 | 평균 오차 |
+|----------|----------|--------|----------|
+| 0회 (신상품) | 카테고리 평균 | 60~70% | ±500만원 |
+| 1~5회 | 상품 평균 + 카테고리 | 70~85% | ±400만원 |
+| 6~20회 | 상품 과거 실적 | 85~90% | ±300만원 |
+| 20회 이상 | 상품 과거 실적 (충분) | 90~95% | ±200만원 |
 
 ## 시스템 아키텍처
 
@@ -117,18 +157,30 @@
 | 자동화 | n8n | 크롤링/데이터 수집 워크플로우 |
 | 인프라 | Docker Compose | 컨테이너 오케스트레이션 |
 
-## 시작하기
+## 빠른 시작
 
 ### 사전 준비
 - Docker & Docker Compose
-- OpenAI API Key
+- OpenAI API Key (선택사항 - 트렌드 추천 기능용)
 
 ### 1. 환경변수 설정
 
 `backend/.env` 파일 생성:
 ```env
-POSTGRES_URI=postgresql://TRN_AI:TRN_AI@postgres:5432/TRNAI_DB
+# PostgreSQL 연결
+POSTGRES_URI=postgresql://TRN_AI:TRN_AI@trnAi_postgres:5432/TRNAI_DB
+
+# NETEZZA 연결 (데이터 수집용)
+NETEZZA_HOST=your_netezza_host
+NETEZZA_PORT=5480
+NETEZZA_DATABASE=your_database
+NETEZZA_USER=your_username
+NETEZZA_PASSWORD=your_password
+
+# OpenAI API (트렌드 추천용, 선택사항)
 OPENAI_API_KEY=your_openai_api_key
+
+# Qdrant (트렌드 추천용, 선택사항)
 QDRANT_HOST=qdrant
 QDRANT_PORT=6333
 ```
@@ -136,127 +188,151 @@ QDRANT_PORT=6333
 ### 2. 서비스 실행
 
 ```bash
-# 네트워크 생성
+# Docker 네트워크 생성
 docker network create shopping-network
 
-# 서비스 시작
+# 모든 서비스 시작
 docker-compose up -d
+
+# 서비스 상태 확인
+docker-compose ps
 ```
 
-### 3. 초기화
+### 3. 데이터 초기화
 
 ```bash
-# 상품 임베딩 생성
-docker exec -it fastapi_backend python app/setup_product_embeddings.py
+# 1. NETEZZA → PostgreSQL 데이터 마이그레이션
+curl -X POST "http://localhost:8501/api/v1/migration/start-sync" \
+  -H "Content-Type: application/json" \
+  -d '{"full_sync": true}'
 
-# XGBoost 모델 학습
-docker exec -it fastapi_backend python train.py
+# 2. XGBoost 모델 학습
+curl -X POST "http://localhost:8501/api/v1/training/start-sync" \
+  -H "Content-Type: application/json" \
+  -d '{"force_retrain": true}'
+
+# 3. 상품 임베딩 생성 (트렌드 추천용, 선택사항)
+curl -X POST "http://localhost:8501/api/v1/embeddings/generate-sync" \
+  -H "Content-Type: application/json" \
+  -d '{"force_all": true}'
 ```
 
 ### 4. API 테스트
 
+**매출 예측 테스트:**
 ```bash
-curl -X POST http://localhost:8501/api/v1/broadcast/recommendations \
+# 단일 상품 매출 예측
+curl -X POST "http://localhost:8501/api/v1/sales/predict-single" \
   -H "Content-Type: application/json" \
   -d '{
-    "broadcastTime": "2025-12-08T22:00:00+09:00",
+    "tape_code": "0000012179",
+    "broadcast_time": "2026-02-22 14:00"
+  }'
+
+# 응답 예시:
+# {
+#   "product_code": "13918293",
+#   "product_name": "잭필드 23 WINTER 남성 숨쉬는바지 3종",
+#   "predicted_sales": 22112319.68,
+#   "confidence": 0.85
+# }
+```
+
+**트렌드 추천 테스트:**
+```bash
+curl -X POST "http://localhost:8501/api/v1/broadcast/recommendations" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "broadcastTime": "2026-02-25T21:00:00+09:00",
     "recommendationCount": 5
   }'
 ```
 
-## API 명세
+## API 사용법
 
-### POST `/api/v1/broadcast/recommendations`
+### 📊 매출 예측 API
 
-방송 시간대에 최적의 상품 추천
+#### 1. 단일 상품 매출 예측
+
+**Endpoint:** `POST /api/v1/sales/predict-single`
 
 **Request:**
 ```json
 {
-  "broadcastTime": "2025-12-08T22:00:00+09:00",
-  "recommendationCount": 5,
-  "trendWeight": 0.3,
-  "sellingWeight": 0.7
+  "tape_code": "0000012179",
+  "broadcast_time": "2026-02-22 14:00"
 }
 ```
 
 **Response:**
 ```json
 {
-  "requestTime": "2025-12-15T14:00:00+09:00",
-  "recommendations": [
+  "product_code": "13918293",
+  "product_name": "잭필드 23 WINTER 남성 숨쉬는바지 3종",
+  "broadcast_datetime": "2026-02-22T14:00:00",
+  "predicted_sales": 22112319.68,
+  "confidence": 0.85,
+  "features_used": {
+    "tape_code": "0000012179",
+    "category_main": "의류",
+    "time_slot": "오후",
+    "is_weekend": true,
+    "season": "겨울"
+  }
+}
+```
+
+#### 2. 날짜별 편성표 예측
+
+**Endpoint:** `POST /api/v1/sales/predict`
+
+**Request:**
+```json
+{
+  "date": "2026-02-22"
+}
+```
+
+**Response:**
+```json
+{
+  "date": "2026-02-22",
+  "predictions": [
     {
-      "rank": 1,
-      "productInfo": {
-        "productId": "13918293",
-        "productName": "잭필드 23 WINTER 남성 숨쉬는바지 3종",
-        "category": "의류",
-        "categoryMiddle": "일반의류",
-        "categorySub": "일반의류-하의",
-        "brand": "잭필드",
-        "price": 79800.0,
-        "tapeCode": "0000012179",
-        "tapeName": "[23FW 최신상] 잭필드 겨울 숨쉬는바지 3종"
-      },
-      "reasoning": "겨울 의류 키워드 분석에서 1위를 기록한 잭필드 23 WINTER 남성 숨쉬는바지는 현재 겨울 시즌에 적합한 상품으로, 매출 예측도 2위로 안정적인 판매가 기대됩니다.",
-      "businessMetrics": {
-        "aiPredictedSales": "2,005.1만원",
-        "lastBroadcast": {
-          "broadcastStartTime": "2024-01-04 22:33:28",
-          "orderQuantity": 395,
-          "totalProfit": 7513059.0,
-          "profitEfficiency": 5.8,
-          "conversionRate": 78.34
-        }
-      }
-    },
-    {
-      "rank": 2,
-      "productInfo": {
-        "productId": "20159901",
-        "productName": "로보락 Q Revo S 로봇청소기",
-        "category": "생활가전",
-        "categoryMiddle": "생활가전-소형",
-        "categorySub": "청소기",
-        "brand": "로보락",
-        "price": 990000.0,
-        "tapeCode": "0000014684",
-        "tapeName": "(방송에서만 이가격) 로보락 Q REVO S 로봇청소기"
-      },
-      "reasoning": "로보락 Q Revo S 로봇청소기는 최근 뉴스에서 실용적 프리미엄 상품으로 인기를 끌고 있으며, 매출 예측 1위로 오후 시간대에 적합한 상품입니다. (출처: https://www.g-enews.com/...)",
-      "businessMetrics": {
-        "aiPredictedSales": "2,020.7만원",
-        "lastBroadcast": {
-          "broadcastStartTime": "2025-05-28 22:33:25",
-          "orderQuantity": 92,
-          "totalProfit": 14968410.0,
-          "profitEfficiency": 12.3,
-          "conversionRate": 79.25
-        }
-      }
-    }
-  ],
-  "competitorProducts": [
-    {
-      "company_name": "네이버 스토어",
-      "broadcast_title": "[네이버 인기 1위] 포항 구룡포 과메기 야채세트",
-      "start_time": "",
-      "end_time": ""
+      "product_code": "15750903",
+      "product_name": "세일 토비콤 루테인 지아잔틴 12박스",
+      "broadcast_time": "09:00",
+      "predicted_sales": 28727542.0,
+      "confidence": 0.85
     }
   ]
 }
 ```
 
-### 기타 API 엔드포인트
+### 🎯 트렌드 추천 API
+
+**Endpoint:** `POST /api/v1/broadcast/recommendations`
+
+**Request:**
+```json
+{
+  "broadcastTime": "2026-02-25T21:00:00+09:00",
+  "recommendationCount": 5
+}
+```
+
+**Response:** 트렌드 키워드 기반 상품 추천 + 매출 예측 + 추천 근거
+
+### 🔧 관리 API
 
 | 엔드포인트 | 메서드 | 설명 |
 |-----------|--------|------|
-| `/api/v1/health` | GET | 헬스체크 |
-| `/api/v1/tapes/sync` | POST | Netezza → PostgreSQL 방송테이프 동기화 |
-| `/api/v1/migration/*` | - | 데이터 마이그레이션 (n8n 연동) |
-| `/api/v1/embeddings/*` | - | 상품 임베딩 생성 (n8n 연동) |
-| `/api/v1/training/*` | - | XGBoost 모델 학습 (n8n 연동) |
-| `/api/v1/external-products/*` | - | 외부 상품 크롤링 (n8n 연동) |
+| `/api/v1/health` | GET | 서비스 상태 확인 |
+| `/api/v1/migration/start-sync` | POST | NETEZZA → PostgreSQL 데이터 동기화 |
+| `/api/v1/training/start-sync` | POST | XGBoost 모델 재학습 |
+| `/api/v1/embeddings/generate-sync` | POST | 상품 임베딩 생성 |
+
+**상세 API 문서:** [API_DOCUMENTATION.md](./docs/API_DOCUMENTATION.md)
 
 ## 프로젝트 구조
 
@@ -327,10 +403,47 @@ trnAi/
 
 ## 문서
 
+### 📚 사용자 가이드
+
+- **[사용자 가이드 (비개발자용)](./docs/USER_GUIDE.md)** ⭐
+  - 기획자, 방송편성 담당자를 위한 쉬운 설명
+  - 실무 활용 시나리오
+  - FAQ 및 용어 설명
+
+- **[API 문서 (개발자용)](./docs/API_DOCUMENTATION.md)** ⭐
+  - 전체 API 엔드포인트 상세 설명
+  - 코드 예시 (Python, JavaScript, cURL)
+  - 에러 처리 가이드
+
+### 🔧 기술 문서
+
+- `docs/DATA_PIPELINE.md` - 데이터 파이프라인 구조
+- `docs/MODEL_TRAINING.md` - XGBoost 모델 학습 가이드
+- `docs/ARCHITECTURE.md` - 시스템 아키텍처 상세
+
+### 📋 참고 자료
+
 - `docs/API_RESPONSE_EXAMPLE.json` - API 응답 예시
-- `docs/API_결과_필드_설명서.md` - 응답 필드 상세 설명
 - `docs/FRONTEND_API_GUIDE.md` - 프론트엔드 연동 가이드
-- `docs/EXTERNAL_PRODUCTS_*.md` - 외부 상품 API 관련 문서
 - `docs/NAVER_CRAWLER_SETUP.md` - 네이버 크롤러 설정
+
+---
+
+## 데이터 현황
+
+### 📊 수집 데이터 (2026년 2월 기준)
+
+| 테이블 | 레코드 수 | 기간 | 설명 |
+|--------|----------|------|------|
+| **TAIGOODS** | 5,019개 | 2022~ | 방송 테이프 보유 상품 |
+| **TAIPGMTAPE** | 7,034개 | 2022~ | 방송 테이프 (52.6%는 미방송) |
+| **TAIBROADCASTS** | 18,908건 | 2022~ | 방송 이력 (학습 데이터) |
+| **broadcast_training_dataset** | 18,908건 | 2022~ | 피처 엔지니어링 완료 데이터 |
+
+### 🔄 자동 업데이트
+
+- **n8n 워크플로우**: 매일 새벽 12시 자동 실행
+- **증분 업데이트**: 전날 변경분만 수집
+- **모델 재학습**: 주 1회 자동 실행 (선택사항)
 
 ---

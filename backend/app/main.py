@@ -349,3 +349,9 @@ app.include_router(training_router)
 # ========================================
 from .routers.external_products import router as external_products_router
 app.include_router(external_products_router)
+
+# ========================================
+# 📊 매출 예측 API (단일 상품 예측)
+# ========================================
+from .api.sales_prediction import router as sales_prediction_router
+app.include_router(sales_prediction_router)

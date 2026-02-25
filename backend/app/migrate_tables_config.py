@@ -23,7 +23,7 @@ MIGRATION_TABLES = {
     # 1. 상품 마스터 테이블
     "TAIGOODS": {
         "enabled": True,
-        "description": "상품 마스터 데이터 (2024년 이후 방송된 상품만)",
+        "description": "상품 마스터 데이터 (방송 테이프가 있는 모든 상품)",
         "primary_key": "product_code",
         "incremental_column": "WTI.REG_DTTM",  # 증분 업데이트 기준 컬럼
         "query": lambda incremental: f"""
@@ -41,12 +41,10 @@ MIGRATION_TABLES = {
                   FROM SNTDW.SNTADM.WBD_TAPE_INFO WTI
                   JOIN SNTDW.SNTADM.WBD_TAPE_GDS_INFO WTGI
                     ON (WTI.PROG_TAPE_CD = WTGI.PROG_TAPE_CD)
-                  JOIN SNTDM.SNTADM.FBD_PGMCPF_M FPM
-                    ON (WTI.PROG_TAPE_CD = FPM.PROG_TAPE_CD)
                  WHERE WTGI.MN_YN = '1'
                    AND WTGI.GDS_CD <> '00000000'
-                   AND FPM.STRD_YMD >= '20240101'
-                   AND FPM.PROG_TAPE_CD LIKE '0000%'
+                   AND WTI.PROG_TAPE_CD LIKE '0000%'
+                   AND WTI.REG_DTTM >= '2022-01-01 00:00:00'
                    {f"AND WTI.REG_DTTM >= '{get_yesterday_timestamp()}'" if incremental else ""}
               ) SUB
               JOIN SNTDM.SNTADM.DST_GDS_MST_EXT DGM
@@ -62,7 +60,7 @@ MIGRATION_TABLES = {
     # 2. 방송테이프 테이블
     "TAIPGMTAPE": {
         "enabled": True,
-        "description": "방송테이프 정보 (2024년 이후 방송된 테이프만)",
+        "description": "방송테이프 정보 (2022년 이후 생성된 모든 테이프)",
         "primary_key": "tape_code",
         "incremental_column": "WTI.REG_DTTM",
         "query": lambda incremental: f"""
@@ -86,12 +84,10 @@ MIGRATION_TABLES = {
                   FROM SNTDW.SNTADM.WBD_TAPE_INFO WTI
                   JOIN SNTDW.SNTADM.WBD_TAPE_GDS_INFO WTGI
                     ON (WTI.PROG_TAPE_CD = WTGI.PROG_TAPE_CD)
-                  JOIN SNTDM.SNTADM.FBD_PGMCPF_M FPM
-                    ON (WTI.PROG_TAPE_CD = FPM.PROG_TAPE_CD)
                  WHERE WTGI.MN_YN = '1'
                    AND WTGI.GDS_CD <> '00000000'
-                   AND FPM.STRD_YMD >= '20240101'
-                   AND FPM.PROG_TAPE_CD LIKE '0000%'
+                   AND WTI.PROG_TAPE_CD LIKE '0000%'
+                   AND WTI.REG_DTTM >= '2022-01-01 00:00:00'
                    {f"AND WTI.REG_DTTM >= '{get_yesterday_timestamp()}'" if incremental else ""}
               ) sub
              WHERE rn = 1
@@ -108,6 +104,8 @@ MIGRATION_TABLES = {
         "query": lambda incremental: f"""
             SELECT FPM.PROG_TAPE_CD AS tape_code,
                    FPM.BDCAST_STRT_DTTM AS broadcast_start_timestamp,
+                   FPM.BDCAST_END_DTTM AS broadcast_end_timestamp,
+                   ROUND(EXTRACT(EPOCH FROM (FPM.BDCAST_END_DTTM - FPM.BDCAST_STRT_DTTM)) / 60, 0) AS duration_minutes,
                    NULL AS product_is_new,
                    ROUND(ROUND(SUM(FPM.PRDC_MOD_SAMT) + SUM(FPM.INTNGB_SAMT), 2) + SUM(FPM.ADV_COST), 0) AS gross_profit,
                    ROUND((ROUND(ROUND(SUM(FPM.PRDC_MOD_SAMT) + SUM(FPM.INTNGB_SAMT), 2) + SUM(FPM.ADV_COST), 0) / MAX(FBD.CONV_WORTH_VAL)) / 1000000, 1) AS sales_efficiency,

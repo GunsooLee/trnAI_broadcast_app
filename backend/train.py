@@ -1,5 +1,6 @@
 import os
 import sys
+import re
 import datetime as dt
 from pathlib import Path
 
@@ -59,70 +60,53 @@ def load_data(engine: Engine) -> pd.DataFrame:
     """DB에서 학습용 데이터를 로드하고 기본 전처리를 수행합니다."""
     print("데이터 로딩 시작...")
 
-    # broadcast_training_dataset에서 직접 데이터 로드 (단순화)
-    query = f"""
-    WITH base AS (
-        SELECT
-            product_code,
-            category_main as product_lgroup,
-            category_middle as product_mgroup,
-            category_sub as product_sgroup,
-            product_name,
-            brand,
-            product_type,
-            time_slot,
-            day_of_week,
-            season,
-            is_weekend,
-            hour,
-            weather,
-            temperature,
-            precipitation,
-            is_holiday,
-            holiday_name,
-            gross_profit,
-            sales_efficiency,
-            price as product_price,
-            broadcast_date
-        FROM broadcast_training_dataset
-        WHERE gross_profit IS NOT NULL
-          AND gross_profit <= 50000000  -- 이상치 제거: 5천만원 이하만
-          AND gross_profit >= 0         -- 마이너스 마진 방지, 하위 이상치 필터 제거
-    ),
-    product_stats AS (
-        SELECT
-            product_code,
-            AVG(gross_profit) AS product_avg_profit,
-            COUNT(*) AS product_broadcast_count
-        FROM base
-        GROUP BY product_code
-    ),
-    category_timeslot_stats AS (
-        SELECT
-            product_mgroup,
-            time_slot,
-            AVG(gross_profit) AS category_timeslot_avg_profit
-        FROM base
-        GROUP BY product_mgroup, time_slot
-    ),
-    category_overall_stats AS (
-        SELECT
-            product_mgroup,
-            AVG(gross_profit) AS category_overall_avg_profit
-        FROM base
-        GROUP BY product_mgroup
-    )
+    # broadcast_training_dataset에서 직접 데이터 로드 (데이터 누수 완전 방지)
+    query = """
     SELECT 
         b.*,
-        ps.product_avg_profit,
-        ps.product_broadcast_count,
-        cts.category_timeslot_avg_profit,
-        COALESCE(cts.category_timeslot_avg_profit / NULLIF(co.category_overall_avg_profit, 0), 1) AS timeslot_specialty_score,
-        b.time_slot || '_' || b.product_mgroup AS time_category_interaction
-    FROM base b
-    LEFT JOIN product_stats ps ON b.product_code = ps.product_code
-    LEFT JOIN category_timeslot_stats cts ON b.product_mgroup = cts.product_mgroup AND b.time_slot = cts.time_slot
-    LEFT JOIN category_overall_stats co ON b.product_mgroup = co.product_mgroup
+        -- 1. 상품별 누적 평균 매출 및 횟수, 가격
+        COALESCE(AVG(gross_profit) OVER (
+            PARTITION BY product_code 
+            ORDER BY broadcast_date 
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ), 0) AS product_avg_profit,
+        
+        COALESCE(COUNT(*) OVER (
+            PARTITION BY product_code 
+            ORDER BY broadcast_date 
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ), 0) AS product_broadcast_count,
+        
+        COALESCE(AVG(price) OVER (
+            PARTITION BY product_code 
+            ORDER BY broadcast_date 
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ), 0) AS product_price,
+
+        -- 2. 시간대-카테고리 누적 평균 매출
+        COALESCE(AVG(gross_profit) OVER (
+            PARTITION BY category_middle, time_slot
+            ORDER BY broadcast_date 
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ), 0) AS category_timeslot_avg_profit,
+
+        -- 3. 카테고리 전체 누적 평균 매출
+        COALESCE(AVG(gross_profit) OVER (
+            PARTITION BY category_middle
+            ORDER BY broadcast_date 
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ), 0) AS category_overall_avg_profit,
+
+        -- 4. 계절-카테고리 누적 평균 매출 (파이썬에서 SQL로 이동!)
+        COALESCE(AVG(gross_profit) OVER (
+            PARTITION BY season, category_middle
+            ORDER BY broadcast_date 
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ), 0) AS season_category_avg_profit
+
+    FROM broadcast_training_dataset b
+    WHERE b.gross_profit IS NOT NULL
+    ORDER BY b.broadcast_date
     """
 
     df = pd.read_sql(query, engine)
@@ -137,6 +121,9 @@ def load_data(engine: Engine) -> pd.DataFrame:
     df['category_timeslot_avg_profit'] = df['category_timeslot_avg_profit'].fillna(0)
     df['product_avg_profit'] = df['product_avg_profit'].fillna(0)
     df['product_broadcast_count'] = df['product_broadcast_count'].fillna(0)
+
+    # [추가] 텍스트 벡터화 에러 방지용 상품명 결측치 처리
+    df['product_name'] = df['product_name'].fillna('')
     
     # 월 컬럼 추출 (broadcast_date에서)
     df['month'] = pd.to_datetime(df['broadcast_date']).dt.month
@@ -163,21 +150,15 @@ def load_data(engine: Engine) -> pd.DataFrame:
             seasons = {12: "겨울", 1: "겨울", 4: "봄", 6: "여름", 7: "여름", 10: "가을"}
             return {seasons.get(month, "봄"): 1.0}
     
-    # 계절별 카테고리 평균 매출 계산
-    season_category_stats = df.groupby(['season', 'product_mgroup'])['gross_profit'].mean().reset_index()
-    season_category_stats.columns = ['season', 'product_mgroup', 'season_category_avg_profit']
+    # 계절별 카테고리 평균 매출은 SQL에서 이미 계산됨 (데이터 누수 방지 완료)
+    print("계절성-카테고리 특화 피처 추가...")
+
+    # 0으로 나누어 무한대(inf) 값이 발생하는 것을 막기 위한 안전한 분모 생성
+    safe_denominator = df['category_overall_avg_profit'].replace(0, np.nan)
     
-    # 전체 카테고리 평균 매출 계산
-    overall_category_stats = df.groupby('product_mgroup')['gross_profit'].mean().reset_index()
-    overall_category_stats.columns = ['product_mgroup', 'overall_category_avg_profit']
-    
-    # 데이터프레임에 병합
-    df = pd.merge(df, season_category_stats, on=['season', 'product_mgroup'], how='left')
-    df = pd.merge(df, overall_category_stats, on='product_mgroup', how='left')
-    
-    # 계절-카테고리 특화 점수 계산
+    # 계절-카테고리 특화 점수 계산 (안전한 분모 사용 및 SQL 컬럼 통일)
     df['season_category_specialty_score'] = (
-        df['season_category_avg_profit'] / df['overall_category_avg_profit']
+        df['season_category_avg_profit'] / safe_denominator
     ).fillna(1.0)
     
     # 월 기반 계절 가중치 적용하여 경계기 보정
@@ -190,7 +171,15 @@ def load_data(engine: Engine) -> pd.DataFrame:
     df['winter_weight'] = season_weights.apply(lambda x: x.get('겨울', 0.0))
     
     # 계절-카테고리 상호작용 피처 생성
-    df['season_category_interaction'] = df['season'] + '_' + df['product_mgroup']
+    df['season_category_interaction'] = df['season'] + '_' + df['category_middle']
+    
+    # 시간대별 특화 점수 계산 (안전한 분모 사용)
+    df['timeslot_specialty_score'] = (
+        df['category_timeslot_avg_profit'] / safe_denominator
+    ).fillna(1.0)
+    
+    # 시간대-카테고리 상호작용 피처
+    df['time_category_interaction'] = df['time_slot'] + '_' + df['category_middle']
     
     print(f"  계절-카테고리 조합: {len(df['season_category_interaction'].unique())}개")
     print(f"  계절 특화 점수 범위: {df['season_category_specialty_score'].min():.2f} ~ {df['season_category_specialty_score'].max():.2f}")
@@ -201,12 +190,17 @@ def load_data(engine: Engine) -> pd.DataFrame:
     df['product_price_log'] = np.log1p(df['product_price'])
     print(f"  product_price: 원본 평균 {df['product_price'].mean():,.0f}원 → 로그 {df['product_price_log'].mean():.2f}")
     
-    # 시간대 피처 강화: 사인/코사인 변환 (주기성 반영)
-    print("시간대 피처 강화 (사인/코사인 변환)...")
-    df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24)
-    df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24)
-    print(f"  hour_sin 범위: [{df['hour_sin'].min():.2f}, {df['hour_sin'].max():.2f}]")
-    print(f"  hour_cos 범위: [{df['hour_cos'].min():.2f}, {df['hour_cos'].max():.2f}]")
+    # 시간대 피처 강화: hour + minute 통합 및 사인/코사인 변환 (주기성 반영)
+    print("시간대 피처 강화 (hour_with_minute 사인/코사인 변환)...")
+    # minute이 없는 경우 0으로 처리
+    df['minute'] = df['minute'].fillna(0)
+    # hour와 minute를 결합 (예: 13시 30분 = 13.5)
+    df['hour_with_minute'] = df['hour'] + df['minute'] / 60.0
+    df['hour_with_minute_sin'] = np.sin(2 * np.pi * df['hour_with_minute'] / 24)
+    df['hour_with_minute_cos'] = np.cos(2 * np.pi * df['hour_with_minute'] / 24)
+    print(f"  hour_with_minute 범위: [{df['hour_with_minute'].min():.2f}, {df['hour_with_minute'].max():.2f}]")
+    print(f"  hour_with_minute_sin 범위: [{df['hour_with_minute_sin'].min():.2f}, {df['hour_with_minute_sin'].max():.2f}]")
+    print(f"  hour_with_minute_cos 범위: [{df['hour_with_minute_cos'].min():.2f}, {df['hour_with_minute_cos'].max():.2f}]")
     
     # 월(month) 피처 추가: 11월에 팔린 상품은 10~12월에 추천되도록
     print("월(month) 피처 추가 (사인/코사인 변환)...")
@@ -218,7 +212,63 @@ def load_data(engine: Engine) -> pd.DataFrame:
     print(f"  month_sin 범위: [{df['month_sin'].min():.2f}, {df['month_sin'].max():.2f}]")
     print(f"  month_cos 범위: [{df['month_cos'].min():.2f}, {df['month_cos'].max():.2f}]")
     
+    # 방송 길이(duration) 피처 추가
+    print("방송 길이(duration) 피처 추가...")
+    df['duration_minutes'] = df['duration_minutes'].fillna(60)  # 기본값 60분
+    df['duration_log'] = np.log1p(df['duration_minutes'])  # 로그 스케일링
+    print(f"  duration_minutes 범위: [{df['duration_minutes'].min():.0f}, {df['duration_minutes'].max():.0f}]분")
+    print(f"  duration_minutes 평균: {df['duration_minutes'].mean():.0f}분")
+    print(f"  duration_log 범위: [{df['duration_log'].min():.2f}, {df['duration_log'].max():.2f}]")
+    
+    # 키워드 피처 추가 (매출 영향력 분석 기반)
+    print("상품명 키워드 피처 생성...")
+    df = add_keyword_features(df)
+    
     print(f"데이터 로딩 완료. 총 {len(df)}개 행")
+    return df
+
+def add_keyword_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    상품명에서 매출 영향력이 높은 키워드를 추출하여 이진 피처로 변환
+    
+    분석 결과 기반 키워드:
+    - 매출 비율 1.1배 이상 & 등장 횟수 50회 이상
+    - 특집방송(1.82x), 두유대장(1.74x), 하나투어(1.62x) 등
+    """
+    
+    # 매출 영향력 높은 한글 키워드 (37개)
+    high_impact_keywords = [
+        '특집방송', '두유대장', '두유제조기', '에어텔닷컴', '하나투어', 
+        '마데카', '릴렉스', '가을', '고객감사', '추석', 
+        '에버홈', '단하루', '동국제약', '비에날씬', '노랑풍선', 
+        '임성근의', '여행', '갈비', '국내산', '크림', 
+        '슬림', '지아잔틴', '배한호', '토비콤', '르까프', 
+        '콘드로이친', '티셔츠', '카무트', '팬츠', '효소', 
+        '흑염소진액', '세일', '첫날부터', '다재다능', '흥국생명', 
+        '루테인', '암보험'
+    ]
+    
+    # 숫자 패턴 (9개)
+    number_patterns = ['1+1', '2+1', '6+3', '10+2', '6+6', '5+5', '6+1', '12+6', '20+1']
+    
+    # 한글 키워드 피처 생성
+    for keyword in high_impact_keywords:
+        feature_name = f'kw_{keyword}'
+        df[feature_name] = df['product_name'].str.contains(keyword, na=False).astype(int)
+    
+    # 숫자 패턴 피처 생성 (정규식 이스케이프 필요)
+    for pattern in number_patterns:
+        feature_name = f'kw_{pattern.replace("+", "_")}'
+        df[feature_name] = df['product_name'].str.contains(re.escape(pattern), na=False).astype(int)
+    
+    # 키워드 통계 출력
+    total_keywords = len(high_impact_keywords) + len(number_patterns)
+    keyword_cols = [col for col in df.columns if col.startswith('kw_')]
+    keyword_hit_rate = (df[keyword_cols].sum(axis=1) > 0).mean() * 100
+    
+    print(f"  생성된 키워드 피처: {total_keywords}개")
+    print(f"  키워드 포함 상품 비율: {keyword_hit_rate:.1f}%")
+    
     return df
 
 # --- 모델 파이프라인 빌드 ---
@@ -231,10 +281,10 @@ def build_pipeline() -> Pipeline:
         "product_price_log",            # 가격 (로그 스케일링)
         "product_avg_profit",           # 상품의 과거 평균 매출
         "product_broadcast_count",      # 상품의 과거 총 방송 횟수
-        # 시간 피처 (9시에 팔린 상품 → 8~10시에 추천)
-        "hour",                 # 시간 (0-23)
-        "hour_sin",             # 시간 사인 변환 (주기성 반영)
-        "hour_cos",             # 시간 코사인 변환 (주기성 반영)
+        # 시간 피처 (분 단위까지 반영한 정밀한 시간)
+        "hour_with_minute",         # 시간 (0.0-23.99, 예: 13.5 = 13시 30분)
+        "hour_with_minute_sin",     # 시간 사인 변환 (주기성 반영)
+        "hour_with_minute_cos",     # 시간 코사인 변환 (주기성 반영)
         # 월 피처 (11월에 팔린 상품 → 10~12월에 추천)
         "month",                # 월 (1-12)
         "month_sin",            # 월 사인 변환 (주기성 반영)
@@ -247,21 +297,35 @@ def build_pipeline() -> Pipeline:
         "summer_weight",        # 여름 계절 가중치 (경계기 보정)
         "autumn_weight",        # 가을 계절 가중치 (경계기 보정)
         "winter_weight",        # 겨울 계절 가중치 (경계기 보정)
+        # 방송 길이 피처
+        "duration_minutes",     # 방송 길이 (분)
+        "duration_log",         # 방송 길이 (로그 스케일링)
         # "temperature",        # 제거: 날씨 영향 적음
         # "precipitation",      # 제거: 날씨 영향 적음
     ]
+    
+    # 키워드 피처 동적 추가 (매출 영향력 분석 기반)
+    keyword_features = [
+        # 한글 키워드 (37개)
+        'kw_특집방송', 'kw_두유대장', 'kw_두유제조기', 'kw_에어텔닷컴', 'kw_하나투어',
+        'kw_마데카', 'kw_릴렉스', 'kw_가을', 'kw_고객감사', 'kw_추석',
+        'kw_에버홈', 'kw_단하루', 'kw_동국제약', 'kw_비에날씬', 'kw_노랑풍선',
+        'kw_임성근의', 'kw_여행', 'kw_갈비', 'kw_국내산', 'kw_크림',
+        'kw_슬림', 'kw_지아잔틴', 'kw_배한호', 'kw_토비콤', 'kw_르까프',
+        'kw_콘드로이친', 'kw_티셔츠', 'kw_카무트', 'kw_팬츠', 'kw_효소',
+        'kw_흑염소진액', 'kw_세일', 'kw_첫날부터', 'kw_다재다능', 'kw_흥국생명',
+        'kw_루테인', 'kw_암보험',
+        # 숫자 패턴 (9개)
+        'kw_1_1', 'kw_2_1', 'kw_6_3', 'kw_10_2', 'kw_6_6',
+        'kw_5_5', 'kw_6_1', 'kw_12_6', 'kw_20_1'
+    ]
+    
+    # 키워드 피처를 numeric_features에 추가
+    numeric_features.extend(keyword_features)
     categorical_features = [
-        "product_lgroup",
-        "product_mgroup",
-        "product_sgroup",
-        "brand",
-        "product_type",
-        "time_slot",            # 시간대 (오전/오후/저녁/심야) - 핵심 피처
-        "day_of_week",          # 요일 - 핵심 피처
-        "time_category_interaction", # 시간대와 카테고리 상호작용 피처
-        "season_category_interaction", # 계절과 카테고리 상호작용 피처 (C)
-        # "season",             # 제거: month 피처로 대체
-        # "weather",            # 제거: 날씨 영향 적음
+        "category_main", "category_middle", "category_sub",
+        "brand", "product_type", "time_slot", "day_of_week",
+        "time_category_interaction", "season_category_interaction",
     ]
     boolean_features = ["is_weekend", "is_holiday"]  # 주말/공휴일 - 핵심 피처
 
@@ -277,28 +341,25 @@ def build_pipeline() -> Pipeline:
     # XGBoost + LightGBM 스태킹 앙상블 모델
     base_models = [
         ('xgb', XGBRegressor(
-            n_estimators=500,
-            learning_rate=0.05,
-            max_depth=6,
-            min_child_weight=5,
-            gamma=0.2,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            reg_alpha=0.5,
-            reg_lambda=2.0,
+            n_estimators=200, 
+            learning_rate=0.0235467529400567, 
+            max_depth=8, 
+            min_child_weight=7, 
+            subsample=0.6038349859390014, 
+            colsample_bytree=0.807312666831409,
             random_state=42,
+            n_jobs=-1
         )),
         ('lgb', LGBMRegressor(
-            n_estimators=500,
-            learning_rate=0.03,
-            max_depth=8,
-            num_leaves=31,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            reg_alpha=0.3,
-            reg_lambda=1.5,
+            n_estimators=700, 
+            learning_rate=0.01566921445577168, 
+            max_depth=5, 
+            num_leaves=45, 
+            subsample=0.6014244331010646, 
+            colsample_bytree=0.7520901079847245,
             random_state=42,
-            verbose=-1  # 경고 메시지 제거
+            verbose=-1,
+            n_jobs=-1
         ))
     ]
     
@@ -314,6 +375,79 @@ def build_pipeline() -> Pipeline:
     )
 
     return Pipeline([("pre", preprocessor), ("model", model)])
+
+# --- Optuna 하이퍼파라미터 최적화 ---
+import optuna
+from sklearn.model_selection import cross_val_score
+import warnings
+warnings.filterwarnings('ignore') # 불필요한 경고 메시지 숨김
+
+def run_optuna_tuning(X_train, y_train, preprocessor):
+    """XGBoost와 LightGBM의 최적 파라미터를 각각 찾습니다."""
+    print("\n🚀 Optuna 하이퍼파라미터 최적화 시작...")
+    
+    # 데이터 누수 방지를 위한 시계열 교차 검증 객체
+    tscv = TimeSeriesSplit(n_splits=5)
+
+    # ==========================================
+    # 1. XGBoost 목적 함수
+    # ==========================================
+    def xgb_objective(trial):
+        params = {
+            'n_estimators': trial.suggest_int('n_estimators', 200, 800, step=100),
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1, log=True),
+            'max_depth': trial.suggest_int('max_depth', 4, 9),
+            'min_child_weight': trial.suggest_int('min_child_weight', 1, 7),
+            'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
+            'random_state': 42
+        }
+        model = XGBRegressor(**params)
+        # 전처리기와 모델을 파이프라인으로 연결하여 누수 원천 차단
+        pipeline = Pipeline([("pre", preprocessor), ("model", model)])
+        
+        # 교차 검증 점수 계산 (MSE의 음수값을 반환하므로, 이를 다시 양수로 바꿔서 최소화)
+        score = cross_val_score(pipeline, X_train, y_train, cv=tscv, scoring='neg_mean_squared_error', n_jobs=1)
+        return -score.mean()
+
+    # ==========================================
+    # 2. LightGBM 목적 함수
+    # ==========================================
+    def lgb_objective(trial):
+        params = {
+            'n_estimators': trial.suggest_int('n_estimators', 200, 800, step=100),
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1, log=True),
+            'max_depth': trial.suggest_int('max_depth', 4, 9),
+            'num_leaves': trial.suggest_int('num_leaves', 20, 80),
+            'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
+            'random_state': 42,
+            'verbose': -1
+        }
+        model = LGBMRegressor(**params)
+        pipeline = Pipeline([("pre", preprocessor), ("model", model)])
+        
+        score = cross_val_score(pipeline, X_train, y_train, cv=tscv, scoring='neg_mean_squared_error', n_jobs=1)
+        return -score.mean()
+
+    # ==========================================
+    # 3. 최적화 실행 (시간 절약을 위해 각각 20번씩만 탐색)
+    # ==========================================
+    print("\n[1/2] XGBoost 최적화 진행 중...")
+    xgb_study = optuna.create_study(direction='minimize')
+    xgb_study.optimize(xgb_objective, n_trials=20)
+    
+    print("\n[2/2] LightGBM 최적화 진행 중...")
+    lgb_study = optuna.create_study(direction='minimize')
+    lgb_study.optimize(lgb_objective, n_trials=20)
+
+    # 최종 결과 출력
+    print("\n" + "="*60)
+    print("🏆 최적화 완료! 아래 파라미터를 복사해서 build_pipeline의 base_models에 붙여넣으십시오.")
+    print("="*60)
+    print(f"✅ XGBoost Best Params:\n{xgb_study.best_params}\n")
+    print(f"✅ LightGBM Best Params:\n{lgb_study.best_params}\n")
+    print("="*60)
 
 # --- 모델 학습 실행 ---
 def train() -> dict:
@@ -336,7 +470,7 @@ def train() -> dict:
     # 공통 제거 컬럼 (타겟 변수 제외)
     common_drop_cols = [
         "product_code",
-        "product_name",
+        "product_name",  # 롤백: 텍스트 벡터화 제거
         "holiday_name",  # is_holiday로 충분
         "broadcast_date",  # 날짜는 피처로 사용하지 않음 (day_of_week, season으로 대체)
     ]
@@ -379,6 +513,14 @@ def train() -> dict:
     )
 
     print("모델 학습 시작...")
+    
+    # 전처리기만 따로 추출
+    # Optuna 하이퍼파라미터 최적화 실행
+    #preprocessor = build_pipeline().named_steps['pre']
+    #run_optuna_tuning(X1_train, y1_train_log, preprocessor)
+    #sys.exit(0)
+    
+    # 최적화된 파라미터로 파이프라인 생성 (수동으로 파라미터 적용 필요)
     pipe1 = build_pipeline()
     pipe1.fit(X1_train, y1_train_log)
     print("모델 학습 완료.")
