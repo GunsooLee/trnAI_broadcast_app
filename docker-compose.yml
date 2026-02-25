@@ -63,6 +63,7 @@ services:
       - WEBHOOK_TUNNEL_URL=http://localhost:5678/
       - GENERIC_TIMEZONE=Asia/Seoul
       - N8N_SECURE_COOKIE=false
+      - NODES_EXCLUDE=[]
     volumes:
       - n8n_data:/home/node/.n8n
       - /var/run/docker.sock:/var/run/docker.sock:ro  # Docker 소켓 마운트 (읽기 전용)
