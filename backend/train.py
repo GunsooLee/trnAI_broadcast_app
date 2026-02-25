@@ -111,6 +111,7 @@ def load_data(engine: Engine) -> pd.DataFrame:
 
     df = pd.read_sql(query, engine)
     
+    
     # NULL 값 처리
     df['temperature'] = df['temperature'].fillna(df['temperature'].mean())
     df['precipitation'] = df['precipitation'].fillna(0)
@@ -338,25 +339,25 @@ def build_pipeline() -> Pipeline:
         remainder="drop",
     )
 
-    # XGBoost + LightGBM 스태킹 앙상블 모델
+    # XGBoost + LightGBM 스태킹 앙상블 모델 (Optuna 최적화 파라미터 적용)
     base_models = [
         ('xgb', XGBRegressor(
-            n_estimators=200, 
-            learning_rate=0.0235467529400567, 
-            max_depth=8, 
+            n_estimators=800, 
+            learning_rate=0.024053100186204397, 
+            max_depth=6, 
             min_child_weight=7, 
-            subsample=0.6038349859390014, 
-            colsample_bytree=0.807312666831409,
+            subsample=0.7800951459285155, 
+            colsample_bytree=0.8040394068614868,
             random_state=42,
             n_jobs=-1
         )),
         ('lgb', LGBMRegressor(
-            n_estimators=700, 
-            learning_rate=0.01566921445577168, 
-            max_depth=5, 
-            num_leaves=45, 
-            subsample=0.6014244331010646, 
-            colsample_bytree=0.7520901079847245,
+            n_estimators=500, 
+            learning_rate=0.04312096438928548, 
+            max_depth=7, 
+            num_leaves=60, 
+            subsample=0.8949895531136589, 
+            colsample_bytree=0.7528423385351647,
             random_state=42,
             verbose=-1,
             n_jobs=-1
@@ -451,7 +452,7 @@ def run_optuna_tuning(X_train, y_train, preprocessor):
 
 # --- 모델 학습 실행 ---
 def train() -> dict:
-    """전체 모델 학습 파이프라인을 실행합니다. (2개 타겟: gross_profit, sales_efficiency)
+    """전체 모델 학습 파이프라인을 실행합니다. (타겟: quantity_sold)
     
     Returns:
         dict: 학습 결과 통계
@@ -468,21 +469,23 @@ def train() -> dict:
     }
 
     # 공통 제거 컬럼 (타겟 변수 제외)
+    # 주의: price는 판매 수량 예측에 필수 피처이므로 제거하지 않음
     common_drop_cols = [
         "product_code",
         "product_name",  # 롤백: 텍스트 벡터화 제거
         "holiday_name",  # is_holiday로 충분
         "broadcast_date",  # 날짜는 피처로 사용하지 않음 (day_of_week, season으로 대체)
+        "gross_profit",  # 타겟을 quantity_sold로 변경했으므로 gross_profit은 제거
     ]
     
     # ========================================
-    # 모델 1: gross_profit 예측 모델
+    # 모델 1: quantity_sold 예측 모델
     # ========================================
     print("\n" + "="*60)
-    print("모델 1: 매출총이익(gross_profit) 예측 모델 학습")
+    print("모델 1: 판매 수량(quantity_sold) 예측 모델 학습")
     print("="*60)
     
-    target1 = "gross_profit"
+    target1 = "quantity_sold"
     drop_cols1 = common_drop_cols + ["sales_efficiency", target1]
     existing_drop_cols1 = [col for col in drop_cols1 if col in df.columns]
     
@@ -515,12 +518,12 @@ def train() -> dict:
     print("모델 학습 시작...")
     
     # 전처리기만 따로 추출
-    # Optuna 하이퍼파라미터 최적화 실행
-    #preprocessor = build_pipeline().named_steps['pre']
-    #run_optuna_tuning(X1_train, y1_train_log, preprocessor)
-    #sys.exit(0)
+    # Optuna 하이퍼파라미터 최적화 실행 (필요시 주석 해제)
+    # preprocessor = build_pipeline().named_steps['pre']
+    # run_optuna_tuning(X1_train, y1_train_log, preprocessor)
+    # sys.exit(0)
     
-    # 최적화된 파라미터로 파이프라인 생성 (수동으로 파라미터 적용 필요)
+    # 최적화된 파라미터로 파이프라인 생성
     pipe1 = build_pipeline()
     pipe1.fit(X1_train, y1_train_log)
     print("모델 학습 완료.")
@@ -529,21 +532,49 @@ def train() -> dict:
     y1_pred_log = pipe1.predict(X1_test)
     y1_pred = np.expm1(y1_pred_log)  # exp(y) - 1
     
+    # Smearing Estimator 계산 (로그 변환 과소예측 보정)
+    print("\nSmearing Estimator 계산 중...")
+    y1_train_pred_log = pipe1.predict(X1_train)
+    residuals = y1_train_log - y1_train_pred_log
+    smearing_factor = np.mean(np.exp(residuals))
+    print(f"  Smearing Factor: {smearing_factor:.4f}")
+    
+    # Smearing Estimator 적용한 예측
+    y1_pred_smeared = y1_pred * smearing_factor
+    
+    # 기본 예측 평가
     mae1 = mean_absolute_error(y1_test_orig, y1_pred)
     rmse1 = np.sqrt(mean_squared_error(y1_test_orig, y1_pred))
     r2_1 = r2_score(y1_test_orig, y1_pred)
     
-    print("\n=== 모델 1 평가 (gross_profit) ===")
-    print(f"MAE : {mae1:,.2f} 원")
-    print(f"RMSE: {rmse1:,.2f} 원")
-    print(f"R2  : {r2_1:.4f}\n")
-
-    # 모델 1 저장
-    model_path1 = Path(__file__).parent / 'app' / MODEL_FILE_PROFIT
-    joblib.dump(pipe1, model_path1)
-    print(f"✅ 모델 1이 '{model_path1}'에 저장되었습니다.")
+    # Smearing 적용 후 평가
+    mae1_smeared = mean_absolute_error(y1_test_orig, y1_pred_smeared)
+    rmse1_smeared = np.sqrt(mean_squared_error(y1_test_orig, y1_pred_smeared))
+    r2_1_smeared = r2_score(y1_test_orig, y1_pred_smeared)
     
-    # 통계 저장
+    print("\n=== 모델 1 평가 (quantity_sold) ===")
+    print(f"기본 예측:")
+    print(f"  MAE : {mae1:,.2f} 개")
+    print(f"  RMSE: {rmse1:,.2f} 개")
+    print(f"  R2  : {r2_1:.4f}")
+    print(f"\nSmearing Estimator 적용 후:")
+    print(f"  MAE : {mae1_smeared:,.2f} 개")
+    print(f"  RMSE: {rmse1_smeared:,.2f} 개")
+    print(f"  R2  : {r2_1_smeared:.4f}")
+    print(f"\n개선:")
+    print(f"  MAE : {mae1 - mae1_smeared:+,.2f} 개 ({(mae1 - mae1_smeared)/mae1*100:+.1f}%)")
+    print(f"  R2  : {r2_1_smeared - r2_1:+.4f}\n")
+
+    # 모델 1 저장 (Smearing Factor 포함)
+    model_path1 = Path(__file__).parent / 'app' / MODEL_FILE_PROFIT
+    model_data = {
+        'pipeline': pipe1,
+        'smearing_factor': smearing_factor
+    }
+    joblib.dump(model_data, model_path1)
+    print(f"✅ 모델 1이 '{model_path1}'에 저장되었습니다. (Smearing Factor: {smearing_factor:.4f})")
+    
+    # 통계 저장 (API 호환성을 위해 profit_model 키 사용)
     training_stats["models"]["profit_model"] = {
         "train_records": len(X1_train),
         "test_records": len(X1_test),

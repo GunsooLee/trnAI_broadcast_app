@@ -203,7 +203,7 @@ def upsert_to_postgres(df, table_name, postgres_engine, key_column='product_code
             # TAIPGMTAPE에 존재하는 tape_code만 삽입 (Foreign Key 제약 준수)
             upsert_query = f"""
             INSERT INTO taibroadcasts (tape_code, broadcast_start_timestamp, broadcast_end_timestamp,
-                                       duration_minutes, product_is_new, 
+                                       duration_minutes, product_is_new, quantity_sold,
                                        gross_profit, sales_efficiency, created_at)
             SELECT t.tape_code, 
                    t.broadcast_start_timestamp::TIMESTAMP,
@@ -211,7 +211,8 @@ def upsert_to_postgres(df, table_name, postgres_engine, key_column='product_code
                    t.duration_minutes::INTEGER,
                    CASE WHEN t.product_is_new IS NULL THEN FALSE 
                         ELSE t.product_is_new::BOOLEAN 
-                   END, 
+                   END,
+                   COALESCE(t.quantity_sold::INTEGER, 0),
                    t.gross_profit::NUMERIC, 
                    t.sales_efficiency::NUMERIC, 
                    t.created_at::TIMESTAMP

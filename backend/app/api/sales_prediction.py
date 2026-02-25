@@ -132,18 +132,35 @@ async def predict_single_product_sales(payload: SingleProductPredictionRequest):
         from pathlib import Path
         
         model_path = Path(__file__).parent.parent / 'xgb_broadcast_profit.joblib'
-        model = joblib.load(model_path)
+        model_data = joblib.load(model_path)
+        
+        # 모델 구조 확인 (딕셔너리 또는 파이프라인)
+        if isinstance(model_data, dict):
+            model = model_data['pipeline']
+            smearing_factor = model_data.get('smearing_factor', 1.0)
+        else:
+            model = model_data
+            smearing_factor = 1.0
         
         # DataFrame 생성
         pred_df = pd.DataFrame([features])
         
-        # 예측 (로그 스케일)
-        predicted_sales_log = model.predict(pred_df)[0]
-        predicted_sales = np.expm1(predicted_sales_log)
-        predicted_sales = max(0, predicted_sales)
+        # 예측 (로그 스케일) - 판매 수량 예측
+        predicted_quantity_log = model.predict(pred_df)[0]
+        predicted_quantity = np.expm1(predicted_quantity_log)
+        
+        # Smearing Estimator 적용 (과소예측 보정)
+        predicted_quantity = predicted_quantity * smearing_factor
+        predicted_quantity = max(0, predicted_quantity)
+        
+        # 가격 정보 가져오기
+        product_price = float(product_info.get('price', 0))
+        
+        # 매출 = 판매 수량 × 가격
+        predicted_sales = predicted_quantity * product_price
         
         elapsed_time = time.time() - start_time
-        logger.info(f"예측 완료: {predicted_sales:,.0f}원 (소요시간: {elapsed_time:.2f}초)")
+        logger.info(f"예측 완료: 수량 {predicted_quantity:,.0f}개 × 가격 {product_price:,.0f}원 = 매출 {predicted_sales:,.0f}원 (소요시간: {elapsed_time:.2f}초)")
         
         return SingleProductPredictionResponse(
             product_code=product_code,

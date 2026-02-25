@@ -107,6 +107,7 @@ MIGRATION_TABLES = {
                    FPM.BDCAST_END_DTTM AS broadcast_end_timestamp,
                    ROUND(EXTRACT(EPOCH FROM (FPM.BDCAST_END_DTTM - FPM.BDCAST_STRT_DTTM)) / 60, 0) AS duration_minutes,
                    NULL AS product_is_new,
+                   SUM(FPM.ORD_QTY) AS quantity_sold,
                    ROUND(ROUND(SUM(FPM.PRDC_MOD_SAMT) + SUM(FPM.INTNGB_SAMT), 2) + SUM(FPM.ADV_COST), 0) AS gross_profit,
                    ROUND((ROUND(ROUND(SUM(FPM.PRDC_MOD_SAMT) + SUM(FPM.INTNGB_SAMT), 2) + SUM(FPM.ADV_COST), 0) / MAX(FBD.CONV_WORTH_VAL)) / 1000000, 1) AS sales_efficiency,
                    CURRENT_TIMESTAMP AS created_at
