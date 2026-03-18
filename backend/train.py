@@ -339,28 +339,31 @@ def build_pipeline() -> Pipeline:
         remainder="drop",
     )
 
-    # XGBoost + LightGBM 스태킹 앙상블 모델 (Optuna 최적화 파라미터 적용)
+    # XGBoost + LightGBM 스태킹 앙상블 모델 
     base_models = [
         ('xgb', XGBRegressor(
-            n_estimators=800, 
-            learning_rate=0.024053100186204397, 
-            max_depth=6, 
-            min_child_weight=7, 
-            subsample=0.7800951459285155, 
-            colsample_bytree=0.8040394068614868,
+            objective='reg:squarederror',  # 기본 평균 예측
+            n_estimators=600,
+            learning_rate=0.030263499381045573,
+            max_depth=6,
+            min_child_weight=6,
+            subsample=0.8706310230441591,
+            colsample_bytree=0.7462905716451212,
             random_state=42,
-            n_jobs=-1
+            n_jobs=-1,
+            tree_method='hist'
         )),
         ('lgb', LGBMRegressor(
-            n_estimators=500, 
-            learning_rate=0.04312096438928548, 
-            max_depth=7, 
-            num_leaves=60, 
-            subsample=0.8949895531136589, 
-            colsample_bytree=0.7528423385351647,
+            objective='regression',  # 기본 평균 예측
+            n_estimators=600,
+            learning_rate=0.037140507480203165,
+            max_depth=5,
+            num_leaves=50,
+            subsample=0.6860393619425339,
+            colsample_bytree=0.6789888882475267,
             random_state=42,
-            verbose=-1,
-            n_jobs=-1
+            n_jobs=-1,
+            verbose=-1
         ))
     ]
     
@@ -475,17 +478,17 @@ def train() -> dict:
         "product_name",  # 롤백: 텍스트 벡터화 제거
         "holiday_name",  # is_holiday로 충분
         "broadcast_date",  # 날짜는 피처로 사용하지 않음 (day_of_week, season으로 대체)
-        "gross_profit",  # 타겟을 quantity_sold로 변경했으므로 gross_profit은 제거
+        "quantity_sold",  # 타겟이 gross_profit이므로 quantity_sold는 피처에서 제외
     ]
     
     # ========================================
-    # 모델 1: quantity_sold 예측 모델
+    # 모델 1: gross_profit 예측 모델
     # ========================================
     print("\n" + "="*60)
-    print("모델 1: 판매 수량(quantity_sold) 예측 모델 학습")
+    print("모델 1: 매출액(gross_profit) 예측 모델 학습")
     print("="*60)
     
-    target1 = "quantity_sold"
+    target1 = "gross_profit"
     drop_cols1 = common_drop_cols + ["sales_efficiency", target1]
     existing_drop_cols1 = [col for col in drop_cols1 if col in df.columns]
     
@@ -547,22 +550,37 @@ def train() -> dict:
     rmse1 = np.sqrt(mean_squared_error(y1_test_orig, y1_pred))
     r2_1 = r2_score(y1_test_orig, y1_pred)
     
+    # MAPE 계산 (실제값이 0인 경우 제외)
+    non_zero_idx = y1_test_orig != 0
+    if non_zero_idx.sum() > 0:
+        mape1 = np.mean(np.abs((y1_test_orig[non_zero_idx] - y1_pred[non_zero_idx]) / y1_test_orig[non_zero_idx])) * 100
+    else:
+        mape1 = 0.0
+    
     # Smearing 적용 후 평가
     mae1_smeared = mean_absolute_error(y1_test_orig, y1_pred_smeared)
     rmse1_smeared = np.sqrt(mean_squared_error(y1_test_orig, y1_pred_smeared))
     r2_1_smeared = r2_score(y1_test_orig, y1_pred_smeared)
     
-    print("\n=== 모델 1 평가 (quantity_sold) ===")
+    if non_zero_idx.sum() > 0:
+        mape1_smeared = np.mean(np.abs((y1_test_orig[non_zero_idx] - y1_pred_smeared[non_zero_idx]) / y1_test_orig[non_zero_idx])) * 100
+    else:
+        mape1_smeared = 0.0
+    
+    print("\n=== 모델 1 평가 (gross_profit) ===")
     print(f"기본 예측:")
-    print(f"  MAE : {mae1:,.2f} 개")
-    print(f"  RMSE: {rmse1:,.2f} 개")
+    print(f"  MAE : {mae1:,.0f} 원")
+    print(f"  RMSE: {rmse1:,.0f} 원")
+    print(f"  MAPE: {mape1:.2f} %")
     print(f"  R2  : {r2_1:.4f}")
     print(f"\nSmearing Estimator 적용 후:")
-    print(f"  MAE : {mae1_smeared:,.2f} 개")
-    print(f"  RMSE: {rmse1_smeared:,.2f} 개")
+    print(f"  MAE : {mae1_smeared:,.0f} 원")
+    print(f"  RMSE: {rmse1_smeared:,.0f} 원")
+    print(f"  MAPE: {mape1_smeared:.2f} %")
     print(f"  R2  : {r2_1_smeared:.4f}")
     print(f"\n개선:")
-    print(f"  MAE : {mae1 - mae1_smeared:+,.2f} 개 ({(mae1 - mae1_smeared)/mae1*100:+.1f}%)")
+    print(f"  MAE : {mae1 - mae1_smeared:+,.0f} 원 ({(mae1 - mae1_smeared)/mae1*100:+.1f}%)")
+    print(f"  MAPE: {mape1 - mape1_smeared:+.2f} %p")
     print(f"  R2  : {r2_1_smeared - r2_1:+.4f}\n")
 
     # 모델 1 저장 (Smearing Factor 포함)

@@ -49,7 +49,8 @@
 ```json
 {
   "tape_code": "0000012179",
-  "broadcast_time": "2026-02-22 14:00"
+  "broadcast_start_time": "2026-02-22 14:00:00",
+  "broadcast_end_time": "2026-02-22 15:00:00"
 }
 ```
 
@@ -58,7 +59,8 @@
 | 필드 | 타입 | 필수 | 설명 | 예시 |
 |------|------|------|------|------|
 | `tape_code` | string | ✅ | 방송 테이프 코드 | "0000012179" |
-| `broadcast_time` | string | ✅ | 방송 일시 (YYYY-MM-DD HH:MM) | "2026-02-22 14:00" |
+| `broadcast_start_time` | string | ✅ | 방송 시작 일시 (YYYY-MM-DD HH:MM:SS) | "2026-02-22 14:00:00" |
+| `broadcast_end_time` | string | ⭕ | 방송 종료 일시 (YYYY-MM-DD HH:MM:SS, 선택적) | "2026-02-22 15:00:00" |
 
 #### Response (200 OK)
 
@@ -102,7 +104,7 @@
 **400 Bad Request** - 잘못된 날짜/시간 형식
 ```json
 {
-  "detail": "방송 일시 형식이 올바르지 않습니다. (YYYY-MM-DD HH:MM)"
+  "detail": "방송 시작 일시 형식이 올바르지 않습니다. (YYYY-MM-DD HH:MM:SS)"
 }
 ```
 
@@ -410,11 +412,11 @@ import requests
 import json
 
 # 1. 단일 상품 예측
-def predict_single_product(tape_code, broadcast_time):
+def predict_single_product(tape_code, broadcast_start_time):
     url = "http://localhost:8501/api/v1/sales/predict-single"
     payload = {
         "tape_code": tape_code,
-        "broadcast_time": broadcast_time
+        "broadcast_start_time": broadcast_start_time
     }
     
     response = requests.post(url, json=payload)
@@ -430,7 +432,7 @@ def predict_single_product(tape_code, broadcast_time):
         return None
 
 # 사용 예시
-result = predict_single_product("0000012179", "2026-02-22 14:00")
+result = predict_single_product("0000012179", "2026-02-22 14:00:00")
 
 
 # 2. 여러 시간대 비교
@@ -439,8 +441,8 @@ def find_best_timeslot(tape_code, date):
     results = []
     
     for time in times:
-        broadcast_time = f"{date} {time}"
-        result = predict_single_product(tape_code, broadcast_time)
+        broadcast_start_time = f"{date} {time}"
+        result = predict_single_product(tape_code, broadcast_start_time)
         if result:
             results.append({
                 "time": time,
@@ -486,13 +488,13 @@ schedule = predict_daily_schedule("2026-02-22")
 const axios = require('axios');
 
 // 1. 단일 상품 예측
-async function predictSingleProduct(tapeCode, broadcastTime) {
+async function predictSingleProduct(tapeCode, broadcastStartTime) {
   try {
     const response = await axios.post(
       'http://localhost:8501/api/v1/sales/predict-single',
       {
         tape_code: tapeCode,
-        broadcast_time: broadcastTime
+        broadcast_start_time: broadcastStartTime
       }
     );
     
@@ -549,7 +551,7 @@ curl -X POST "http://localhost:8501/api/v1/sales/predict-single" \
   -H "Content-Type: application/json" \
   -d '{
     "tape_code": "0000012179",
-    "broadcast_time": "2026-02-22 14:00"
+    "broadcast_start_time": "2026-02-22 14:00:00"
   }'
 
 # 2. 날짜별 편성표 예측
@@ -690,6 +692,6 @@ def safe_predict(product_code, date, time, max_retries=3):
 
 ---
 
-**문서 버전**: 1.0.0  
-**최종 업데이트**: 2026-02-24  
+**문서 버전**: 1.1.0  
+**최종 업데이트**: 2026-03-18  
 **작성자**: AI Development Team

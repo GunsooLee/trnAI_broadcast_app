@@ -218,6 +218,13 @@ def upsert_to_postgres(df, table_name, postgres_engine, key_column='product_code
                    t.created_at::TIMESTAMP
             FROM {temp_table} t
             WHERE EXISTS (SELECT 1 FROM taipgmtape WHERE tape_code = t.tape_code)
+            ON CONFLICT (tape_code, broadcast_start_timestamp) DO UPDATE SET
+                broadcast_end_timestamp = EXCLUDED.broadcast_end_timestamp,
+                duration_minutes = EXCLUDED.duration_minutes,
+                product_is_new = EXCLUDED.product_is_new,
+                quantity_sold = EXCLUDED.quantity_sold,
+                gross_profit = EXCLUDED.gross_profit,
+                sales_efficiency = EXCLUDED.sales_efficiency
             """
         elif table_name.lower() == 'taicompetitor_broadcasts':
             # 경쟁사 방송 정보 UPSERT

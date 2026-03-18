@@ -145,22 +145,16 @@ async def predict_single_product_sales(payload: SingleProductPredictionRequest):
         # DataFrame 생성
         pred_df = pd.DataFrame([features])
         
-        # 예측 (로그 스케일) - 판매 수량 예측
-        predicted_quantity_log = model.predict(pred_df)[0]
-        predicted_quantity = np.expm1(predicted_quantity_log)
+        # 예측 (로그 스케일) - gross_profit 직접 예측
+        predicted_profit_log = model.predict(pred_df)[0]
+        predicted_sales = np.expm1(predicted_profit_log)
         
         # Smearing Estimator 적용 (과소예측 보정)
-        predicted_quantity = predicted_quantity * smearing_factor
-        predicted_quantity = max(0, predicted_quantity)
-        
-        # 가격 정보 가져오기
-        product_price = float(product_info.get('price', 0))
-        
-        # 매출 = 판매 수량 × 가격
-        predicted_sales = predicted_quantity * product_price
+        predicted_sales = predicted_sales * smearing_factor
+        predicted_sales = max(0, predicted_sales)
         
         elapsed_time = time.time() - start_time
-        logger.info(f"예측 완료: 수량 {predicted_quantity:,.0f}개 × 가격 {product_price:,.0f}원 = 매출 {predicted_sales:,.0f}원 (소요시간: {elapsed_time:.2f}초)")
+        logger.info(f"예측 완료: gross_profit {predicted_sales:,.0f}원 (소요시간: {elapsed_time:.2f}초)")
         
         return SingleProductPredictionResponse(
             product_code=product_code,
